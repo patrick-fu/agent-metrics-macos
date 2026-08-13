@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prototype — ingestion counter semantics</title>
+<style>
+  :root{--ink:#172033;--muted:#5e6a7e;--line:#dce3ee;--wash:#f5f8fc;--accent:#1769aa;--ok:#13795b;--warn:#9a5b00;--bad:#aa3341}*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1420px;margin:auto;padding:28px}h1{font-size:27px;margin:0 0 5px}h2{font-size:15px;margin:0 0 10px}.intro{border-left:4px solid var(--accent);background:#fff;padding:14px 16px;margin:16px 0;color:#344156}.grid{display:grid;grid-template-columns:320px 1fr;gap:18px}.card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:15px;box-shadow:0 1px 2px #1720330b}.controls{position:sticky;top:12px;height:max-content}.buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px}.buttons button:first-child{grid-column:span 2}button{border:1px solid #b9c8da;background:#fff;border-radius:6px;padding:8px;text-align:left;color:#183654;cursor:pointer;font:inherit}button:hover,button.active{border-color:var(--accent);background:#edf6ff}.hint,.small{color:var(--muted);font-size:12px}.tabs{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0 12px}.tabs button{padding:6px 9px}.steps{display:flex;gap:8px;flex-wrap:wrap}.steps button{background:#f7fbff}.pipeline{display:grid;grid-template-columns:repeat(5,minmax(190px,1fr));gap:10px;overflow:auto}.stage{min-width:190px;background:#fbfcfe;border:1px solid var(--line);border-radius:7px;padding:10px}.stage h3{font-size:12px;color:var(--accent);margin:0 0 7px;text-transform:uppercase;letter-spacing:.04em}.mono{white-space:pre-wrap;word-break:break-word;font:11px/1.42 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0}.facts{margin-top:14px}.fact{border-top:1px solid var(--line);padding:9px 0}.fact:first-child{border-top:0}.badge{display:inline-block;border-radius:999px;padding:2px 7px;font-size:11px;background:#e7f5ee;color:var(--ok)}.warning{background:#fff3df;color:var(--warn)}.error{background:#ffe8eb;color:var(--bad)}details{margin-top:12px}summary{cursor:pointer;font-weight:600}table{border-collapse:collapse;width:100%;font-size:12px}td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}@media(max-width:900px){main{padding:14px}.grid{grid-template-columns:1fr}.controls{position:static}.pipeline{grid-template-columns:1fr}.stage{min-width:0}}
+</style>
+<body><main>
+  <h1>Ingestion counter semantics</h1>
+  <div class="intro"><strong>Throwaway, synthetic-only prototype.</strong> Question: can one reducer turn messy append-only usage logs into stable, quality-aware canonical facts without accidentally summing fallback sources, re-reading old records, or claiming identity we do not have? Decision under review: immutable idempotent facts with explicit supersession; cursor snapshots retain file identity, size, offset, pending tail, and cumulative watermarks. No real data is read.</div>
+  <div class="grid"><aside class="card controls"><h2>Free play</h2><p class="hint">Every click adds a synthetic scan event and shows the whole pipeline. “Cold scan” replays the same records without a cursor.</p><div id="free" class="buttons"></div><hr><h2>Guided walkthroughs</h2><div id="tabs" class="tabs"></div><div id="walk"></div><hr><button id="reset">Reset all state</button><p id="note" class="hint"></p></aside>
+  <section><div class="card"><h2>Pipeline for the latest action</h2><div id="pipeline" class="pipeline"></div></div><div class="card facts"><h2>Canonical Usage Facts</h2><div id="facts"></div><details><summary>Diagnostics and internal state</summary><div id="diagnostics"></div></details></div></section></div>
+</main>
+<script>
+/* Pure logic module: reducer(state, action) => nextState. No DOM dependencies. */
+const Clone=x=>JSON.parse(JSON.stringify(x));
+const empty=()=>({files:{},seen:{},watermarks:{},facts:[],sourceStatus:{openai:'idle',claude:'idle'},parserVersions:{openai:'1.0.0',claude:'1.0.0'},rebuilds:[],diagnostics:[],last:{raw:[],authority:[],normalization:[],dedup:[],facts:[]}});
+const obs=(id,source,counter,value,extra={})=>({id,source,counter,value,channel:'local',capability:'tokens',identity:extra.call||'call-unknown',granularity:extra.call?'call':'session',range:extra.range||'window-1',file:extra.file||source+'-usage.jsonl',fileId:extra.fileId||source+'-file-1',size:extra.size||100,offset:extra.offset||100,parser:extra.parser||'1.0.0',complete:extra.complete!==false,quality:extra.quality||'derived',parts:extra.parts||{input:value},schema:extra.schema||'known-v1',...extra});
+const fixtures={
+ delta:()=>({records:[obs('d1','openai','delta',11,{call:'call-d'}),obs('d2','openai','delta',7,{call:'call-d'})]}),
+ messageTotal:()=>({records:[obs('m1','openai','message-total',31,{call:'call-m',range:'message-1'}),obs('m2','openai','message-total',47,{call:'call-m',range:'message-1'})]}),
+ sessionTotal:()=>({records:[obs('s1','openai','session-total',81,{granularity:'session',range:'session-1'}),obs('s2','openai','session-total',100,{granularity:'session',range:'session-1'})]}),
+ openaiSubset:()=>({records:[obs('oa1','openai','delta',0,{call:'call-oa',quality:'measured',parts:{input:100,cacheRead:60,output:30,reasoning:10,cacheWrite:8}})]}),
+ claudeCaches:()=>({records:[obs('cl1','claude','delta',0,{call:'call-cl',quality:'measured',parts:{input:40,cacheRead:60,cacheWrite:20,output:30}})]}),
+ fallback:()=>({records:[obs('f1','openai','session-total',55,{channel:'local',granularity:'session',identity:'session-f',range:'r-f',quality:'estimated'}),obs('f2','openai','session-total',43,{channel:'enhanced',granularity:'session',identity:'session-f',range:'r-f',quality:'measured'})]}),
+ append:()=>({records:[obs('a1','openai','delta',5,{call:'call-a',file:'append.jsonl',offset:50,size:100}),obs('a2','openai','delta',6,{call:'call-a',file:'append.jsonl',offset:100,size:100})]}),
+ incomplete:()=>({records:[obs('t1','openai','delta',8,{call:'call-tail',file:'tail.jsonl',offset:40,size:80,complete:false}),obs('t2','openai','delta',8,{call:'call-tail',file:'tail.jsonl',offset:80,size:80})]}),
+ duplicate:()=>({records:[obs('c1','openai','session-total',100,{granularity:'session',identity:'session-c',range:'r-c'}),obs('c2','openai','session-total',150,{granularity:'session',identity:'session-c',range:'r-c'}),obs('c2','openai','session-total',150,{granularity:'session',identity:'session-c',range:'r-c'})]}),
+ truncate:()=>({preRecords:[obs('x1','openai','session-total',90,{granularity:'session',identity:'session-x',range:'r-x',file:'replace.jsonl',fileId:'original-1',size:90,offset:90})],rebuild:{source:'openai',file:'replace.jsonl',reason:'size decreased / file identity changed'},records:[obs('x2','openai','session-total',40,{granularity:'session',identity:'session-x',range:'r-x',file:'replace.jsonl',fileId:'replacement-2',size:40,offset:40})]}),
+ archiveRestart:()=>({records:[obs('r1','openai','delta',10,{call:'call-r',file:'archive/session.jsonl',fileId:'stable-session',archived:true}),obs('r1','openai','delta',10,{call:'call-r',file:'active/session.jsonl',fileId:'stable-session',restart:true})]}),
+ unknown:()=>({records:[obs('u1','openai','delta',99,{call:'call-u',schema:'unknown-v99'})]}),
+ identityUnknown:()=>({records:[obs('i1','openai','delta',14,{identity:'unavailable',granularity:'session'})]}),
+ sourceFailure:()=>({failure:{source:'claude',reason:'synthetic read failure'},records:[obs('ok1','openai','delta',7,{call:'call-ok'})]}),
+ semver:()=>({rebuild:{source:'openai',reason:'parser 1.0.0 → 2.0.0',parser:'2.0.0'},records:[obs('v1','openai','delta',3,{call:'call-v',parser:'2.0.0'}),obs('v2','claude','delta',3,{call:'call-vc'})]}),
+ quality:()=>({records:[obs('q1','openai','delta',5,{call:'call-q',quality:'derived',range:'quality-derived'}),obs('q2','openai','delta',99,{call:'call-q',quality:'estimated',range:'quality-estimated'}),obs('q3','openai','delta',7,{call:'call-q',quality:'measured',range:'quality-measured'})]})
+};
+const authorityKey=r=>[r.source,r.capability,r.identity,r.granularity,r.range].join('|');
+const watermarkKey=r=>[r.source,r.channel,r.counter,r.identity,r.range].join('|');
+function normalize(r,amount){
+ const p=r.parts||{},parts=r.source==='openai'?{inputUncached:Math.max(0,(p.input||amount)-(p.cacheRead||0)),cacheRead:p.cacheRead||0,cacheWrite:'unavailable (overlap unverified)',outputVisible:Math.max(0,(p.output||0)-(p.reasoning||0)),reasoning:p.reasoning||0}:{inputUncached:p.input||amount,cacheRead:p.cacheRead||0,cacheWrite:p.cacheWrite||0,outputVisible:'unavailable',reasoning:'unavailable'};
+ return {observationId:r.id,authorityKey:authorityKey(r),scope:{capability:r.capability,granularity:r.granularity,range:r.range},source:r.source,channel:r.channel,identity:r.identity,granularity:r.granularity,range:r.range,counter:r.counter,quality:r.quality,coverage:parts.cacheWrite==='unavailable (overlap unverified)'?'partial':'complete',state:'present',amount,parts};
+}
+function rebuildSource(s,rule){
+ const affected=s.facts.filter(f=>f.source===rule.source&&(rule.file?f.file===rule.file:true)&&f.contributing);
+ affected.forEach(f=>{f.contributing=false;f.supersededBy='source-scoped-rebuild'});
+ Object.keys(s.seen).filter(k=>s.seen[k].source===rule.source&&(rule.file?s.seen[k].file===rule.file:true)).forEach(k=>delete s.seen[k]);
+ Object.keys(s.watermarks).filter(k=>k.startsWith(rule.source+'|')).forEach(k=>delete s.watermarks[k]);
+ s.rebuilds.push({source:rule.source,file:rule.file||'all source files',reason:rule.reason});
+ if(rule.parser)s.parserVersions[rule.source]=rule.parser;
+ s.diagnostics.push('Source-scoped rebuild: '+rule.source+'; unrelated sources remain intact.');
+}
+function reducer(state,action){
+ if(action.type==='RESET')return empty(); const s=Clone(state),raw=action.records||[],accepted=[],authority=[],normalized=[];
+ if(action.failure){s.sourceStatus[action.failure.source]='failed';s.diagnostics.push('Independent source failure: '+action.failure.source+'; other sources continue.');}
+ if(action.rebuild)rebuildSource(s,action.rebuild);
+ raw.forEach(r=>{
+  s.sourceStatus[r.source]='ok'; s.files[r.fileId]={path:r.file,fileId:r.fileId,size:r.size,offset:r.complete?r.offset:(s.files[r.fileId]?.offset||0),pendingTail:r.complete?0:r.size-r.offset,archived:!!r.archived};
+  if(!r.complete){s.diagnostics.push('Incomplete tail buffered; cursor did not advance and no fact emitted: '+r.id);return;}
+  if(r.schema!=='known-v1'){s.diagnostics.push('Unknown schema quarantined; no fact emitted: '+r.schema);return;}
+  if(s.seen[r.id]){s.diagnostics.push('Duplicate observation skipped: '+r.id);return;}
+  s.seen[r.id]={source:r.source,file:r.file};
+  if(r.identity==='unavailable')s.diagnostics.push('Call identity unavailable: retained only at session granularity; no call invented.');
+  let amount=r.value;
+  if(r.counter!=='delta'){const wk=watermarkKey(r),previous=s.watermarks[wk]||0;if(r.value<previous){s.diagnostics.push('Cumulative counter moved backward; requires scoped rebuild, never negative delta: '+r.id);return;}amount=r.value-previous;s.watermarks[wk]=r.value;}
+  const n=normalize(r,amount); normalized.push(n); accepted.push(r.id); authority.push({observationId:r.id,key:n.authorityKey,channel:r.channel,decision:'candidate'});
+  const priority={local:1,enhanced:2},prior=s.facts.filter(f=>f.authorityKey===n.authorityKey&&f.contributing).sort((a,b)=>priority[b.channel]-priority[a.channel])[0];
+  if(prior&&priority[prior.channel]>priority[r.channel]){authority.at(-1).decision='fallback ignored: stronger authority already selected';return;}
+  if(prior&&priority[r.channel]>priority[prior.channel]){prior.contributing=false;prior.supersededBy=r.id;authority.at(-1).decision='replaces fallback; never adds';}
+  else authority.at(-1).decision='selected';
+  s.facts.push({...n,file:r.file,contributing:true,supersededBy:null});
+ });
+ if(action.coldScan){const before=action.expectedTotal,after=s.facts.filter(f=>f.contributing).reduce((n,f)=>n+f.amount,0);s.diagnostics.push('Cold scan equivalence: '+(before===after?'PASS':'FAIL')+' (append='+before+', cold='+after+').');}
+ if(raw.some(r=>r.restart))s.diagnostics.push('Restart restored cursor/watermark snapshot; replay stayed idempotent.');
+ if(raw.some(r=>r.archived))s.diagnostics.push('Archive path changed while stable file/session identity prevented double counting.');
+ s.last={raw,authority,normalization:normalized,dedup:raw.map(r=>({id:r.id,decision:accepted.includes(r.id)?'accepted or authority-replaced':s.seen[r.id]?'duplicate: skipped':'buffered/quarantined'})),facts:s.facts};return s;
+}
+// Thin UI below: dispatch only calls reducer and renders its returned state.
+let state=empty(),active='basics';const label={delta:'Append two delta observations',messageTotal:'Message cumulative totals',sessionTotal:'Session cumulative totals',openaiSubset:'OpenAI subset normalization',claudeCaches:'Claude disjoint cache parts',fallback:'Fallback then enhanced authority',append:'Append scan',cold:'Cold scan equivalence',incomplete:'Incomplete tail then complete',duplicate:'Repeated cumulative usage',truncate:'Truncate / replace rebuild',archiveRestart:'Archive and restart',unknown:'Unknown schema',identityUnknown:'Unknown call identity',sourceFailure:'One source fails',semver:'Parser semantic-version rebuild',quality:'Quality separation'};
+const scenarios=[
+ {id:'basics',name:'Counter shapes',text:'Delta adds. Message/session totals publish only the positive change from their persisted watermark.',steps:['delta','messageTotal','sessionTotal']},
+ {id:'authorities',name:'Authority & caches',text:'OpenAI subset fields are subtracted; Claude cache parts are additive. Enhanced authority explicitly supersedes matching fallback.',steps:['openaiSubset','claudeCaches','fallback']},
+ {id:'scanning',name:'Append & tails',text:'Append and cold scan converge. An incomplete tail advances no cursor and emits nothing until complete.',steps:['append','cold','incomplete']},
+ {id:'boundaries',name:'Replay boundaries',text:'Repeated cumulative observations, truncate/replace, archive, and restart cannot inflate contributing facts.',steps:['duplicate','truncate','archiveRestart']},
+ {id:'uncertainty',name:'Uncertainty',text:'Unknown schemas and identities remain explicit; one source failure does not block another.',steps:['unknown','identityUnknown','sourceFailure']},
+ {id:'evolution',name:'Evolution & quality',text:'Parser changes rebuild only one source. Measured, derived, and estimated facts stay separately labelled.',steps:['semver','quality']}
+];
+function pretty(x){return JSON.stringify(x,null,2)}
+function contributingTotal(s){return s.facts.filter(f=>f.contributing).reduce((n,f)=>n+f.amount,0)}
+function dispatch(name){let action;if(name==='cold'){const appendState=reducer(empty(),{type:'INGEST',...fixtures.append()});action={type:'INGEST',...fixtures.append(),coldScan:true,expectedTotal:contributingTotal(appendState)};state=empty();}else{const fixture=fixtures[name]();if(fixture.preRecords)state=reducer(state,{type:'INGEST',records:fixture.preRecords});action={type:'INGEST',...fixture};}state=reducer(state,action);document.querySelector('#note').textContent='Latest action: '+label[name]+'.';render()}
+function render(){
+ document.querySelector('#free').innerHTML='<button data-reset="1">Reset all state</button>'+Object.entries(label).map(([k,v])=>'<button data-action="'+k+'">'+v+'</button>').join('');
+ document.querySelector('#tabs').innerHTML=scenarios.map(x=>'<button class="'+(x.id===active?'active':'')+'" data-tab="'+x.id+'">'+x.name+'</button>').join('');const sc=scenarios.find(x=>x.id===active);document.querySelector('#walk').innerHTML='<p class="hint">'+sc.text+'</p><div class="steps"><button data-start="'+sc.id+'">Start walkthrough (reset)</button>'+sc.steps.map((x,i)=>'<button data-step="'+x+'">'+(i+1)+'. '+label[x]+'</button>').join('')+'</div>';
+ const l=state.last,stages=[['Raw observations',l.raw],['Authority selection',l.authority],['Counter normalization',l.normalization],['Dedup / cursor',{files:state.files,decisions:l.dedup,watermarks:state.watermarks}],['Canonical Usage Facts',l.facts]];document.querySelector('#pipeline').innerHTML=stages.map(([title,data])=>'<div class="stage"><h3>'+title+'</h3><pre class="mono">'+escapeHtml(pretty(data))+'</pre></div>').join('');
+ document.querySelector('#facts').innerHTML=state.facts.length?state.facts.map(f=>'<div class="fact"><span class="badge '+(f.quality==='measured'?'':f.quality==='estimated'?'warning':'')+'">'+f.quality+'</span> <strong>'+f.source+' / '+f.identity+' / '+f.granularity+'</strong> <span class="badge '+(f.contributing?'':'error')+'">'+(f.contributing?'contributing':'superseded')+'</span><br><span class="small">delta='+f.amount+' · coverage='+f.coverage+' · channel='+f.channel+' · parts='+escapeHtml(pretty(f.parts))+'</span></div>').join(''):'<p class="hint">No canonical facts yet.</p>';
+ document.querySelector('#diagnostics').innerHTML='<table><tr><th>Contributing total</th><td>'+contributingTotal(state)+'</td></tr><tr><th>Cursors</th><td><pre class="mono">'+escapeHtml(pretty(state.files))+'</pre></td></tr><tr><th>Watermarks</th><td><pre class="mono">'+escapeHtml(pretty(state.watermarks))+'</pre></td></tr><tr><th>Sources</th><td>'+escapeHtml(pretty(state.sourceStatus))+'</td></tr><tr><th>Source-scoped rebuilds</th><td>'+escapeHtml(pretty(state.rebuilds))+'</td></tr><tr><th>Notes</th><td>'+escapeHtml(state.diagnostics.length?state.diagnostics.join('\n'):'None')+'</td></tr></table>';
+}
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.action)dispatch(b.dataset.action);if(b.dataset.reset||b.id==='reset'){state=empty();document.querySelector('#note').textContent='State reset.';render()}if(b.dataset.tab){active=b.dataset.tab;render()}if(b.dataset.start){state=empty();active=b.dataset.start;document.querySelector('#note').textContent='Walkthrough reset. Press the numbered steps.';render()}if(b.dataset.step)dispatch(b.dataset.step)});render();
+</script></body></html>
