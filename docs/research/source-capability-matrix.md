@@ -14,10 +14,12 @@ Notation: each claim is marked **[fact]** (cited from official docs or public so
 
 | Source | URL |
 |--------|-----|
-| Configuration Reference (config.toml) | <https://learn.chatgpt.com/docs/config> |
+| Configuration Reference (`config.toml`) | <https://learn.chatgpt.com/codex/config-file/config-reference> |
 | Changelog v0.143.0–v0.147.0 | <https://learn.chatgpt.com/docs/changelog> |
 | App Server API overview | <https://learn.chatgpt.com/docs/app-server> |
 | Responses API create method | <https://developers.openai.com/api/reference/resources/responses/methods/create> |
+| Rollout persistence policy at the reviewed upstream revision | <https://github.com/openai/codex/blob/1c9f890c051dbd091f1827ecd0149d0f43001b5f/codex-rs/rollout/src/policy.rs> |
+| Protocol types at the reviewed upstream revision | <https://github.com/openai/codex/blob/2edad72de3e4fb12a7519027d5eb3cbda45eea6c/codex-rs/protocol/src/protocol.rs> |
 
 ### Claude Code CLI
 
@@ -32,25 +34,27 @@ Notation: each claim is marked **[fact]** (cited from official docs or public so
 
 ### 2.1 Codex CLI — rollout files
 
-Codex persists each session as a JSONL "rollout" file under its sessions directory. The App Server API describes thread/archive and thread/unarchive as moving rollout files between active and archived session directories, confirming that one rollout file corresponds to one thread/session. **[fact: App Server API overview]**
+Codex persists each non-ephemeral thread as a JSONL "rollout" file. The App Server API describes thread/archive and thread/unarchive as moving rollout files between active and archived session directories. **[fact: App Server API overview]**
 
-Each rollout line is a structured item. Rollout items carry turn-level and response-level data:
+Each rollout line is a structured item. The current persistence policy stores turn lifecycle events, thread settings, accumulated `TokenCount` events, and selected response/content items. **[fact: rollout persistence policy]**
 
 - **Turn items** persisted for paginated threads (PR #30188, v0.144.0 changelog). **[fact]**
 - **Response items** include a `turn_id` on ResponseItem metadata (PR #28360, v0.143.0 changelog). **[fact]**
-- **Per-response usage** exposed in raw app-server events (PR #32985, v0.145.0 changelog). **[fact]**
+- **Exact per-response usage** is exposed in live raw app-server events (PR #32985, v0.145.0 changelog), but `RawResponseCompleted` is explicitly transient and is not persisted to rollout files. **[fact: protocol type + rollout persistence policy]**
 - **Cache-write token usage** tracked and added to the raw response schema (PR #33454, PR #33500, v0.145.0 changelog). **[fact]**
 - **Rollout budget units** captured from response usage (PR #36641, PR #36715, v0.147.0 changelog). **[fact]**
 - **Turn start times** included in terminal turn events (PR #32263, v0.145.0 changelog). **[fact]**
 - Thread and turn IDs are UUID7 (PR #27714, v0.143.0 changelog). **[fact]**
 
-Identity fields available in rollout response items: `model` (source-reported model string), `turn_id` (UUID7), `thread_id` (UUID7). **[fact]**
+Persisted identity includes thread and turn UUID7 values plus the effective `model` in turn context/settings items. A durable model-call identifier is not publicly documented. **[fact + inference]**
+
+This distinction is decisive: a live app-server subscriber can receive exact per-response usage, while a collector that only tails rollout files receives accumulated/replayed `TokenCount` observations and must not describe them as exact per-response records. **[fact + inference]**
 
 ### 2.2 Claude Code CLI — transcript files
 
 Claude Code stores session transcripts as JSONL files under `~/.claude/projects/*/*.jsonl`. The costs doc references these files directly: *"session transcripts, the top-level `~/.claude/projects/*/*.jsonl` files"*. **[fact: costs doc]**
 
-Each JSONL line is a message object. The `/usage` command output format reveals the usage parts available per model:
+The `/usage` command documentation shows the aggregate usage parts available per model. The following is a synthetic rendering of that documented shape, not a captured usage log:
 
 ```text
 claude-sonnet-4-6: 1.2k input, 5.3k output, 940.0k cache read, 50.0k cache write
@@ -58,9 +62,7 @@ claude-sonnet-4-6: 1.2k input, 5.3k output, 940.0k cache read, 50.0k cache write
 
 This maps to the Anthropic Messages API usage object fields: `input_tokens`, `output_tokens`, `cache_creation_input_tokens` (cache write), `cache_read_input_tokens` (cache read). **[fact: costs doc + Anthropic API convention]**
 
-Each assistant message carries the model string that served the request, and a session ID. **[fact: monitoring doc — standard attributes include `session.id` and `model`]**
-
-Claude Code does not record first-token timing, inter-token timing, or per-model-call wall-clock boundaries in its transcript JSONL files. **[inference: the transcript format contains message content and cumulative usage, with no documented timing fields beyond message timestamps]**
+The public documentation says the transcript entry format is internal to Claude Code and changes between versions. It documents `message.uuid` as a join key from OTel events, but it does not publish a stable per-entry schema for model identity, token fields, call boundaries, or timing. Those local fields therefore remain **unverified**, not P0 facts, until the sanitized-fixture prototype validates a versioned parser. **[fact + inference: monitoring doc]**
 
 Transcripts are cleaned up after `cleanupPeriodDays` (default 30). **[fact: costs doc]**
 
@@ -95,6 +97,7 @@ Configured via environment variables:
 | Variable | Values | Source |
 |----------|--------|--------|
 | `CLAUDE_CODE_ENABLE_TELEMETRY` | `1` (required to enable) | monitoring doc **[fact]** |
+| `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | `1` (also required for traces) | monitoring doc **[fact]** |
 | `OTEL_METRICS_EXPORTER` | `otlp` / `prometheus` / `console` / `none` | monitoring doc **[fact]** |
 | `OTEL_LOGS_EXPORTER` | `otlp` / `console` / `none` | monitoring doc **[fact]** |
 | `OTEL_TRACES_EXPORTER` | beta; same OTLP options implied | monitoring doc **[fact]** |
@@ -107,7 +110,7 @@ Metrics emitted:
 
 | Metric | Attributes | Source |
 |--------|-----------|--------|
-| `claude_code.token.usage` | `type` (input/output), `model`, `session.id`, `skill.name`, `plugin.name`, `agent.name` | monitoring doc **[fact]** |
+| `claude_code.token.usage` | `type` (input/output/cacheRead/cacheCreation), `model`, `session.id`, `skill.name`, `plugin.name`, `agent.name` | monitoring doc **[fact]** |
 | `claude_code.cost.usage` | `model`, `session.id`, etc. | monitoring doc **[fact]** |
 | `claude_code.session.count` | `session.id`, etc. | monitoring doc **[fact]** |
 | `claude_code.lines_of_code.count` | `model` (from v2.1.172) | monitoring doc **[fact]** |
@@ -116,7 +119,7 @@ Events emitted: `user_prompt`, `assistant_response`, `tool_result`, `tool_decisi
 
 Key dedup guarantee: *"Claude Code counts each streaming response toward the cost and token metrics exactly once, including when a gateway or proxy streams usage progressively across multiple frames."* (Fixed in v2.1.214.) **[fact]**
 
-Traces (beta) provide distributed spans. The monitoring doc states traces are a "separate data path" from metrics and events. **[fact]**
+The `claude_code.llm_request` trace span (beta) documents request `duration_ms`, `ttft_ms`, all four token parts, model, request identifiers, and retry count. The `claude_code.api_request` event documents duration, all four token parts, model, and request identifiers, but not TTFT. **[fact]**
 
 ---
 
@@ -133,22 +136,22 @@ Traces (beta) provide distributed spans. The monitoring doc states traces are a 
 
 ### Matrix
 
-| Metric | Codex local rollout | Codex OTel | Claude local JSONL | Claude OTel (metrics) | Claude OTel (traces, beta) |
-|--------|--------------------|-----------|--------------------|-----------------------|---------------------------|
-| **Output throughput** | measured (per-response `output_tokens`) | measured | measured (per-message `output_tokens`) | measured | measured |
-| **Decode TPS** | estimated (output_tokens / (turn_end − turn_start), includes tool-wait time) | measured (if per-chunk timing available via trace) | unavailable (no per-call timing) | estimated (output_tokens / request duration if `api_request` events carry timestamps) | measured (span durations) |
-| **Token burn/min** | measured (input + cached + cache_write + output + reasoning) | measured | measured (input + output + cache_read + cache_write) | measured | measured |
-| **TTFT** | estimated (turn start to first output item timestamp, if item timestamps exist) | measured (PR #30883: per-request TTFT telemetry) | unavailable | unavailable (no TTFT metric documented) | unverified (trace spans may carry timestamps; not confirmed) |
-| **E2E latency** | estimated (turn start to turn completion timestamps) | measured (request completion telemetry) | unavailable (no per-call wall-clock in JSONL) | estimated (if `api_request` event timestamps available) | measured (span start to end) |
-| **Calls/min** | measured (count distinct response items or turn items) | measured | measured (count assistant messages) | measured | measured |
+| Metric | Codex local rollout | Codex OTel | Claude local JSONL | Claude OTel metrics | Claude OTel event/trace |
+|--------|--------------------|-----------|--------------------|-----------------------|--------------------------|
+| **Output throughput** | derived from measured aggregate `output_tokens` | derived from measured per-response output | unverified pending versioned transcript fixture | derived from measured token counter | derived from measured request output |
+| **Decode TPS** | unavailable per model call | unverified: public OTel fields do not establish a stable co-key for duration, TTFT, output, and response identity | unavailable | unavailable (no timing) | derived from measured co-keyed fields in the beta `llm_request` span; unavailable from events alone |
+| **Token burn/min** | derived with partial coverage: cache-write disjointness is unverified | derived with partial coverage for the same reason | unverified pending versioned transcript fixture | derived from measured disjoint `type` values | derived from four measured disjoint request token fields |
+| **TTFT** | measured at turn level where persisted `time_to_first_token_ms` is present; unavailable per model call | measured per request (`ttft_ms`) | unavailable | unavailable | measured per request (`ttft_ms`) |
+| **E2E latency** | measured at turn level where persisted `duration_ms` is present | measured per request | unavailable | unavailable | measured per request (`duration_ms`); trace also exposes turn interaction duration |
+| **Calls/min** | unavailable (exact raw completion events are not persisted) | unavailable from documented OTel alone; measured live app-server completions can support it | unverified pending versioned transcript fixture | unavailable from token metrics alone | derived by counting distinct request identities in events/traces |
 
 Quality classification rationale:
 
-- **Codex local**: usage parts are exact per-response. Timing is limited to turn-level boundaries, not per-API-call decode intervals. A turn may contain multiple model calls and tool waits, so dividing output tokens by turn duration overestimates TTFT and underestimates true decode rate. **[inference]**
-- **Codex OTel**: PR #30883 explicitly adds per-request TTFT telemetry, making TTFT measured. Decode TPS requires subtracting TTFT from total duration and dividing by output count; the formula version must be stated. **[inference]**
-- **Claude local**: usage parts are exact per-message. No timing beyond message-level timestamps. Token burn is measured; throughput is measured; anything requiring TTFT or decode-interval timing is unavailable or estimated. **[inference]**
-- **Claude OTel metrics**: `claude_code.token.usage` carries `type` (input/output) and `model`, but the monitoring doc does not document a TTFT metric. `api_request` events exist but their timestamp precision for TTFT is unverified. **[fact + inference]**
-- **Claude OTel traces**: traces provide spans with durations. Whether spans distinguish first-token from completion is not documented. **[unverified]**
+- **Codex local**: persisted `TokenCount` observations can support aggregate output and token windows, but the exact per-response completion event is transient. Turn timing must not be relabelled as model-call timing. **[fact + inference]**
+- **Codex OTel**: per-request TTFT telemetry exists, but the cited public event fields do not establish a stable join to duration, output count, and response identity. Do not claim Decode TPS or Calls/min from OTel until that correlation is verified. **[fact + inference]**
+- **Claude local**: public docs intentionally treat the transcript schema as internal and version-specific. P0 field availability stays unverified until sanitized fixtures establish a version gate. **[fact]**
+- **Claude OTel metrics**: token usage has disjoint `type` values, but metrics alone have no request timing. Calls/min requires an exporter representation that preserves request-sized points; an aggregated counter without request identities is insufficient for dedup. **[fact + inference]**
+- **Claude OTel events/traces**: both document request duration, token parts, and identifiers; TTFT is documented only on the beta `llm_request` span. These are measured request observations when their respective channels are enabled. **[fact]**
 
 ---
 
@@ -156,7 +159,7 @@ Quality classification rationale:
 
 ### 5.1 Codex (Responses API usage object)
 
-Fields documented from the Bedrock cookbook example and changelog PRs:
+Fields documented from the Responses API schema and Codex public source:
 
 | Field | Meaning | Subset of? |
 |-------|---------|-----------|
@@ -165,23 +168,23 @@ Fields documented from the Bedrock cookbook example and changelog PRs:
 | `output_tokens` | Total output tokens generated | — |
 | `reasoning_output_tokens` | Output tokens consumed by reasoning | subset of `output_tokens` |
 | `total_tokens` | input_tokens + output_tokens | sum of the two |
-| `cache_write_tokens` | Input tokens written to cache (PR #33500) | relationship to `input_tokens` unverified |
+| `cache_write_input_tokens` | Input tokens written to cache (PR #33500) | relationship to `input_tokens` unverified |
 
 Normalization for disjoint burn:
 
 ```text
 input_uncached = input_tokens − cached_input_tokens
 cache_read     = cached_input_tokens
-cache_write    = cache_write_tokens          [unverified: may overlap with input_tokens]
+cache_write    = unavailable as a disjoint part until its overlap is verified
 output_visible = output_tokens − reasoning_output_tokens
 reasoning      = reasoning_output_tokens
 ```
 
-Critical caveat: `cached_input_tokens` is a subset of `input_tokens`, not additive. Adding them would double-count. `cache_write_tokens` was added in v0.144+ and its subset relationship to `input_tokens` is not documented. **[inference: cached tokens are standard subsets in the Responses API]**
+Critical caveat: `cached_input_tokens` and `reasoning_output_tokens` are subsets; adding either to its parent double-counts. `cache_write_input_tokens` was added in v0.145.0 and its relationship to `input_tokens` is not documented, so a disjoint total that includes it is unavailable until verified. **[fact + inference]**
 
 ### 5.2 Claude Code (Anthropic Messages API usage object)
 
-Fields from the `/usage` output and monitoring doc:
+Fields from the Claude OTel monitoring doc:
 
 | Field | Meaning | Subset of? |
 |-------|---------|-----------|
@@ -196,8 +199,8 @@ Normalization for disjoint burn:
 input_uncached = input_tokens                 [Anthropic API: input_tokens excludes cached]
 cache_read     = cache_read_input_tokens
 cache_write    = cache_creation_input_tokens
-output_visible = output_tokens − thinking_tokens   [thinking_tokens not separately reported in usage]
-reasoning      = thinking_tokens (billed as output but not separately broken out in standard usage)
+output_visible = unavailable as a separate part
+reasoning      = unavailable as a separate part
 ```
 
 Critical difference from OpenAI: Anthropic's `cache_creation_input_tokens` and `cache_read_input_tokens` are disjoint from `input_tokens`, not subsets. The `input_tokens` field counts only uncached input. Adding them directly is correct for total burn. **[fact: Anthropic billing model — cache tokens are billed and counted separately from uncached input]**
@@ -208,7 +211,7 @@ Thinking/reasoning tokens: Anthropic bills extended thinking as output tokens, a
 
 Claude Code guarantees single counting per streaming response (v2.1.214+). Before that version, multi-frame streams could inflate counts. **[fact]**
 
-Codex rollout files are append-only JSONL; each response item appears once. The risk is repeated cumulative usage across multi-line API responses. **[inference: same pattern as Kaboo's observed Claude JSONL dedup challenge]**
+Codex rollout files persist accumulated `TokenCount` events rather than exact raw completions. A local parser therefore needs cumulative-delta and replay handling; it cannot count content items as model calls. **[fact + inference]**
 
 ---
 
@@ -216,36 +219,37 @@ Codex rollout files are append-only JSONL; each response item appears once. The 
 
 ### Principle
 
-For each (source, capability) pair, exactly one channel is authoritative. If a higher-fidelity channel becomes available, it replaces the lower-fidelity channel's values — it does not add to them.
+For each fully qualified `(source, capability, granularity)` tuple, exactly one channel is authoritative. A higher-fidelity channel replaces a lower-fidelity observation only when identity and granularity match; otherwise the differently defined observations coexist and are never summed as equivalents.
 
 ### Codex authority table
 
 | Capability | Authority (default) | Authority (enhanced) | Rule |
 |-----------|--------------------|-----------------------|------|
-| Token counts | Local rollout | — | Rollout is the only channel; usage is per-response exact |
-| TTFT | Local rollout (estimated) | OTel trace/metrics (measured, PR #30883) | If OTel TTFT present, replaces rollout estimate |
-| Decode TPS | Rollout (estimated) | OTel (measured) | If OTel timing present, replaces rollout estimate |
-| Model identity | Rollout response `model` | — | Single source |
+| Token counts | Local rollout `TokenCount` (aggregate) | Live app-server raw completion (per response) | Select one whole observation granularity; never add response parts to the rollout aggregate |
+| TTFT | Local rollout turn timing | OTel TTFT (per request) | Turn TTFT is not a fallback for request TTFT; both may coexist as differently defined capabilities |
+| Decode TPS | unavailable | unavailable until OTel/live fields have a verified common request identity | Requires co-keyed response duration, TTFT, output count, and identity |
+| Model identity | Rollout turn context/settings | OTel/live event attributes after correlation is verified | The authority must be selected with the same observation as usage/timing |
 | Session/turn identity | Rollout UUID7 | — | Single source |
 
 ### Claude authority table
 
 | Capability | Authority (default) | Authority (enhanced) | Rule |
 |-----------|--------------------|-----------------------|------|
-| Token counts | Local JSONL | OTel metrics | OTel `claude_code.token.usage` replaces JSONL if both present (OTel has dedup guarantee) |
-| TTFT | unavailable | OTel traces (unverified) | If trace span provides TTFT, it replaces the unavailable status |
-| Decode TPS | unavailable | OTel traces (unverified) | Same as TTFT |
-| Model identity | JSONL message `model` | OTel `model` attribute | Both carry the same value; JSONL is local authority |
-| Session identity | JSONL session path / ID | OTel `session.id` | JSONL file identity is primary; OTel session.id joins to it |
+| Token counts | Local JSONL (only after versioned fixture validation) | OTel `api_request` event or `llm_request` span | Select exactly one complete four-part request observation; do not splice parts from local and OTel channels |
+| TTFT | unavailable | OTel `llm_request.ttft_ms` span | Enhanced value is measured and request-scoped; `api_request` events do not include TTFT |
+| Decode TPS | unavailable | OTel `llm_request` span (derived from measured fields) | Requires co-keyed duration, TTFT, output count, and request identity |
+| Model identity | Local JSONL only after fixture validation | OTel `model` attribute | The authority follows the selected request observation |
+| Session/request identity | Local JSONL only after fixture validation | OTel `session.id` + `client_request_id`/`request_id` | Use request identity for dedup; session identity alone is insufficient |
 
 ### Fallback-replaces-not-adds
 
 When transitioning from local-only to OTel-enhanced:
 
-1. The enhanced channel's measured values replace the estimated values for the same time period.
-2. The two channels must never be summed for the same observation.
-3. The `MeasurementQuality` tag must change from `estimated` to `measured` for the replaced period.
-4. If the enhanced channel goes offline or stops producing data, the system falls back to the local channel and reverts quality to `estimated`.
+1. Authority is selected for a complete `(source, capability, observation identity, time range)`; replacement requires the same capability and granularity.
+2. A selected observation comes wholly from one channel. Never splice token parts across channels or sum local and enhanced observations for the same identity.
+3. When a measured enhanced observation replaces an estimate for the same identity, quality changes to `measured`; the superseded record remains non-contributing.
+4. If the enhanced channel stops, fallback applies only to new non-overlapping observations. It never retroactively re-adds local records already replaced.
+5. Coverage is `partial` when a fallback lacks a required disjoint part or per-call boundary; missing fields are `unavailable`, never zero.
 
 ---
 
@@ -253,16 +257,16 @@ When transitioning from local-only to OTel-enhanced:
 
 | Source | Channel | Timestamp precision | Export latency | Version gate |
 |--------|---------|--------------------|----------------|-------------|
-| Codex | Rollout JSONL | Turn-level start times (PR #32263); response item timestamps | Written at turn completion; near-real-time for append polling | v0.145.0+ for turn start times |
+| Codex | Rollout JSONL | Turn `started_at`, `completed_at`, `duration_ms`, and turn TTFT when present | Append timing is implementation-dependent; completion fields arrive at turn end | v0.145.0+ for documented turn timing |
 | Codex | OTel | Per-request TTFT (PR #30883) | Depends on exporter; OTLP gRPC/HTTP configurable | v0.143.0+ for TTFT telemetry |
-| Claude | Local JSONL | Message-level timestamps (wall-clock write time) | Real-time append | All versions |
+| Claude | Local JSONL | Internal, version-specific transcript schema | Append timing not a stable public contract | Requires versioned fixture validation |
 | Claude | OTel metrics | Aggregated per export interval (default 60s; configurable) | `OTEL_METRIC_EXPORT_INTERVAL` default 60000ms | All OTel-enabled versions |
 | Claude | OTel events | Per-event timestamps | `OTEL_LOGS_EXPORT_INTERVAL` default 5000ms | All OTel-enabled versions |
 | Claude | OTel traces | Span-level timestamps | Depends on exporter | Beta; version-gated |
 
 The default 60-second metrics export interval for Claude OTel means that live throughput (3-minute window) has up to 60 seconds of delay before the most recent data arrives. **[inference]**
 
-For Codex, rollout files are appended at turn boundaries, so within-turn decode activity is not visible until the turn completes. **[inference]**
+For Codex, persisted turn-completion timing does not expose model-call decode intervals. **[fact + inference]**
 
 ---
 
@@ -272,11 +276,12 @@ For Codex, rollout files are appended at turn boundaries, so within-turn decode 
 
 | Feature | Source | Minimum version | Evidence |
 |---------|--------|----------------|----------|
-| Codex cache-write tokens in response schema | Codex | v0.144.0 (PR #33500, #33454) | Changelog |
+| Codex cache-write tokens in response schema | Codex | v0.145.0 (PR #33500, #33454) | Changelog |
 | Codex per-request TTFT telemetry | Codex | v0.143.0 (PR #30883) | Changelog |
 | Codex turn start times in events | Codex | v0.145.0 (PR #32263) | Changelog |
 | Codex service tier + reasoning effort in OTel | Codex | v0.143.0 (PR #29155) | Changelog |
 | Claude streaming dedup for token/cost | Claude | v2.1.214 | Monitoring doc |
+| Claude request identifiers and documented transcript join key | Claude | v2.1.214 | Monitoring doc |
 | Claude `model` attribute on lines-of-code metric | Claude | v2.1.172 | Monitoring doc |
 | Claude assistant response logging | Claude | v2.1.193 | Monitoring doc |
 
@@ -286,14 +291,14 @@ For Codex, rollout files are appended at turn boundaries, so within-turn decode 
 |--------|--------|---------|--------|
 | Codex | `otel.log_user_prompt` | off | Controls raw prompt export via OTel |
 | Codex | `otel.trace_exporter` | `none` | Off by default; user must configure |
-| Codex | `otel.metrics_exporter` | `statsig` | On by default but sends to OpenAI internal, not user OTLP |
+| Codex | `otel.metrics_exporter` | `statsig` | Default metrics destination is not a user-configured OTLP endpoint |
 | Claude | `CLAUDE_CODE_ENABLE_TELEMETRY` | unset (off) | Required to enable any OTel |
 | Claude | `OTEL_LOG_USER_PROMPTS` | off | Controls prompt content in events |
 | Claude | `OTEL_LOG_ASSISTANT_RESPONSES` | off | Controls response text in events |
 | Claude | `OTEL_LOG_TOOL_DETAILS` | off | Controls tool params in events |
 | Claude | `OTEL_LOG_TOOL_CONTENT` | off | Controls tool I/O in trace spans |
 
-Neither source's local files (rollout/JSONL) contain a privacy switch — they are written unconditionally. Privacy is enforced by the collector reading only metadata, usage, timing, and identity fields. **[inference]**
+The collector must field-allowlist metadata, usage, timing, and opaque identities. It must not ingest content-bearing response items, prompts, tool inputs/outputs, paths, account attributes, or raw API bodies. **[inference: follows from the documented channel contents and repository privacy contract]**
 
 ---
 
@@ -303,11 +308,11 @@ Capabilities that cannot be provided without an enhanced (OTel) channel:
 
 | Metric | Codex local only | Claude local only |
 |--------|-----------------|-------------------|
-| **TTFT** | estimated (turn-level approximation) | unavailable |
-| **Decode TPS** | estimated (turn duration includes tool waits) | unavailable |
-| **E2E latency** | estimated (turn start to completion) | unavailable |
+| **TTFT** | measured only as turn TTFT, not model-call TTFT | unavailable |
+| **Decode TPS** | unavailable | unavailable |
+| **E2E latency** | measured at turn level where completion timing is present | unavailable |
 
-These must never be presented as `measured` without the enhanced channel. The UI must label them `estimated` or `unavailable` per the `MeasurementQuality` contract. **[inference: follows from CONTEXT.md quality definitions]**
+Turn-level values and request-level values are distinct metric definitions. Without the required enhanced request channel, per-call TTFT, Decode TPS, and request E2E must remain `unavailable`; do not substitute turn timing. **[inference: follows from CONTEXT.md quality definitions]**
 
 ---
 
@@ -316,18 +321,18 @@ These must never be presented as `measured` without the enhanced channel. The UI
 ### Codex
 
 - **Agent identity**: implicit — Codex is the sole agent writing rollout files under its home directory. No explicit agent string in the rollout. **[inference]**
-- **Model identity**: `model` field in each response item (source-reported string, e.g. `gpt-5.6-terra`). **[fact]**
+- **Model identity**: effective source-reported `model` in persisted turn context/settings. **[fact]**
 - **Session identity**: thread UUID7 + rollout file path. **[fact]**
 - **Turn identity**: turn UUID7 within a thread. **[fact]**
-- **Model call identity**: inferred from response items within a turn; each response item is one API call. **[inference]**
+- **Model call identity**: unavailable in rollout-only collection; content response items are not model-call boundaries. Exact live completions carry a response ID but are not persisted. **[fact + inference]**
 
 ### Claude Code
 
 - **Agent identity**: `service.name` = `claude-code` or `claude-code-desktop` in OTel. In local JSONL, implicit from the file location. **[fact: monitoring doc]**
-- **Model identity**: `model` field per assistant message and `model` attribute on OTel metrics. **[fact]**
-- **Session identity**: JSONL file path encodes project and session; OTel carries `session.id`. **[fact]**
-- **Turn identity**: not explicitly modeled in JSONL; a "turn" is a user message followed by assistant messages until the next user message. **[inference]**
-- **Model call identity**: each assistant message is one API call; but multiple API calls may happen within one assistant response if Claude Code retries or chains. **[inference]**
+- **Model identity**: documented on OTel metrics/events/spans; local transcript availability is version-specific and unverified here. **[fact]**
+- **Session identity**: OTel carries `session.id`; the transcript join key `message.uuid` is documented for v2.1.214+. **[fact]**
+- **Turn identity**: OTel `prompt.id` groups activity initiated by a prompt; local transcript turn reconstruction is version-specific. **[fact + inference]**
+- **Model call identity**: OTel request identifiers provide the stable enhanced boundary. The public docs do not promise that one transcript assistant entry equals one API call. **[fact + inference]**
 
 ---
 
@@ -337,11 +342,11 @@ These must never be presented as `measured` without the enhanced channel. The UI
 
 Synthetic fixtures should cover these scenarios, using only synthetic data (no real logs):
 
-1. **Codex single-response turn**: one turn with one response item containing all token parts. Verify disjoint normalization.
-2. **Codex multi-response turn**: one turn with two response items (e.g. tool call + continuation). Verify per-call identity.
-3. **Codex pre-v0.144 response**: response without `cache_write_tokens`. Verify graceful absence.
-4. **Claude single-message**: one assistant message with input/output/cache_read/cache_write.
-5. **Claude multi-message cumulative**: multiple assistant messages where usage may repeat or accumulate. Verify single-counting.
+1. **Codex accumulated local usage**: successive synthetic `TokenCount` events. Verify cumulative deltas and replay replacement without inventing per-call identity.
+2. **Codex live raw completion**: two synthetic `RawResponseCompleted` events in one turn. Verify response identity and prove they are a separate authority from rollout aggregates.
+3. **Codex pre-v0.145 response**: response without `cache_write_input_tokens`. Verify graceful absence.
+4. **Claude versioned local transcript**: synthetic entries matching each explicitly supported schema version. Verify only fields established by fixtures.
+5. **Claude repeated or cumulative local usage**: verify single-counting without assuming one assistant entry equals one call.
 6. **Claude pre-v2.1.214 stream**: simulated multi-frame usage. Verify dedup handles it.
 7. **Truncated JSONL**: incomplete last line. Verify tail handling.
 8. **Empty session**: no data. Verify zero/unavailable state.
@@ -351,16 +356,16 @@ Synthetic fixtures should cover these scenarios, using only synthetic data (no r
 The metric contract should encode:
 
 - Per-metric `definition_version` (to handle `output_tokens − 1` vs `output_tokens` for Decode TPS numerator).
-- Per-source `MeasurementQuality` default (Codex local = estimated for timing; Claude local = unavailable for timing).
-- The authority replacement rule: OTel measured values replace local estimated values for the same observation period.
+- Per-source and per-granularity `MeasurementQuality` defaults (Codex local turn timing is measured but per-call timing is unavailable; Claude local timing is unavailable).
+- The authority replacement rule: replacement requires the same capability, identity, granularity, and time range; otherwise both observations may coexist but cannot be aggregated as equivalents.
 - Token-part disjointness rules: Codex uses subset semantics (subtract cached from input); Claude uses additive semantics (cache tokens are separate from input).
 - `scope`, `source`, and `coverage` metadata on every observation.
 
 ### 11.3 Open questions for #5
 
-- Whether `cache_write_tokens` in Codex overlaps with `input_tokens` or is additive. **[unverified]**
-- Whether Claude OTel trace spans provide first-token timestamps for TTFT. **[unverified]**
-- Whether Claude `api_request` events carry timestamps precise enough for estimated E2E latency. **[unverified]**
+- Whether `cache_write_input_tokens` in Codex overlaps with `input_tokens` or is additive. Until resolved, the cache-write disjoint part and any total including it are unavailable/partial. **[unverified]**
+- Which Claude local transcript versions and fields the sanitized-fixture prototype can support. Public docs describe the schema as internal and version-specific. **[unverified]**
+- Whether the target Codex Desktop deployment exposes a user-consumable live app-server/OTel stream with stable request identity; rollout-only collection cannot recover exact call boundaries. **[unverified]**
 - The exact formula version for Decode TPS: `output_tokens / (response_end − first_token)` vs `output_tokens / decode_duration`. **[needs contract decision]**
 
 ---
@@ -370,11 +375,11 @@ The metric contract should encode:
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
 | Codex rollout schema changes across versions | Parser breaks on new fields | Version-gated parser; unknown-field tolerance; diagnostics |
-| Claude JSONL usage repeats across messages | Double counting | Identity-based dedup (message ID + cumulative delta detection) |
+| Claude JSONL usage repeats or changes shape across versions | Double counting or parser breakage | Version-gated sanitized fixtures; identity and cumulative-delta tests |
 | Token-part subset semantics differ between providers | Incorrect burn totals | Source-specific normalization in CanonicalIngestor |
 | OTel not enabled by default | Enhanced capabilities unavailable | Graceful degradation to estimated/unavailable |
-| OTel export interval delays live throughput | Stale live window | Document latency; use local channel for live when OTel is delayed |
-| Claude trace spans unverified for TTFT | Cannot claim measured Decode TPS | Verify with real OTel setup before marking measured |
+| OTel export interval delays live throughput | Stale live window | Document latency and show partial/stale state; do not splice a second channel into the same observation |
+| Local and OTel observations have different granularity | False replacement or cross-channel double count | Key authority by capability + identity + granularity + time range |
 
 ---
 
@@ -386,7 +391,7 @@ The metric contract should encode:
 {
   "input_tokens": 5000,
   "cached_input_tokens": 3000,
-  "cache_write_tokens": 800,
+  "cache_write_input_tokens": 800,
   "output_tokens": 1200,
   "reasoning_output_tokens": 400,
   "total_tokens": 6200,
@@ -399,7 +404,7 @@ Normalized disjoint parts (Codex):
 ```text
 input_uncached = 5000 − 3000 = 2000
 cache_read     = 3000
-cache_write    = 800          [unverified overlap]
+cache_write    = unavailable  [overlap with input_tokens unverified]
 output_visible = 1200 − 400 = 800
 reasoning      = 400
 ```
@@ -421,6 +426,6 @@ Normalized disjoint parts (Claude):
 input_uncached = 2000          [Anthropic: input_tokens excludes cached]
 cache_read     = 3000
 cache_write    = 800
-output_visible = 1200           [thinking not separately reported]
-reasoning      = 0              [not available in standard usage object]
+output_visible = unavailable    [thinking not separately reported]
+reasoning      = unavailable    [not separately reported]
 ```
