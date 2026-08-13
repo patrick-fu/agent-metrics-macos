@@ -297,6 +297,7 @@ For Codex, persisted turn-completion timing does not expose model-call decode in
 | Claude | `OTEL_LOG_ASSISTANT_RESPONSES` | off | Controls response text in events |
 | Claude | `OTEL_LOG_TOOL_DETAILS` | off | Controls tool params in events |
 | Claude | `OTEL_LOG_TOOL_CONTENT` | off | Controls tool I/O in trace spans |
+| Claude | `OTEL_LOG_RAW_API_BODIES` | off | `1` exports truncated full request/response bodies; `file:<dir>` writes untruncated bodies. Both can contain the complete conversation and tool results |
 
 The collector must field-allowlist metadata, usage, timing, and opaque identities. It must not ingest content-bearing response items, prompts, tool inputs/outputs, paths, account attributes, or raw API bodies. **[inference: follows from the documented channel contents and repository privacy contract]**
 
