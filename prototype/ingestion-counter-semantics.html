@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Prototype — ingestion counter semantics</title>
+<title>原型 — 增量采集与计数器语义</title>
 <style>
   :root{--ink:#172033;--muted:#5e6a7e;--line:#dce3ee;--wash:#f5f8fc;--accent:#1769aa;--ok:#13795b;--warn:#9a5b00;--bad:#aa3341}*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1420px;margin:auto;padding:28px}h1{font-size:27px;margin:0 0 5px}h2{font-size:15px;margin:0 0 10px}.intro{border-left:4px solid var(--accent);background:#fff;padding:14px 16px;margin:16px 0;color:#344156}.grid{display:grid;grid-template-columns:320px 1fr;gap:18px}.card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:15px;box-shadow:0 1px 2px #1720330b}.controls{position:sticky;top:12px;height:max-content}.buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px}.buttons button:first-child{grid-column:span 2}button{border:1px solid #b9c8da;background:#fff;border-radius:6px;padding:8px;text-align:left;color:#183654;cursor:pointer;font:inherit}button:hover,button.active{border-color:var(--accent);background:#edf6ff}.hint,.small{color:var(--muted);font-size:12px}.tabs{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0 12px}.tabs button{padding:6px 9px}.steps{display:flex;gap:8px;flex-wrap:wrap}.steps button{background:#f7fbff}.pipeline{display:grid;grid-template-columns:repeat(5,minmax(190px,1fr));gap:10px;overflow:auto}.stage{min-width:190px;background:#fbfcfe;border:1px solid var(--line);border-radius:7px;padding:10px}.stage h3{font-size:12px;color:var(--accent);margin:0 0 7px;text-transform:uppercase;letter-spacing:.04em}.mono{white-space:pre-wrap;word-break:break-word;font:11px/1.42 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0}.facts{margin-top:14px}.fact{border-top:1px solid var(--line);padding:9px 0}.fact:first-child{border-top:0}.badge{display:inline-block;border-radius:999px;padding:2px 7px;font-size:11px;background:#e7f5ee;color:var(--ok)}.warning{background:#fff3df;color:var(--warn)}.error{background:#ffe8eb;color:var(--bad)}details{margin-top:12px}summary{cursor:pointer;font-weight:600}table{border-collapse:collapse;width:100%;font-size:12px}td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}@media(max-width:900px){main{padding:14px}.grid{grid-template-columns:1fr}.controls{position:static}.pipeline{grid-template-columns:1fr}.stage{min-width:0}}
 </style>
 <body><main>
-  <h1>Ingestion counter semantics</h1>
-  <div class="intro"><strong>Throwaway, synthetic-only prototype.</strong> Question: can one reducer turn messy append-only usage logs into stable, quality-aware canonical facts without accidentally summing fallback sources, re-reading old records, or claiming identity we do not have? Decision under review: immutable idempotent facts with explicit supersession; cursor snapshots retain file identity, size, offset, pending tail, and cumulative watermarks. No real data is read.</div>
-  <div class="grid"><aside class="card controls"><h2>Free play</h2><p class="hint">Every click adds a synthetic scan event and shows the whole pipeline. “Cold scan” replays the same records without a cursor.</p><div id="free" class="buttons"></div><hr><h2>Guided walkthroughs</h2><div id="tabs" class="tabs"></div><div id="walk"></div><hr><button id="reset">Reset all state</button><p id="note" class="hint"></p></aside>
-  <section><div class="card"><h2>Pipeline for the latest action</h2><div id="pipeline" class="pipeline"></div></div><div class="card facts"><h2>Canonical Usage Facts</h2><div id="facts"></div><details><summary>Diagnostics and internal state</summary><div id="diagnostics"></div></details></div></section></div>
+  <h1>增量采集与计数器语义</h1>
+  <div class="intro"><strong>一次性、纯合成原型。</strong>问题：单个 reducer 能否把杂乱的追加式用量日志变成稳定、带测量质量标记的标准用量事实，且不会误加回退通道、重读旧记录或虚构我们并不拥有的身份？待定决策：不可变幂等事实，显式取代；游标快照保留文件身份、大小、偏移、待处理尾部与累计水位。不读取任何真实数据。</div>
+  <div class="grid"><aside class="card controls"><h2>自由演练</h2><p class="hint">每次点击都会生成一条合成扫描事件并展示整条流水线。“冷扫描”不带游标重放相同记录。</p><div id="free" class="buttons"></div><hr><h2>引导式演练</h2><div id="tabs" class="tabs"></div><div id="walk"></div><hr><button id="reset">重置全部状态</button><p id="note" class="hint"></p></aside>
+  <section><div class="card"><h2>最新操作的流水线</h2><div id="pipeline" class="pipeline"></div></div><div class="card facts"><h2>标准用量事实</h2><div id="facts"></div><details><summary>诊断与内部状态</summary><div id="diagnostics"></div></details></div></section></div>
 </main>
 <script>
 /* Pure logic module: reducer(state, action) => nextState. No DOM dependencies. */
@@ -48,53 +48,55 @@ function rebuildSource(s,rule){
  Object.keys(s.watermarks).filter(k=>k.startsWith(rule.source+'|')).forEach(k=>delete s.watermarks[k]);
  s.rebuilds.push({source:rule.source,file:rule.file||'all source files',reason:rule.reason});
  if(rule.parser)s.parserVersions[rule.source]=rule.parser;
- s.diagnostics.push('Source-scoped rebuild: '+rule.source+'; unrelated sources remain intact.');
+ s.diagnostics.push('按来源重建：'+rule.source+'；其他来源不受影响。');
 }
 function reducer(state,action){
  if(action.type==='RESET')return empty(); const s=Clone(state),raw=action.records||[],accepted=[],authority=[],normalized=[];
- if(action.failure){s.sourceStatus[action.failure.source]='failed';s.diagnostics.push('Independent source failure: '+action.failure.source+'; other sources continue.');}
+ if(action.failure){s.sourceStatus[action.failure.source]='failed';s.diagnostics.push('独立来源故障：'+action.failure.source+'；其他来源继续。');}
  if(action.rebuild)rebuildSource(s,action.rebuild);
  raw.forEach(r=>{
   s.sourceStatus[r.source]='ok'; s.files[r.fileId]={path:r.file,fileId:r.fileId,size:r.size,offset:r.complete?r.offset:(s.files[r.fileId]?.offset||0),pendingTail:r.complete?0:r.size-r.offset,archived:!!r.archived};
-  if(!r.complete){s.diagnostics.push('Incomplete tail buffered; cursor did not advance and no fact emitted: '+r.id);return;}
-  if(r.schema!=='known-v1'){s.diagnostics.push('Unknown schema quarantined; no fact emitted: '+r.schema);return;}
-  if(s.seen[r.id]){s.diagnostics.push('Duplicate observation skipped: '+r.id);return;}
+  if(!r.complete){s.diagnostics.push('不完整尾部已缓冲；游标未推进，未产出事实：'+r.id);return;}
+  if(r.schema!=='known-v1'){s.diagnostics.push('未知 schema 已隔离；未产出事实：'+r.schema);return;}
+  if(s.seen[r.id]){s.diagnostics.push('重复观测已跳过：'+r.id);return;}
   s.seen[r.id]={source:r.source,file:r.file};
-  if(r.identity==='unavailable')s.diagnostics.push('Call identity unavailable: retained only at session granularity; no call invented.');
+  if(r.identity==='unavailable')s.diagnostics.push('调用身份不可用：仅按会话粒度保留；不虚构调用。');
   let amount=r.value;
-  if(r.counter!=='delta'){const wk=watermarkKey(r),previous=s.watermarks[wk]||0;if(r.value<previous){s.diagnostics.push('Cumulative counter moved backward; requires scoped rebuild, never negative delta: '+r.id);return;}amount=r.value-previous;s.watermarks[wk]=r.value;}
+  if(r.counter!=='delta'){const wk=watermarkKey(r),previous=s.watermarks[wk]||0;if(r.value<previous){s.diagnostics.push('累计计数器回退；需按范围重建，绝不产生负增量：'+r.id);return;}amount=r.value-previous;s.watermarks[wk]=r.value;}
   const n=normalize(r,amount); normalized.push(n); accepted.push(r.id); authority.push({observationId:r.id,key:n.authorityKey,channel:r.channel,decision:'candidate'});
   const priority={local:1,enhanced:2},prior=s.facts.filter(f=>f.authorityKey===n.authorityKey&&f.contributing).sort((a,b)=>priority[b.channel]-priority[a.channel])[0];
-  if(prior&&priority[prior.channel]>priority[r.channel]){authority.at(-1).decision='fallback ignored: stronger authority already selected';return;}
-  if(prior&&priority[r.channel]>priority[prior.channel]){prior.contributing=false;prior.supersededBy=r.id;authority.at(-1).decision='replaces fallback; never adds';}
-  else authority.at(-1).decision='selected';
+  if(prior&&priority[prior.channel]>priority[r.channel]){authority.at(-1).decision='已忽略回退：已有更强权威';return;}
+  if(prior&&priority[r.channel]>priority[prior.channel]){prior.contributing=false;prior.supersededBy=r.id;authority.at(-1).decision='取代回退；不叠加';}
+  else authority.at(-1).decision='已选择';
   s.facts.push({...n,file:r.file,contributing:true,supersededBy:null});
  });
- if(action.coldScan){const before=action.expectedTotal,after=s.facts.filter(f=>f.contributing).reduce((n,f)=>n+f.amount,0);s.diagnostics.push('Cold scan equivalence: '+(before===after?'PASS':'FAIL')+' (append='+before+', cold='+after+').');}
- if(raw.some(r=>r.restart))s.diagnostics.push('Restart restored cursor/watermark snapshot; replay stayed idempotent.');
- if(raw.some(r=>r.archived))s.diagnostics.push('Archive path changed while stable file/session identity prevented double counting.');
- s.last={raw,authority,normalization:normalized,dedup:raw.map(r=>({id:r.id,decision:accepted.includes(r.id)?'accepted or authority-replaced':s.seen[r.id]?'duplicate: skipped':'buffered/quarantined'})),facts:s.facts};return s;
+ if(action.coldScan){const before=action.expectedTotal,after=s.facts.filter(f=>f.contributing).reduce((n,f)=>n+f.amount,0);s.diagnostics.push('冷扫描等价性：'+(before===after?'通过':'失败')+'（追加='+before+'，冷扫='+after+'）。');}
+ if(raw.some(r=>r.restart))s.diagnostics.push('重启已恢复游标/水位快照；重放保持幂等。');
+ if(raw.some(r=>r.archived))s.diagnostics.push('归档路径发生变化，稳定的文件/会话身份避免了重复计数。');
+ s.last={raw,authority,normalization:normalized,dedup:raw.map(r=>({id:r.id,decision:accepted.includes(r.id)?'已接受或已被权威取代':s.seen[r.id]?'重复：已跳过':'已缓冲/已隔离'})),facts:s.facts};return s;
 }
 // Thin UI below: dispatch only calls reducer and renders its returned state.
-let state=empty(),active='basics';const label={delta:'Append two delta observations',messageTotal:'Message cumulative totals',sessionTotal:'Session cumulative totals',openaiSubset:'OpenAI subset normalization',claudeCaches:'Claude disjoint cache parts',fallback:'Fallback then enhanced authority',append:'Append scan',cold:'Cold scan equivalence',incomplete:'Incomplete tail then complete',duplicate:'Repeated cumulative usage',truncate:'Truncate / replace rebuild',archiveRestart:'Archive and restart',unknown:'Unknown schema',identityUnknown:'Unknown call identity',sourceFailure:'One source fails',semver:'Parser semantic-version rebuild',quality:'Quality separation'};
+let state=empty(),active='basics';const label={delta:'追加两条 delta 观测',messageTotal:'消息累计总量',sessionTotal:'会话累计总量',openaiSubset:'OpenAI 子集归一化',claudeCaches:'Claude 不重叠缓存分项',fallback:'先回退后增强权威',append:'追加扫描',cold:'冷扫描等价性',incomplete:'不完整尾部后补全',duplicate:'重复累计用量',truncate:'截断/替换重建',archiveRestart:'归档与重启',unknown:'未知结构',identityUnknown:'未知调用身份',sourceFailure:'单个来源故障',semver:'解析器语义化版本重建',quality:'质量分离'};
 const scenarios=[
- {id:'basics',name:'Counter shapes',text:'Delta adds. Message/session totals publish only the positive change from their persisted watermark.',steps:['delta','messageTotal','sessionTotal']},
- {id:'authorities',name:'Authority & caches',text:'OpenAI subset fields are subtracted; Claude cache parts are additive. Enhanced authority explicitly supersedes matching fallback.',steps:['openaiSubset','claudeCaches','fallback']},
- {id:'scanning',name:'Append & tails',text:'Append and cold scan converge. An incomplete tail advances no cursor and emits nothing until complete.',steps:['append','cold','incomplete']},
- {id:'boundaries',name:'Replay boundaries',text:'Repeated cumulative observations, truncate/replace, archive, and restart cannot inflate contributing facts.',steps:['duplicate','truncate','archiveRestart']},
- {id:'uncertainty',name:'Uncertainty',text:'Unknown schemas and identities remain explicit; one source failure does not block another.',steps:['unknown','identityUnknown','sourceFailure']},
- {id:'evolution',name:'Evolution & quality',text:'Parser changes rebuild only one source. Measured, derived, and estimated facts stay separately labelled.',steps:['semver','quality']}
+ {id:'basics',name:'计数器形态',text:'delta 累加；message/session total 只发布相对已持久化水位的正向变化。',steps:['delta','messageTotal','sessionTotal']},
+ {id:'authorities',name:'权威与缓存',text:'OpenAI 子集字段做减法；Claude 缓存分项相加。增强通道显式取代匹配的回退。',steps:['openaiSubset','claudeCaches','fallback']},
+ {id:'scanning',name:'追加与尾部',text:'追加与冷扫描收敛；不完整尾部不推进游标，也不产出事实，直到补全。',steps:['append','cold','incomplete']},
+ {id:'boundaries',name:'重放边界',text:'重复累计观测、截断/替换、归档与重启都不会虚增计入事实。',steps:['duplicate','truncate','archiveRestart']},
+ {id:'uncertainty',name:'不确定性',text:'未知 schema 与身份保持显式；单个来源故障不会阻塞其他来源。',steps:['unknown','identityUnknown','sourceFailure']},
+ {id:'evolution',name:'演进与质量',text:'解析器变更只重建一个来源；实测、派生与估算事实保持分别标注。',steps:['semver','quality']}
 ];
-function pretty(x){return JSON.stringify(x,null,2)}
+const valueLabel={idle:'空闲',ok:'正常',failed:'失败',local:'本地',enhanced:'增强',measured:'实测',derived:'派生',estimated:'估算',call:'调用',session:'会话',complete:'完整',partial:'部分',candidate:'候选','unavailable':'不可用','unavailable (overlap unverified)':'不可用（重叠未核验）'};
+function pretty(x){return JSON.stringify(x,(_,value)=>typeof value==='string'?(valueLabel[value]||value):value,2)}
 function contributingTotal(s){return s.facts.filter(f=>f.contributing).reduce((n,f)=>n+f.amount,0)}
-function dispatch(name){let action;if(name==='cold'){const appendState=reducer(empty(),{type:'INGEST',...fixtures.append()});action={type:'INGEST',...fixtures.append(),coldScan:true,expectedTotal:contributingTotal(appendState)};state=empty();}else{const fixture=fixtures[name]();if(fixture.preRecords)state=reducer(state,{type:'INGEST',records:fixture.preRecords});action={type:'INGEST',...fixture};}state=reducer(state,action);document.querySelector('#note').textContent='Latest action: '+label[name]+'.';render()}
+const qualityLabel={measured:'实测',derived:'派生',estimated:'估算'},granularityLabel={call:'调用',session:'会话'},coverageLabel={complete:'完整',partial:'部分'},channelLabel={local:'本地',enhanced:'增强'};
+function dispatch(name){let action;if(name==='cold'){const appendState=reducer(empty(),{type:'INGEST',...fixtures.append()});action={type:'INGEST',...fixtures.append(),coldScan:true,expectedTotal:contributingTotal(appendState)};state=empty();}else{const fixture=fixtures[name]();if(fixture.preRecords)state=reducer(state,{type:'INGEST',records:fixture.preRecords});action={type:'INGEST',...fixture};}state=reducer(state,action);document.querySelector('#note').textContent='最新操作：'+label[name]+'。';render()}
 function render(){
- document.querySelector('#free').innerHTML='<button data-reset="1">Reset all state</button>'+Object.entries(label).map(([k,v])=>'<button data-action="'+k+'">'+v+'</button>').join('');
- document.querySelector('#tabs').innerHTML=scenarios.map(x=>'<button class="'+(x.id===active?'active':'')+'" data-tab="'+x.id+'">'+x.name+'</button>').join('');const sc=scenarios.find(x=>x.id===active);document.querySelector('#walk').innerHTML='<p class="hint">'+sc.text+'</p><div class="steps"><button data-start="'+sc.id+'">Start walkthrough (reset)</button>'+sc.steps.map((x,i)=>'<button data-step="'+x+'">'+(i+1)+'. '+label[x]+'</button>').join('')+'</div>';
- const l=state.last,stages=[['Raw observations',l.raw],['Authority selection',l.authority],['Counter normalization',l.normalization],['Dedup / cursor',{files:state.files,decisions:l.dedup,watermarks:state.watermarks}],['Canonical Usage Facts',l.facts]];document.querySelector('#pipeline').innerHTML=stages.map(([title,data])=>'<div class="stage"><h3>'+title+'</h3><pre class="mono">'+escapeHtml(pretty(data))+'</pre></div>').join('');
- document.querySelector('#facts').innerHTML=state.facts.length?state.facts.map(f=>'<div class="fact"><span class="badge '+(f.quality==='measured'?'':f.quality==='estimated'?'warning':'')+'">'+f.quality+'</span> <strong>'+f.source+' / '+f.identity+' / '+f.granularity+'</strong> <span class="badge '+(f.contributing?'':'error')+'">'+(f.contributing?'contributing':'superseded')+'</span><br><span class="small">delta='+f.amount+' · coverage='+f.coverage+' · channel='+f.channel+' · parts='+escapeHtml(pretty(f.parts))+'</span></div>').join(''):'<p class="hint">No canonical facts yet.</p>';
- document.querySelector('#diagnostics').innerHTML='<table><tr><th>Contributing total</th><td>'+contributingTotal(state)+'</td></tr><tr><th>Cursors</th><td><pre class="mono">'+escapeHtml(pretty(state.files))+'</pre></td></tr><tr><th>Watermarks</th><td><pre class="mono">'+escapeHtml(pretty(state.watermarks))+'</pre></td></tr><tr><th>Sources</th><td>'+escapeHtml(pretty(state.sourceStatus))+'</td></tr><tr><th>Source-scoped rebuilds</th><td>'+escapeHtml(pretty(state.rebuilds))+'</td></tr><tr><th>Notes</th><td>'+escapeHtml(state.diagnostics.length?state.diagnostics.join('\n'):'None')+'</td></tr></table>';
+ document.querySelector('#free').innerHTML='<button data-reset="1">重置全部状态</button>'+Object.entries(label).map(([k,v])=>'<button data-action="'+k+'">'+v+'</button>').join('');
+ document.querySelector('#tabs').innerHTML=scenarios.map(x=>'<button class="'+(x.id===active?'active':'')+'" data-tab="'+x.id+'">'+x.name+'</button>').join('');const sc=scenarios.find(x=>x.id===active);document.querySelector('#walk').innerHTML='<p class="hint">'+sc.text+'</p><div class="steps"><button data-start="'+sc.id+'">开始演练（重置）</button>'+sc.steps.map((x,i)=>'<button data-step="'+x+'">'+(i+1)+'. '+label[x]+'</button>').join('')+'</div>';
+ const l=state.last,stages=[['原始观测',l.raw],['权威选择',l.authority],['计数器归一化',l.normalization],['去重 / 游标',{files:state.files,decisions:l.dedup,watermarks:state.watermarks}],['标准用量事实',l.facts]];document.querySelector('#pipeline').innerHTML=stages.map(([title,data])=>'<div class="stage"><h3>'+title+'</h3><pre class="mono">'+escapeHtml(pretty(data))+'</pre></div>').join('');
+ document.querySelector('#facts').innerHTML=state.facts.length?state.facts.map(f=>'<div class="fact"><span class="badge '+(f.quality==='measured'?'':f.quality==='estimated'?'warning':'')+'">'+(qualityLabel[f.quality]||f.quality)+'</span> <strong>'+f.source+' / '+f.identity+' / '+(granularityLabel[f.granularity]||f.granularity)+'</strong> <span class="badge '+(f.contributing?'':'error')+'">'+(f.contributing?'计入':'已取代')+'</span><br><span class="small">增量='+f.amount+' · 覆盖='+(coverageLabel[f.coverage]||f.coverage)+' · 通道='+(channelLabel[f.channel]||f.channel)+' · 分项='+escapeHtml(pretty(f.parts))+'</span></div>').join(''):'<p class="hint">暂无规范事实。</p>';
+ document.querySelector('#diagnostics').innerHTML='<table><tr><th>计入总量</th><td>'+contributingTotal(state)+'</td></tr><tr><th>游标</th><td><pre class="mono">'+escapeHtml(pretty(state.files))+'</pre></td></tr><tr><th>水位</th><td><pre class="mono">'+escapeHtml(pretty(state.watermarks))+'</pre></td></tr><tr><th>来源</th><td>'+escapeHtml(pretty(state.sourceStatus))+'</td></tr><tr><th>按来源重建</th><td>'+escapeHtml(pretty(state.rebuilds))+'</td></tr><tr><th>备注</th><td>'+escapeHtml(state.diagnostics.length?state.diagnostics.join('\n'):'无')+'</td></tr></table>';
 }
 function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.action)dispatch(b.dataset.action);if(b.dataset.reset||b.id==='reset'){state=empty();document.querySelector('#note').textContent='State reset.';render()}if(b.dataset.tab){active=b.dataset.tab;render()}if(b.dataset.start){state=empty();active=b.dataset.start;document.querySelector('#note').textContent='Walkthrough reset. Press the numbered steps.';render()}if(b.dataset.step)dispatch(b.dataset.step)});render();
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.action)dispatch(b.dataset.action);if(b.dataset.reset||b.id==='reset'){state=empty();document.querySelector('#note').textContent='状态已重置。';render()}if(b.dataset.tab){active=b.dataset.tab;render()}if(b.dataset.start){state=empty();active=b.dataset.start;document.querySelector('#note').textContent='演练已重置，请点击编号步骤。';render()}if(b.dataset.step)dispatch(b.dataset.step)});render();
 </script></body></html>
