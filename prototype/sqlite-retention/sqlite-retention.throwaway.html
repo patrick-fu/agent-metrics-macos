@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQLite 持久保留策略临时原型</title>
+  <style>
+    :root{
+      color-scheme:light;
+      --bg:#ece7df; --panel:#fffdf8; --ink:#1c1914; --muted:#6b645b; --line:#d8d0c4;
+      --accent:#8a3d1b; --accent2:#f3ddd0; --good:#1f5d46; --warn:#8a5b00; --bad:#9b3232;
+      font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);min-height:100vh;padding:20px 16px 48px}
+    button,select{font:inherit;color:inherit}
+    button:focus-visible,select:focus-visible{outline:3px solid #2e78d2;outline-offset:2px}
+    .wrap{max-width:1080px;margin:0 auto}
+    .intro,.panel{background:var(--panel);border:1px solid #cfc6b8;border-radius:8px;padding:14px 16px;margin-bottom:14px}
+    .intro h1{margin:0 0 6px;font-size:20px}
+    .intro p{margin:0 0 8px;color:var(--muted)}
+    .mark{display:inline-block;border:1px dashed var(--warn);color:var(--warn);padding:2px 6px;border-radius:4px;font-size:10px;font-weight:800}
+    .grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+    h2{margin:0 0 8px;font-size:14px}
+    .state{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+    .kv{border:1px solid var(--line);border-radius:6px;padding:8px}
+    .kv b{display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+    .kv strong{display:block;margin-top:3px;font-size:15px}
+    .kv.good{border-left:3px solid var(--good)}
+    .kv.warn{border-left:3px solid var(--warn)}
+    .kv.bad{border-left:3px solid var(--bad)}
+    .controls,.walk{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+    .controls button,.walk button,.tabs button{
+      border:1px solid var(--line);background:#f7f3ec;border-radius:6px;padding:6px 9px;cursor:pointer
+    }
+    .controls button[aria-pressed=true],.tabs button[aria-selected=true],.walk button[aria-current=true]{
+      border-color:var(--accent);background:var(--accent2);color:var(--accent);font-weight:700
+    }
+    .changed{background:#fff4d6}
+    .note{font-size:11px;color:var(--muted)}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{border:1px solid var(--line);padding:6px 7px;text-align:left;vertical-align:top}
+    .tabs{display:flex;gap:6px;margin-bottom:8px}
+    pre{white-space:pre-wrap;font:11px/1.4 ui-monospace,SFMono-Regular,monospace;margin:0}
+    @media (max-width:860px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="intro">
+      <span class="mark">临时原型 · 仅合成数据 · 可丢弃</span>
+      <h1>持久 SQLite 该留多少 Usage Facts？</h1>
+      <p>20k 是热查询工作集，不是数据库保留策略。源日志消失不等于库应删除。精确 Decode TPS 分位数需要原始样本；rollup 不能重算。</p>
+      <p class="note">本页只推动保留策略状态机。字节与查询区间来自本地 Node/SQLite harness，不是 AppKit 数字，也不是 fleet SLO。</p>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>当前状态</h2>
+        <div id="state" class="state"></div>
+        <p id="delta" class="note"></p>
+      </section>
+      <section class="panel">
+        <h2>自由操作</h2>
+        <div class="controls">
+          <button data-action="strategy-A" aria-pressed="true">策略 A 原始/容量</button>
+          <button data-action="strategy-B">策略 B 90 天+rollup</button>
+          <button data-action="strategy-C">策略 C 7 天+总量</button>
+          <button data-action="log-gone">源日志消失</button>
+          <button data-action="fill-capacity">填到容量上限</button>
+          <button data-action="evict">按删除顺序腾出空间</button>
+          <button data-action="query-7d">查询 7 天精确分位数</button>
+          <button data-action="query-all">查询 All 精确分位数</button>
+          <button data-action="reset">Reset Data</button>
+        </div>
+        <p class="note">每个按钮都会改状态。看左侧字段和“刚变化”提示。</p>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>引导走查</h2>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="log">源日志消失</button>
+        <button role="tab" data-tab="cap">容量上限</button>
+        <button role="tab" data-tab="reset">Reset Data</button>
+        <button role="tab" data-tab="quantile">All 对 7 天分位数</button>
+      </div>
+      <div id="walk"></div>
+    </section>
+
+    <section class="panel">
+      <h2>本地测量对照</h2>
+      <p class="note" id="machine"></p>
+      <div id="measures"></div>
+    </section>
+  </div>
+  <script src="results/hitl-snapshot.js"></script>
+  <script>
+    const HOT = 20000;
+    const SCENARIOS = {
+      log: {
+        title: "源日志后来消失",
+        blurb: "Claude Code 默认 cleanupPeriodDays=30。日志没了，不代表历史 Usage Facts 该删。",
+        steps: [
+          { label: "保持策略 A", action: "strategy-A" },
+          { label: "让源日志消失", action: "log-gone" },
+          { label: "再查 7 天分位数", action: "query-7d" }
+        ]
+      },
+      cap: {
+        title: "容量到上限",
+        blurb: "上限是存储压力阀，不是 20k 工作集。默认先丢 superseded，再丢最旧 contributing。",
+        steps: [
+          { label: "切到策略 A", action: "strategy-A" },
+          { label: "填满容量", action: "fill-capacity" },
+          { label: "按顺序腾出空间", action: "evict" }
+        ]
+      },
+      reset: {
+        title: "Reset Data",
+        blurb: "Reset Data 是用户明确清空，不是日志消失，也不是滚动保留。",
+        steps: [
+          { label: "先让日志消失", action: "log-gone" },
+          { label: "执行 Reset Data", action: "reset" }
+        ]
+      },
+      quantile: {
+        title: "All 对 7 天精确分位数",
+        blurb: "精确 p50/p95 只能扫原始样本。B/C 的更早数据只剩总量，All 精确分位数不可用。",
+        steps: [
+          { label: "策略 B：90 天原始", action: "strategy-B" },
+          { label: "查 7 天", action: "query-7d" },
+          { label: "查 All", action: "query-all" },
+          { label: "策略 C：只留 7 天", action: "strategy-C" },
+          { label: "再查 All", action: "query-all" }
+        ]
+      }
+    };
+
+    function initialState() {
+      return {
+        strategy: "A",
+        rawFacts: 100000,
+        rollupDays: 0,
+        logPresent: { "src-codex": true, "src-claude": true },
+        dataState: { "src-codex": "present", "src-claude": "present" },
+        coverageLive: "complete",
+        capacity: 250000,
+        used: 100000,
+        atCapacity: false,
+        lastEvicted: "无",
+        lastQuery: "尚未查询",
+        exactQuantile7d: "可用",
+        exactQuantileAll: "可用",
+        resetAt: "未重置",
+        wiped: false,
+        lastChange: "初始：策略 A，原始 Facts 全部可查。"
+      };
+    }
+
+    function applyStrategy(state, strategy) {
+      const next = { ...state, strategy, lastEvicted: "无" };
+      if (next.wiped) {
+        next.rawFacts = 0;
+        next.rollupDays = 0;
+        next.used = 0;
+        next.atCapacity = false;
+        next.exactQuantile7d = "不可用";
+        next.exactQuantileAll = "不可用";
+        next.lastChange = "策略已切换，但 Reset Data 后还没有新的 Usage Facts。";
+        return next;
+      }
+      if (strategy === "A") {
+        next.rawFacts = Math.max(next.used, 100000);
+        next.rollupDays = 0;
+        next.exactQuantile7d = next.rawFacts ? "可用" : "不可用";
+        next.exactQuantileAll = next.rawFacts ? "可用" : "不可用";
+        next.lastChange = "策略 A：无限或按容量保留原始 Usage Facts。All 精确分位数可用，直到触顶删除。";
+      } else if (strategy === "B") {
+        next.rawFacts = 62000;
+        next.rollupDays = 310;
+        next.used = next.rawFacts + 3600;
+        next.exactQuantile7d = "可用";
+        next.exactQuantileAll = "不可用（90 天外只有 rollup）";
+        next.lastChange = "策略 B：90 天原始 + 更早按日 rollup。rollup 不能重算精确分位数。";
+      } else {
+        next.rawFacts = 18000;
+        next.rollupDays = 393;
+        next.used = next.rawFacts + 3600;
+        next.exactQuantile7d = "可用";
+        next.exactQuantileAll = "不可用（7 天外只有总量）";
+        next.lastChange = "策略 C：只为 P0 7 天性能窗保留原始样本。All 只能看总量。";
+      }
+      next.atCapacity = next.used >= next.capacity;
+      return next;
+    }
+
+    function reduce(state, action) {
+      if (action === "strategy-A") return applyStrategy(state, "A");
+      if (action === "strategy-B") return applyStrategy(state, "B");
+      if (action === "strategy-C") return applyStrategy(state, "C");
+      if (action === "log-gone") {
+        return {
+          ...state,
+          logPresent: { ...state.logPresent, "src-claude": false },
+          dataState: { ...state.dataState, "src-claude": "stale" },
+          coverageLive: "partial",
+          lastChange: "源日志消失：source_health.log_present=0，历史 Facts 仍在。实时窗变成 partial/stale，不是删除信号。"
+        };
+      }
+      if (action === "fill-capacity") {
+        return {
+          ...state,
+          strategy: "A",
+          used: state.capacity,
+          rawFacts: state.capacity,
+          atCapacity: true,
+          exactQuantileAll: "可用，但下一笔写入必须先删",
+          lastChange: "容量到上限。20k 工作集未变。下一笔写入要按删除顺序腾空间。"
+        };
+      }
+      if (action === "evict") {
+        if (!state.atCapacity && state.used < state.capacity) {
+          return { ...state, lastChange: "还未到容量上限，不必删。" };
+        }
+        return {
+          ...state,
+          used: Math.max(0, state.used - 15000),
+          rawFacts: Math.max(0, state.rawFacts - 15000),
+          atCapacity: false,
+          lastEvicted: "先 superseded，再最旧 contributing；不是消失的源日志",
+          lastChange: "删除顺序：superseded → 最旧 contributing。源日志消失不参与这条队列。"
+        };
+      }
+      if (action === "query-7d") {
+        const available = state.rawFacts > 0;
+        return {
+          ...state,
+          lastQuery: available ? "7 天 Output Throughput / Token Burn / Calls / Decode TPS p50 p95" : "无原始样本",
+          exactQuantile7d: available ? "可用" : "不可用",
+          lastChange: available
+            ? "7 天精确分位数扫描原始样本。这仍小于等于热查询工作集要加载的窗口。"
+            : "没有原始样本，7 天精确分位数不可用。"
+        };
+      }
+      if (action === "query-all") {
+        const ok = state.strategy === "A" && state.rawFacts > 0;
+        return {
+          ...state,
+          lastQuery: ok ? "All 精确分位数：扫全部原始样本" : "All 精确分位数不可用",
+          exactQuantileAll: ok ? "可用" : "不可用（缺更早的原始样本）",
+          lastChange: ok
+            ? "策略 A 下 All 可以做精确分位数，代价是全量扫原始样本，不是扫 20k 工作集。"
+            : "B/C 的 All 只能用 rollup 总量。精确 p50/p95 无法从日汇总恢复。"
+        };
+      }
+      if (action === "reset") {
+        return {
+          ...state,
+          rawFacts: 0,
+          rollupDays: 0,
+          used: 0,
+          atCapacity: false,
+          lastEvicted: "无",
+          lastQuery: "尚未查询",
+          exactQuantile7d: "不可用",
+          exactQuantileAll: "不可用",
+          resetAt: "已清空 Facts / rollups / cursors",
+          wiped: true,
+          lastChange: "Reset Data：用户明确清空持久层。源日志是否还在不影响这次删除。"
+        };
+      }
+      return state;
+    }
+
+    let state = initialState();
+    let prev = null;
+    let tab = "log";
+    let step = 0;
+
+    function fmtRange(range) {
+      if (!range || range.min == null) return "n/a";
+      const a = Number(range.min);
+      const b = Number(range.max);
+      const show = (x) => Number.isInteger(x) ? String(x) : x.toFixed(x >= 100 ? 1 : 2);
+      return a === b ? show(a) : show(a) + "–" + show(b);
+    }
+
+    function renderState() {
+      const fields = [
+        ["策略", state.strategy, ""],
+        ["原始 Usage Facts", String(state.rawFacts), ""],
+        ["rollup 天数", String(state.rollupDays), ""],
+        ["热查询工作集", String(HOT), ""],
+        ["Claude 源日志", state.logPresent["src-claude"] ? "在" : "消失", state.logPresent["src-claude"] ? "good" : "warn"],
+        ["Claude Data State", state.dataState["src-claude"], state.logPresent["src-claude"] ? "good" : "warn"],
+        ["实时窗 Coverage", state.coverageLive, state.coverageLive === "complete" ? "good" : "warn"],
+        ["容量", state.used + " / " + state.capacity, state.atCapacity ? "bad" : ""],
+        ["7 天精确分位数", state.exactQuantile7d, state.exactQuantile7d === "可用" ? "good" : "warn"],
+        ["All 精确分位数", state.exactQuantileAll, state.exactQuantileAll === "可用" ? "good" : "bad"],
+        ["上次删除", state.lastEvicted, ""],
+        ["Reset Data", state.resetAt, ""]
+      ];
+      const root = document.getElementById("state");
+      root.innerHTML = fields.map(([k, v, cls]) => {
+        const changed = prev && String(prev[k]) !== String(v);
+        return `<div class="kv ${cls} ${changed ? "changed" : ""}"><b>${k}</b><strong>${v}</strong></div>`;
+      }).join("");
+      document.getElementById("delta").textContent = state.lastChange;
+      document.querySelectorAll("[data-action^='strategy-']").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.dataset.action === "strategy-" + state.strategy ? "true" : "false");
+      });
+    }
+
+    function renderWalk() {
+      const scenario = SCENARIOS[tab];
+      const buttons = scenario.steps.map((item, index) => {
+        const current = index === step ? "true" : "false";
+        return `<button data-step="${index}" aria-current="${current}">${index + 1}. ${item.label}</button>`;
+      }).join("");
+      document.getElementById("walk").innerHTML =
+        `<p>${scenario.blurb}</p><div class="walk">${buttons}</div><p class="note">点按序号会重置到该走查的起点，然后执行到这一步。</p>`;
+    }
+
+    function scaleRow(scale) {
+      const all = scale.queries.All;
+      const week = scale.queries["7d"];
+      const strategies = (scale.strategies || []).map((item) => {
+        const allHistory = item.rawKeepMs == null ? "All历史精确=是" : "All历史精确=否";
+        const remain = item.allRawDecodeSamples ? ("剩余原始样本=" + item.allRawDecodeSamples) : "";
+        return `${item.label}: ${item.sizes.dbBytes} B, ${allHistory}, 7d精确=${item.weekExactQuantile ? "是" : "否"} ${remain}`;
+      }).join("<br>");
+      return `<tr>
+        <td>${scale.n}</td>
+        <td>${scale.runsCompleted}</td>
+        <td>${fmtRange(scale.sizes.bytesPerFact)}</td>
+        <td>${fmtRange(all.ms)}</td>
+        <td>${fmtRange(week.ms)}</td>
+        <td>${fmtRange(scale.ops.vacuumMs)}</td>
+        <td>${fmtRange(scale.ops.backupMs)}</td>
+        <td>${scale.logDisappear ? ("默认保留 " + scale.logDisappear.keptAfterLogGone + " / " + scale.logDisappear.before) : "n/a"}</td>
+        <td>${strategies || "n/a"}</td>
+      </tr>`;
+    }
+
+    function renderMeasures() {
+      const results = window.HARNESS_RESULTS;
+      const box = document.getElementById("measures");
+      const machine = document.getElementById("machine");
+      if (!results) {
+        machine.textContent = "未加载 results/hitl-snapshot.js。请先运行 node harness.mjs。";
+        box.innerHTML = "";
+        return;
+      }
+      machine.textContent = (results.machine && results.machine.label ? results.machine.label : "Apple silicon developer Mac")
+        + " · " + (results.machine && results.machine.sqliteUsed ? results.machine.sqliteUsed : "")
+        + " · Node " + (results.machine && results.machine.node ? results.machine.node : "")
+        + "。单机局部测量，不是 fleet SLO。";
+      const rows = (results.scales || []).map(scaleRow).join("");
+      box.innerHTML = `<table>
+        <thead><tr><th>Facts</th><th>Runs</th><th>bytes/fact</th><th>All ms</th><th>7d ms</th><th>VACUUM ms</th><th>backup ms</th><th>日志消失</th><th>策略快照</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function dispatch(action, fromWalk) {
+      prev = {
+        策略: state.strategy,
+        "原始 Usage Facts": String(state.rawFacts),
+        "rollup 天数": String(state.rollupDays),
+        "热查询工作集": String(HOT),
+        "Claude 源日志": state.logPresent["src-claude"] ? "在" : "消失",
+        "Claude Data State": state.dataState["src-claude"],
+        "实时窗 Coverage": state.coverageLive,
+        容量: state.used + " / " + state.capacity,
+        "7 天精确分位数": state.exactQuantile7d,
+        "All 精确分位数": state.exactQuantileAll,
+        "上次删除": state.lastEvicted,
+        "Reset Data": state.resetAt
+      };
+      state = reduce(state, action);
+      if (!fromWalk) step = 0;
+      renderState();
+      renderWalk();
+    }
+
+    document.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", () => dispatch(btn.dataset.action, false));
+    });
+    document.querySelectorAll("[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tab = btn.dataset.tab;
+        step = 0;
+        state = initialState();
+        prev = null;
+        document.querySelectorAll("[data-tab]").forEach((other) => other.setAttribute("aria-selected", other === btn ? "true" : "false"));
+        renderState();
+        renderWalk();
+      });
+    });
+    document.getElementById("walk").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-step]");
+      if (!btn) return;
+      const target = Number(btn.dataset.step);
+      state = initialState();
+      prev = null;
+      const scenario = SCENARIOS[tab];
+      for (let i = 0; i <= target; i += 1) state = reduce(state, scenario.steps[i].action);
+      step = target;
+      renderState();
+      renderWalk();
+    });
+
+    renderState();
+    renderWalk();
+    renderMeasures();
+  </script>
+</body>
+</html>
