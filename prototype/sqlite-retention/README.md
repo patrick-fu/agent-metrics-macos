@@ -33,6 +33,7 @@ The first command writes `results/benchmark-results.md`, `results/benchmark-resu
 - Checkpoint, delete, incremental_vacuum, VACUUM, backup, source-scoped rebuild, and a minimal migration
 - Source logs that later disappear: historical facts stay unless Reset Data or an explicit delete policy runs
 - Capacity ceiling: bytes or rows, superseded then 90d compact, then oldest rollup, then 7-90d raw, then pause rather than delete the 7d window
+- 90d compaction is repeat-safe: upsert/merge only buckets with new raw, never wipe existing rollups
 - Reset Data wipes all App-owned telemetry and never touches source logs or user-saved external exports
 - Three mutually exclusive retention candidates in `CANDIDATES.md`
 

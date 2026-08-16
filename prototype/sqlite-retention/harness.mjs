@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runPolicyAssertions } from "./policy.mjs";
+import { compactOlderThan as compactOlderRaw, runPolicyAssertions } from "./policy.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tmpDir = join(here, "tmp");
@@ -577,37 +577,6 @@ function rollupTotals(db) {
     .get();
 }
 
-function buildRollups(db, olderThanMs) {
-  db.exec("DELETE FROM fact_rollups");
-  db.prepare(
-    `INSERT INTO fact_rollups (
-        source, agent, model_display, window_start, window_end, granularity,
-        tokens_input_uncached, tokens_cache_read, tokens_cache_write,
-        tokens_output_visible, tokens_reasoning, tokens_output_total,
-        call_count, fact_count, coverage, quality, contributing
-      )
-      SELECT
-        source, agent, model_display,
-        (observed_at / ?) * ?,
-        (observed_at / ?) * ? + ?,
-        'day',
-        SUM(tokens_input_uncached),
-        SUM(tokens_cache_read),
-        SUM(tokens_cache_write),
-        SUM(tokens_output_visible),
-        SUM(tokens_reasoning),
-        SUM(tokens_output_total),
-        COUNT(DISTINCT model_call_id),
-        COUNT(*),
-        CASE WHEN SUM(CASE WHEN coverage = 'partial' THEN 1 ELSE 0 END) > 0 THEN 'partial' ELSE 'complete' END,
-        'derived',
-        1
-      FROM usage_facts
-      WHERE contributing = 1 AND observed_at < ?
-      GROUP BY source, agent, model_display, (observed_at / ?)`,
-  ).run(DAY, DAY, DAY, DAY, DAY, NOW_MS - olderThanMs, DAY);
-}
-
 function sourceScopedRebuild(db, n) {
   const source = "src-codex";
   const before = db.prepare("SELECT COUNT(*) AS n FROM usage_facts WHERE source = ?").get(source).n;
@@ -670,15 +639,7 @@ function compactOlderThan(db, rawKeepMs) {
   const cutoff = NOW_MS - rawKeepMs;
   const beforeAll = contributingTotals(db);
   const beforeOld = contributingTotals(db, "AND observed_at < ?", [cutoff]);
-  db.exec("BEGIN");
-  try {
-    buildRollups(db, rawKeepMs);
-    db.prepare("DELETE FROM usage_facts WHERE observed_at < ?").run(cutoff);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  compactOlderRaw(db, NOW_MS, rawKeepMs);
   const afterRaw = contributingTotals(db);
   const rollup = rollupTotals(db);
   const combinedFacts = Number(afterRaw.facts || 0) + Number(rollup.facts || 0);

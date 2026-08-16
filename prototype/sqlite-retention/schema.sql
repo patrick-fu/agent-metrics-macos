@@ -98,6 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_facts_authority
   ON usage_facts (authority_key);
 CREATE INDEX IF NOT EXISTS idx_rollups_window
   ON fact_rollups (window_start, window_end, agent, model_display);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rollups_bucket
+  ON fact_rollups (source, agent, model_display, window_start, granularity);
 
 CREATE TABLE IF NOT EXISTS usage_observations (
   observation_id INTEGER PRIMARY KEY,

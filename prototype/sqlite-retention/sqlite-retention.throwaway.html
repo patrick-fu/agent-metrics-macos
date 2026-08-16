@@ -110,7 +110,7 @@
       },
       cap: {
         title: "容量硬顶裁剪",
-        blurb: "警告/硬顶按 bytes 或 rows 任一先到触发。顺序：superseded → 大于 90 天 raw 原子 compact → 最旧 rollup 并标记 partial → 7 到 90 天 raw。7 天保护窗本身超限则暂停写入。",
+        blurb: "警告/硬顶按 bytes 或 rows 任一先到触发。顺序：superseded → 大于 90 天 raw 按日 upsert compact（不删已有 rollup）→ 最旧 rollup 并标记 partial → 7 到 90 天 raw。7 天保护窗本身超限则暂停写入。",
         steps: [
           { label: "rows 先到警告", action: "fill-warn-rows" },
           { label: "bytes 先到硬顶", action: "fill-hard-bytes" },

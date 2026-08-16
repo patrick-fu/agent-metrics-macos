@@ -133,4 +133,4 @@ Result key: `PASS`/`FAIL` = correctness assertion. `MEASURED` = ungated local ti
 
 ## Post-hoc P0 policy assertions
 
-The 10k/100k/1m size and query ranges above were not rerun. Capacity-ladder and expanded Reset Data checks live in `p0-policy-assertions.md`. They are logic assertions added after those measurements.
+The 10k/100k/1m size and query ranges above were not rerun. Capacity-ladder, Reset Data, and repeat-safe 90d compaction checks live in `p0-policy-assertions.md`. They are post-hoc logic assertions and do not replace those measurements.

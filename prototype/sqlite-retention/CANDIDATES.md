@@ -63,7 +63,7 @@ Candidate numbers: warn at 750 MiB **or** 1.5 million logical facts; hard ceilin
 When the hard ceiling is hit, the only legal order is:
 
 1. Delete superseded / non-contributing raw facts.
-2. Atomically compact raw facts older than 90 days into daily rollups.
+2. Atomically compact raw facts older than 90 days into daily rollups. Compaction upserts/merges only buckets that have contributing raw this time, keyed by day/source/agent/model. It never deletes existing rollups first. A second run with no new raw is a no-op and must not change rollup fact_count or any mutually exclusive token total.
 3. If still over, delete the oldest rollup windows. Record `retention_pruned_before`, the retained range, and set historical Coverage to **partial**.
 4. If still over, delete the oldest raw facts in the 7–90 day band. Never delete the <=7 day protected raw window.
 5. If that protected 7-day window itself exceeds the ceiling, **pause ingest** and emit `CAPACITY_PROTECTED_WINDOW`. Do not silently delete 7-day raw.

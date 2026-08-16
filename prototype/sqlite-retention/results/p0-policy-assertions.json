@@ -220,6 +220,168 @@
       "suggested": "CAPACITY_PROTECTED_WINDOW and 7d raw remains"
     },
     {
+      "name": "second compact with no new raw is a no-op",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "firstCompact": {
+          "cutoff": 1779192000000,
+          "pendingRaw": 5,
+          "consumed": 5,
+          "buckets": 5,
+          "noop": false
+        },
+        "secondCompact": {
+          "cutoff": 1779192000000,
+          "pendingRaw": 0,
+          "consumed": 0,
+          "buckets": 0,
+          "noop": true
+        },
+        "leftoverOldRaw": 0
+      },
+      "suggested": "noop and 5 contributing raw consumed once"
+    },
+    {
+      "name": "second compact leaves rollup fact_count and token parts unchanged",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "afterFirst": {
+          "fact_count": 5,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 100,
+          "buckets": 5
+        },
+        "afterSecond": {
+          "fact_count": 5,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 100,
+          "buckets": 5
+        }
+      },
+      "suggested": "identical rollup token signature"
+    },
+    {
+      "name": "failed compact rolls back raw and rollup",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "failed": true,
+        "beforeFail": {
+          "rollup": {
+            "fact_count": 5,
+            "tokens_input_uncached": null,
+            "tokens_cache_read": null,
+            "tokens_cache_write": null,
+            "tokens_output_visible": null,
+            "tokens_reasoning": null,
+            "tokens_output_total": 100,
+            "buckets": 5
+          },
+          "facts": 15
+        },
+        "afterFail": {
+          "rollup": {
+            "fact_count": 5,
+            "tokens_input_uncached": null,
+            "tokens_cache_read": null,
+            "tokens_cache_write": null,
+            "tokens_output_visible": null,
+            "tokens_reasoning": null,
+            "tokens_output_total": 100,
+            "buckets": 5
+          },
+          "facts": 16
+        }
+      },
+      "suggested": "ROLLBACK restores both sides"
+    },
+    {
+      "name": "same-bucket new raw is consumed and increases rollup once",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "thirdCompact": {
+          "cutoff": 1779192000000,
+          "pendingRaw": 1,
+          "consumed": 1,
+          "buckets": 1,
+          "noop": false
+        },
+        "afterInjectedConsumed": {
+          "fact_count": 6,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 101,
+          "buckets": 5
+        },
+        "afterThird": {
+          "fact_count": 7,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 108,
+          "buckets": 5
+        },
+        "rawAfterThird": 0
+      },
+      "suggested": "fact_count +1 and output_total +7, other parts unchanged"
+    },
+    {
+      "name": "third no-new-raw compact still leaves rollup totals unchanged",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "fourthCompact": {
+          "cutoff": 1779192000000,
+          "pendingRaw": 0,
+          "consumed": 0,
+          "buckets": 0,
+          "noop": true
+        },
+        "afterThird": {
+          "fact_count": 7,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 108,
+          "buckets": 5
+        },
+        "afterFourth": {
+          "fact_count": 7,
+          "tokens_input_uncached": null,
+          "tokens_cache_read": null,
+          "tokens_cache_write": null,
+          "tokens_output_visible": null,
+          "tokens_reasoning": null,
+          "tokens_output_total": 108,
+          "buckets": 5
+        }
+      },
+      "suggested": "identical after third empty compact"
+    },
+    {
       "name": "Reset Data wipes App-owned telemetry stores",
       "kind": "assertion",
       "status": "PASS",

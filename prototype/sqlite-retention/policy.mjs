@@ -99,12 +99,37 @@ export function earliestRetainedAt(db) {
   return times.length ? Math.min(...times) : null;
 }
 
-function compactOlderThan(db, now, olderThanMs) {
+const MERGE_NULLABLE = (column) =>
+  `CASE WHEN fact_rollups.${column} IS NULL AND excluded.${column} IS NULL THEN NULL ELSE COALESCE(fact_rollups.${column}, 0) + COALESCE(excluded.${column}, 0) END`;
+
+export function rollupTokenSignature(db) {
+  return db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(fact_count), 0) AS fact_count,
+         SUM(tokens_input_uncached) AS tokens_input_uncached,
+         SUM(tokens_cache_read) AS tokens_cache_read,
+         SUM(tokens_cache_write) AS tokens_cache_write,
+         SUM(tokens_output_visible) AS tokens_output_visible,
+         SUM(tokens_reasoning) AS tokens_reasoning,
+         SUM(tokens_output_total) AS tokens_output_total,
+         COUNT(*) AS buckets
+       FROM fact_rollups`,
+    )
+    .get();
+}
+
+export function compactOlderThan(db, now, olderThanMs, options = {}) {
   const cutoff = now - olderThanMs;
+  const pendingRaw = db
+    .prepare("SELECT COUNT(*) AS n FROM usage_facts WHERE contributing = 1 AND observed_at < ?")
+    .get(cutoff).n;
+  if (!pendingRaw) {
+    return { cutoff, pendingRaw: 0, consumed: 0, buckets: 0, noop: true };
+  }
   db.exec("BEGIN");
   try {
-    db.prepare("DELETE FROM fact_rollups WHERE window_end <= ?").run(cutoff);
-    db.prepare(
+    const inserted = db.prepare(
       `INSERT INTO fact_rollups (
           source, agent, model_display, window_start, window_end, granularity,
           tokens_input_uncached, tokens_cache_read, tokens_cache_write,
@@ -129,10 +154,27 @@ function compactOlderThan(db, now, olderThanMs) {
           1
         FROM usage_facts
         WHERE contributing = 1 AND observed_at < ?
-        GROUP BY source, agent, model_display, (observed_at / ?)`,
+        GROUP BY source, agent, model_display, (observed_at / ?)
+        ON CONFLICT(source, agent, model_display, window_start, granularity) DO UPDATE SET
+          tokens_input_uncached = ${MERGE_NULLABLE("tokens_input_uncached")},
+          tokens_cache_read = ${MERGE_NULLABLE("tokens_cache_read")},
+          tokens_cache_write = ${MERGE_NULLABLE("tokens_cache_write")},
+          tokens_output_visible = ${MERGE_NULLABLE("tokens_output_visible")},
+          tokens_reasoning = ${MERGE_NULLABLE("tokens_reasoning")},
+          tokens_output_total = ${MERGE_NULLABLE("tokens_output_total")},
+          call_count = COALESCE(fact_rollups.call_count, 0) + COALESCE(excluded.call_count, 0),
+          fact_count = COALESCE(fact_rollups.fact_count, 0) + COALESCE(excluded.fact_count, 0),
+          coverage = CASE WHEN fact_rollups.coverage = 'partial' OR excluded.coverage = 'partial' THEN 'partial' ELSE 'complete' END,
+          window_end = excluded.window_end,
+          quality = 'derived',
+          contributing = 1`,
     ).run(DAY, DAY, DAY, DAY, DAY, cutoff, DAY);
-    db.prepare("DELETE FROM usage_facts WHERE observed_at < ?").run(cutoff);
+    const consumed = db.prepare(
+      "DELETE FROM usage_facts WHERE contributing = 1 AND observed_at < ?",
+    ).run(cutoff).changes;
+    if (options.injectFailure) throw new Error(String(options.injectFailure));
     db.exec("COMMIT");
+    return { cutoff, pendingRaw, consumed, buckets: inserted.changes, noop: false };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
@@ -481,6 +523,102 @@ export function runPolicyAssertions(assert, { schemaPath, now = Date.UTC(2026, 7
       && pause.steps.at(-1)?.action === "pause-ingest",
     { ingestPaused: pause.ingestPaused, diagnosticCode: pause.diagnosticCode, protectedAfterPause },
     "CAPACITY_PROTECTED_WINDOW and 7d raw remains",
+  );
+
+  seedPolicyFixture(db, now);
+  const firstCompact = compactOlderThan(db, now, COMPACT_AFTER_MS);
+  const afterFirst = rollupTokenSignature(db);
+  const leftoverOldRaw = db.prepare(
+    "SELECT COUNT(*) AS n FROM usage_facts WHERE contributing = 1 AND observed_at < ?",
+  ).get(now - COMPACT_AFTER_MS).n;
+  const secondCompact = compactOlderThan(db, now, COMPACT_AFTER_MS);
+  const afterSecond = rollupTokenSignature(db);
+  assert(
+    "second compact with no new raw is a no-op",
+    secondCompact.noop && leftoverOldRaw === 0 && firstCompact.consumed === 5,
+    { firstCompact, secondCompact, leftoverOldRaw },
+    "noop and 5 contributing raw consumed once",
+  );
+  assert(
+    "second compact leaves rollup fact_count and token parts unchanged",
+    JSON.stringify(afterFirst) === JSON.stringify(afterSecond),
+    { afterFirst, afterSecond },
+    "identical rollup token signature",
+  );
+
+  const beforeFail = {
+    rollup: rollupTokenSignature(db),
+    facts: db.prepare("SELECT COUNT(*) AS n FROM usage_facts").get().n,
+  };
+  insertFact(db, {
+    source: "src-codex",
+    agent: "Codex",
+    session: "sess-01",
+    turn: "fail-inject",
+    call: "call-fail-inject",
+    observedAt: now - 100 * DAY,
+    contributing: 1,
+    supersededBy: null,
+    output: 1,
+  });
+  let failed = false;
+  try {
+    compactOlderThan(db, now, COMPACT_AFTER_MS, { injectFailure: "injected compact failure" });
+  } catch (error) {
+    failed = error.message === "injected compact failure";
+  }
+  const afterFail = {
+    rollup: rollupTokenSignature(db),
+    facts: db.prepare("SELECT COUNT(*) AS n FROM usage_facts").get().n,
+  };
+  assert(
+    "failed compact rolls back raw and rollup",
+    failed
+      && afterFail.facts === beforeFail.facts + 1
+      && JSON.stringify(afterFail.rollup) === JSON.stringify(beforeFail.rollup),
+    { failed, beforeFail, afterFail },
+    "ROLLBACK restores both sides",
+  );
+
+  compactOlderThan(db, now, COMPACT_AFTER_MS);
+  const afterInjectedConsumed = rollupTokenSignature(db);
+  insertFact(db, {
+    source: "src-codex",
+    agent: "Codex",
+    session: "sess-01",
+    turn: "same-bucket-new",
+    call: "call-same-bucket-new",
+    observedAt: now - 100 * DAY,
+    contributing: 1,
+    supersededBy: null,
+    output: 7,
+  });
+  const thirdCompact = compactOlderThan(db, now, COMPACT_AFTER_MS);
+  const afterThird = rollupTokenSignature(db);
+  const rawAfterThird = db.prepare(
+    "SELECT COUNT(*) AS n FROM usage_facts WHERE contributing = 1 AND observed_at < ?",
+  ).get(now - COMPACT_AFTER_MS).n;
+  assert(
+    "same-bucket new raw is consumed and increases rollup once",
+    thirdCompact.consumed === 1
+      && rawAfterThird === 0
+      && afterThird.fact_count === afterInjectedConsumed.fact_count + 1
+      && afterThird.tokens_output_total === afterInjectedConsumed.tokens_output_total + 7
+      && afterThird.tokens_input_uncached === afterInjectedConsumed.tokens_input_uncached
+      && afterThird.tokens_cache_read === afterInjectedConsumed.tokens_cache_read
+      && afterThird.tokens_cache_write === afterInjectedConsumed.tokens_cache_write
+      && afterThird.tokens_output_visible === afterInjectedConsumed.tokens_output_visible
+      && afterThird.tokens_reasoning === afterInjectedConsumed.tokens_reasoning,
+    { thirdCompact, afterInjectedConsumed, afterThird, rawAfterThird },
+    "fact_count +1 and output_total +7, other parts unchanged",
+  );
+  const fourthCompact = compactOlderThan(db, now, COMPACT_AFTER_MS);
+  const afterFourth = rollupTokenSignature(db);
+  assert(
+    "third no-new-raw compact still leaves rollup totals unchanged",
+    fourthCompact.noop && JSON.stringify(afterFourth) === JSON.stringify(afterThird),
+    { fourthCompact, afterThird, afterFourth },
+    "identical after third empty compact",
   );
 
   seedPolicyFixture(db, now);
