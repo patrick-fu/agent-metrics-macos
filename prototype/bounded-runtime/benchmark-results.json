@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-08-16T21:38:47.178Z",
-  "disclaimer": "Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise.",
+  "generatedAt": "2026-08-16T21:43:05.730Z",
+  "disclaimer": "Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise. PASS is only for correctness assertions. Candidate gates are MEET or MISS. Ungated timings are MEASURED.",
   "privacy": {
     "fixtures": "synthetic-only",
     "scannedFor": [
@@ -47,24 +47,33 @@
   "results": [
     {
       "name": "decode TPS v1 formula",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 60,
-      "suggested": "(output_total - 1) / (duration - TTFT) = 60",
-      "ok": true
+      "suggested": "(output_total - 1) / (duration - TTFT) = 60"
     },
     {
       "name": "decode TPS unavailable without call identity",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "unavailable",
-      "suggested": "unavailable",
-      "ok": true
+      "suggested": "unavailable"
     },
     {
       "name": "decode TPS excludes retries",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "unavailable",
-      "suggested": "unavailable",
-      "ok": true
+      "suggested": "unavailable"
     },
     {
       "name": "Top4 + Other tie-breaks alphabetically",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": [
         "Nova Large",
         "Orion 2",
@@ -78,24 +87,30 @@
         "Sage Mini",
         "Atlas Code",
         "其他 · 2"
-      ],
-      "ok": true
+      ]
     },
     {
       "name": "fixed 3-minute output throughput window",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 10,
       "suggested": 10,
-      "ok": true,
       "note": "tokens / 180s, never a 30s visual placeholder"
     },
     {
       "name": "detail query hidden by default",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "popover-hidden",
-      "suggested": "popover-hidden",
-      "ok": true
+      "suggested": "popover-hidden"
     },
     {
       "name": "quality cohorts are not pooled",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": {
         "quality": "derived",
         "value": 5
@@ -103,35 +118,45 @@
       "suggested": {
         "quality": "derived",
         "value": 5
-      },
-      "ok": true
+      }
     },
     {
       "name": "orthogonal Agent AND Model filters",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 2,
-      "suggested": 2,
-      "ok": true
+      "suggested": 2
     },
     {
       "name": "stale window older than 30s",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "stale",
-      "suggested": "stale",
-      "ok": true
+      "suggested": "stale"
     },
     {
       "name": "absent window stays unavailable, not zero",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "absent",
-      "suggested": "absent / unavailable",
-      "ok": true
+      "suggested": "absent / unavailable"
     },
     {
       "name": "failed source does not contribute facts",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 6,
-      "suggested": 6,
-      "ok": true
+      "suggested": 6
     },
     {
       "name": "schema change marks partial coverage",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": {
         "coverage": "partial",
         "schemaPartials": 6
@@ -139,23 +164,29 @@
       "suggested": {
         "coverage": "partial",
         "schemaPartials": 6
-      },
-      "ok": true
+      }
     },
     {
       "name": "hidden popover stops detail snapshot builds",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 1,
-      "suggested": 1,
-      "ok": true
+      "suggested": 1
     },
     {
       "name": "status-item light snapshots continue while hidden",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 6,
-      "suggested": "> 1",
-      "ok": true
+      "suggested": "> 1"
     },
     {
       "name": "opening popover builds a detail snapshot",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": {
         "light": 1,
         "detail": 1
@@ -163,108 +194,285 @@
       "suggested": {
         "light": ">=1",
         "detail": ">=1"
-      },
-      "ok": true
+      }
     },
     {
       "name": "per-source queue never exceeds capacity",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": [
         "codex:0",
         "claude:0"
       ],
-      "suggested": "<= 32",
-      "ok": true
+      "suggested": "<= 32"
     },
     {
       "name": "fact store is bounded",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 64,
-      "suggested": "<= 200",
-      "ok": true
+      "suggested": "<= 200"
     },
     {
       "name": "series buffer is bounded",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 20,
-      "suggested": "<= 20",
-      "ok": true
+      "suggested": "<= 20"
     },
     {
       "name": "queue shedding is counted",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 336,
-      "suggested": "> 0",
-      "ok": true
+      "suggested": "> 0"
     },
     {
       "name": "bounded ingest of 400 events (ms)",
-      "measured": 0.4015419999999992,
+      "measured": 0.10258400000000023,
       "suggested": "local measurement only",
-      "ok": true,
+      "kind": "measurement",
+      "status": "MEASURED",
+      "ok": null,
+      "outcome": "measured-only",
       "note": "Not a ship gate. Repeat on target hardware before promoting."
     },
     {
       "name": "single query is accepted",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": true,
-      "suggested": true,
-      "ok": true
+      "suggested": true
     },
     {
       "name": "serial query after release is accepted",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": true,
-      "suggested": true,
-      "ok": true
+      "suggested": true
     },
     {
       "name": "query bound rejects overflow",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": "query-bound",
-      "suggested": "query-bound",
-      "ok": true
+      "suggested": "query-bound"
     },
     {
       "name": "high-volume facts stay within maxFacts",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": 20000,
-      "suggested": "<= 20000",
-      "ok": true
+      "suggested": "<= 20000"
     },
     {
       "name": "Top4 + Other reconstructs selected throughput",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
       "measured": {
         "rankedSum": 8365.111111111111,
         "liveValue": 8365.111111111111
       },
-      "suggested": "equal within 1e-6",
-      "ok": true
+      "suggested": "equal within 1e-6"
     },
     {
       "name": "20k ingest wall time (ms)",
-      "measured": 3.878458000000002,
+      "measured": 3.968834000000001,
       "suggested": "local measurement only — do not treat as a universal SLO",
-      "ok": true
+      "kind": "measurement",
+      "status": "MEASURED",
+      "ok": null,
+      "outcome": "measured-only"
     },
     {
       "name": "20k drain wall time (ms)",
-      "measured": 833.127708,
+      "measured": 870.003958,
       "suggested": "local measurement only — do not treat as a universal SLO",
-      "ok": true
+      "kind": "measurement",
+      "status": "MEASURED",
+      "ok": null,
+      "outcome": "measured-only"
     },
     {
       "name": "light snapshot rebuild (ms)",
-      "measured": 4.825083000000063,
-      "suggested": "local measurement; candidate A gate is < 5 ms",
+      "measured": 2.1568750000000136,
+      "suggested": "candidate A gate < 5 ms",
+      "kind": "candidate-gate",
+      "status": "MEET",
       "ok": true,
-      "note": "This machine is inside the 5 ms candidate. Not a fleet SLO."
+      "outcome": "candidate-met",
+      "gateMs": 5,
+      "note": "Local in-memory rebuild versus candidate A. Not a fleet SLO."
     },
     {
       "name": "detail snapshot rebuild (ms)",
-      "measured": 20.715832999999975,
-      "suggested": "local measurement; candidate A gate is < 16 ms",
-      "ok": true,
-      "note": "This machine misses the 16 ms candidate at 20k facts. JS in-memory stand-in, not SQLite/SwiftUI."
+      "measured": 19.14254100000005,
+      "suggested": "candidate A gate < 16 ms",
+      "kind": "candidate-gate",
+      "status": "MISS",
+      "ok": false,
+      "outcome": "candidate-miss",
+      "gateMs": 16,
+      "note": "Local in-memory rebuild versus candidate A at 20k facts. JS stand-in, not SQLite/SwiftUI."
     },
     {
       "name": "heap used after 20k facts (MiB)",
-      "measured": 33.28369140625,
+      "measured": 32.35570526123047,
       "suggested": "local measurement only",
+      "kind": "measurement",
+      "status": "MEASURED",
+      "ok": null,
+      "outcome": "measured-only",
+      "note": "before=13.84 after=32.36 delta=18.51"
+    },
+    {
+      "name": "candidate-miss classifier rejects pass",
+      "kind": "assertion",
+      "status": "PASS",
       "ok": true,
-      "note": "before=13.54 after=33.28 delta=19.74"
+      "measured": {
+        "kind": "candidate-gate",
+        "status": "MISS",
+        "ok": false,
+        "outcome": "candidate-miss",
+        "gateMs": 16
+      },
+      "suggested": {
+        "status": "MISS",
+        "ok": false,
+        "outcome": "candidate-miss"
+      }
+    },
+    {
+      "name": "candidate-met classifier",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "kind": "candidate-gate",
+        "status": "MEET",
+        "ok": true,
+        "outcome": "candidate-met",
+        "gateMs": 5
+      },
+      "suggested": {
+        "status": "MEET",
+        "ok": true,
+        "outcome": "candidate-met"
+      }
+    },
+    {
+      "name": "measurement classifier is not pass",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "kind": "measurement",
+        "status": "MEASURED",
+        "ok": null,
+        "outcome": "measured-only"
+      },
+      "suggested": {
+        "status": "MEASURED",
+        "ok": null
+      }
+    },
+    {
+      "name": "labeling: bounded ingest of 400 events (ms)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MEASURED",
+        "ok": null
+      },
+      "suggested": "MEASURED and not ok:true"
+    },
+    {
+      "name": "labeling: 20k ingest wall time (ms)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MEASURED",
+        "ok": null
+      },
+      "suggested": "MEASURED and not ok:true"
+    },
+    {
+      "name": "labeling: 20k drain wall time (ms)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MEASURED",
+        "ok": null
+      },
+      "suggested": "MEASURED and not ok:true"
+    },
+    {
+      "name": "labeling: light snapshot rebuild (ms)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MEET",
+        "ok": true,
+        "outcome": "candidate-met"
+      },
+      "suggested": {
+        "kind": "candidate-gate",
+        "status": "MEET",
+        "ok": true,
+        "outcome": "candidate-met",
+        "gateMs": 5
+      }
+    },
+    {
+      "name": "labeling: detail snapshot rebuild (ms)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MISS",
+        "ok": false,
+        "outcome": "candidate-miss"
+      },
+      "suggested": {
+        "kind": "candidate-gate",
+        "status": "MISS",
+        "ok": false,
+        "outcome": "candidate-miss",
+        "gateMs": 16
+      }
+    },
+    {
+      "name": "labeling: heap used after 20k facts (MiB)",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "status": "MEASURED",
+        "ok": null
+      },
+      "suggested": "MEASURED and not ok:true"
+    },
+    {
+      "name": "public artifact privacy scan",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": [],
+      "suggested": "[]"
     }
   ],
   "candidates": [
@@ -327,5 +535,6 @@
       "degrade": "Keep more history; only if later retention evidence says 20k facts is too small."
     }
   ],
-  "failed": 0
+  "failed": 0,
+  "candidateMisses": 1
 }

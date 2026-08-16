@@ -14,7 +14,7 @@ From this directory:
 node harness.mjs
 ```
 
-That writes `benchmark-results.md` and `benchmark-results.json`.
+That writes `benchmark-results.md` and `benchmark-results.json`. `PASS` is only for correctness. Candidate gates are `MEET` or `MISS` (`ok: false` / `candidate-miss` when over the gate). Ungated timings are `MEASURED`.
 
 To open the accepted D summary-drill-down shell:
 

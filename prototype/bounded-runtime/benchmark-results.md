@@ -2,41 +2,52 @@
 
 THROW AWAY. Synthetic fixtures only.
 
-Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise.
+Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise. PASS is only for correctness assertions. Candidate gates are MEET or MISS. Ungated timings are MEASURED.
 
-| Check | Measured | Suggested / expected | Result |
-| --- | --- | --- | --- |
-| decode TPS v1 formula | 60 | (output_total - 1) / (duration - TTFT) = 60 | PASS |
-| decode TPS unavailable without call identity | unavailable | unavailable | PASS |
-| decode TPS excludes retries | unavailable | unavailable | PASS |
-| Top4 + Other tie-breaks alphabetically | ["Nova Large","Orion 2","Sage Mini","Atlas Code","其他 · 2"] | ["Nova Large","Orion 2","Sage Mini","Atlas Code","其他 · 2"] | PASS |
-| fixed 3-minute output throughput window | 10 | 10 | PASS |
-| detail query hidden by default | popover-hidden | popover-hidden | PASS |
-| quality cohorts are not pooled | {"quality":"derived","value":5} | {"quality":"derived","value":5} | PASS |
-| orthogonal Agent AND Model filters | 2 | 2 | PASS |
-| stale window older than 30s | stale | stale | PASS |
-| absent window stays unavailable, not zero | absent | absent / unavailable | PASS |
-| failed source does not contribute facts | 6 | 6 | PASS |
-| schema change marks partial coverage | {"coverage":"partial","schemaPartials":6} | {"coverage":"partial","schemaPartials":6} | PASS |
-| hidden popover stops detail snapshot builds | 1 | 1 | PASS |
-| status-item light snapshots continue while hidden | 6 | > 1 | PASS |
-| opening popover builds a detail snapshot | {"light":1,"detail":1} | {"light":">=1","detail":">=1"} | PASS |
-| per-source queue never exceeds capacity | ["codex:0","claude:0"] | <= 32 | PASS |
-| fact store is bounded | 64 | <= 200 | PASS |
-| series buffer is bounded | 20 | <= 20 | PASS |
-| queue shedding is counted | 336 | > 0 | PASS |
-| bounded ingest of 400 events (ms) | 0.4015 | local measurement only | PASS |
-| single query is accepted | true | true | PASS |
-| serial query after release is accepted | true | true | PASS |
-| query bound rejects overflow | query-bound | query-bound | PASS |
-| high-volume facts stay within maxFacts | 20000 | <= 20000 | PASS |
-| Top4 + Other reconstructs selected throughput | {"rankedSum":8365.111111111111,"liveValue":8365.111111111111} | equal within 1e-6 | PASS |
-| 20k ingest wall time (ms) | 3.8785 | local measurement only — do not treat as a universal SLO | PASS |
-| 20k drain wall time (ms) | 833.1277 | local measurement only — do not treat as a universal SLO | PASS |
-| light snapshot rebuild (ms) | 4.8251 | local measurement; candidate A gate is < 5 ms | PASS |
-| detail snapshot rebuild (ms) | 20.7158 | local measurement; candidate A gate is < 16 ms | PASS |
-| heap used after 20k facts (MiB) | 33.2837 | local measurement only | PASS |
-| public artifact privacy scan | [] | [] | PASS |
+Result key: `PASS`/`FAIL` = correctness assertion. `MEET`/`MISS` = candidate gate. `MEASURED` = ungated local timing.
+
+| Check | Kind | Measured | Suggested / expected | Result |
+| --- | --- | --- | --- | --- |
+| decode TPS v1 formula | assertion | 60 | (output_total - 1) / (duration - TTFT) = 60 | PASS |
+| decode TPS unavailable without call identity | assertion | unavailable | unavailable | PASS |
+| decode TPS excludes retries | assertion | unavailable | unavailable | PASS |
+| Top4 + Other tie-breaks alphabetically | assertion | ["Nova Large","Orion 2","Sage Mini","Atlas Code","其他 · 2"] | ["Nova Large","Orion 2","Sage Mini","Atlas Code","其他 · 2"] | PASS |
+| fixed 3-minute output throughput window | assertion | 10 | 10 | PASS |
+| detail query hidden by default | assertion | popover-hidden | popover-hidden | PASS |
+| quality cohorts are not pooled | assertion | {"quality":"derived","value":5} | {"quality":"derived","value":5} | PASS |
+| orthogonal Agent AND Model filters | assertion | 2 | 2 | PASS |
+| stale window older than 30s | assertion | stale | stale | PASS |
+| absent window stays unavailable, not zero | assertion | absent | absent / unavailable | PASS |
+| failed source does not contribute facts | assertion | 6 | 6 | PASS |
+| schema change marks partial coverage | assertion | {"coverage":"partial","schemaPartials":6} | {"coverage":"partial","schemaPartials":6} | PASS |
+| hidden popover stops detail snapshot builds | assertion | 1 | 1 | PASS |
+| status-item light snapshots continue while hidden | assertion | 6 | > 1 | PASS |
+| opening popover builds a detail snapshot | assertion | {"light":1,"detail":1} | {"light":">=1","detail":">=1"} | PASS |
+| per-source queue never exceeds capacity | assertion | ["codex:0","claude:0"] | <= 32 | PASS |
+| fact store is bounded | assertion | 64 | <= 200 | PASS |
+| series buffer is bounded | assertion | 20 | <= 20 | PASS |
+| queue shedding is counted | assertion | 336 | > 0 | PASS |
+| bounded ingest of 400 events (ms) | measurement | 0.1026 | local measurement only | MEASURED |
+| single query is accepted | assertion | true | true | PASS |
+| serial query after release is accepted | assertion | true | true | PASS |
+| query bound rejects overflow | assertion | query-bound | query-bound | PASS |
+| high-volume facts stay within maxFacts | assertion | 20000 | <= 20000 | PASS |
+| Top4 + Other reconstructs selected throughput | assertion | {"rankedSum":8365.111111111111,"liveValue":8365.111111111111} | equal within 1e-6 | PASS |
+| 20k ingest wall time (ms) | measurement | 3.9688 | local measurement only — do not treat as a universal SLO | MEASURED |
+| 20k drain wall time (ms) | measurement | 870.0040 | local measurement only — do not treat as a universal SLO | MEASURED |
+| light snapshot rebuild (ms) | candidate-gate | 2.1569 | candidate A gate < 5 ms | MEET |
+| detail snapshot rebuild (ms) | candidate-gate | 19.1425 | candidate A gate < 16 ms | MISS |
+| heap used after 20k facts (MiB) | measurement | 32.3557 | local measurement only | MEASURED |
+| candidate-miss classifier rejects pass | assertion | {"kind":"candidate-gate","status":"MISS","ok":false,"outcome":"candidate-miss","gateMs":16} | {"status":"MISS","ok":false,"outcome":"candidate-miss"} | PASS |
+| candidate-met classifier | assertion | {"kind":"candidate-gate","status":"MEET","ok":true,"outcome":"candidate-met","gateMs":5} | {"status":"MEET","ok":true,"outcome":"candidate-met"} | PASS |
+| measurement classifier is not pass | assertion | {"kind":"measurement","status":"MEASURED","ok":null,"outcome":"measured-only"} | {"status":"MEASURED","ok":null} | PASS |
+| labeling: bounded ingest of 400 events (ms) | assertion | {"status":"MEASURED","ok":null} | MEASURED and not ok:true | PASS |
+| labeling: 20k ingest wall time (ms) | assertion | {"status":"MEASURED","ok":null} | MEASURED and not ok:true | PASS |
+| labeling: 20k drain wall time (ms) | assertion | {"status":"MEASURED","ok":null} | MEASURED and not ok:true | PASS |
+| labeling: light snapshot rebuild (ms) | assertion | {"status":"MEET","ok":true,"outcome":"candidate-met"} | {"kind":"candidate-gate","status":"MEET","ok":true,"outcome":"candidate-met","gateMs":5} | PASS |
+| labeling: detail snapshot rebuild (ms) | assertion | {"status":"MISS","ok":false,"outcome":"candidate-miss"} | {"kind":"candidate-gate","status":"MISS","ok":false,"outcome":"candidate-miss","gateMs":16} | PASS |
+| labeling: heap used after 20k facts (MiB) | assertion | {"status":"MEASURED","ok":null} | MEASURED and not ok:true | PASS |
+| public artifact privacy scan | assertion | [] | [] | PASS |
 
 ## Candidate budgets
 

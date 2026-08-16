@@ -20,16 +20,36 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const results = [];
 let failed = 0;
+let candidateMisses = 0;
 
-function record(name, measured, suggested, ok, extra = {}) {
-  const row = { name, measured, suggested, ok, ...extra };
+export function classifyCandidate(measured, gateMs) {
+  const met = Number(measured) < Number(gateMs);
+  return {
+    kind: "candidate-gate",
+    status: met ? "MEET" : "MISS",
+    ok: met,
+    outcome: met ? "candidate-met" : "candidate-miss",
+    gateMs,
+  };
+}
+
+export function classifyMeasurement() {
+  return {
+    kind: "measurement",
+    status: "MEASURED",
+    ok: null,
+    outcome: "measured-only",
+  };
+}
+
+function pushRow(row) {
   results.push(row);
-  if (!ok) failed += 1;
-  const mark = ok ? "PASS" : "FAIL";
-  console.log(`${mark}  ${name}`);
-  console.log(`     measured:   ${format(measured)}`);
-  console.log(`     suggested:  ${format(suggested)}`);
-  if (extra.note) console.log(`     note:       ${extra.note}`);
+  if (row.kind === "assertion" && !row.ok) failed += 1;
+  if (row.kind === "candidate-gate" && row.outcome === "candidate-miss") candidateMisses += 1;
+  console.log(`${row.status}  ${row.name}`);
+  console.log(`     measured:   ${format(row.measured)}`);
+  console.log(`     suggested:  ${format(row.suggested)}`);
+  if (row.note) console.log(`     note:       ${row.note}`);
 }
 
 function format(value) {
@@ -41,8 +61,37 @@ function format(value) {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
-function assert(name, condition, measured, suggested, extra) {
-  record(name, measured, suggested, Boolean(condition), extra);
+function assert(name, condition, measured, suggested, extra = {}) {
+  const ok = Boolean(condition);
+  pushRow({
+    name,
+    kind: "assertion",
+    status: ok ? "PASS" : "FAIL",
+    ok,
+    measured,
+    suggested,
+    ...extra,
+  });
+}
+
+function measure(name, measured, suggested, extra = {}) {
+  pushRow({
+    name,
+    measured,
+    suggested,
+    ...classifyMeasurement(),
+    ...extra,
+  });
+}
+
+function candidateGate(name, measured, gateMs, extra = {}) {
+  pushRow({
+    name,
+    measured,
+    suggested: `candidate A gate < ${gateMs} ms`,
+    ...classifyCandidate(measured, gateMs),
+    ...extra,
+  });
 }
 
 function timed(fn) {
@@ -312,7 +361,7 @@ function drain(runtime, endAt, step = 250) {
   assert("fact store is bounded", state.factCount <= 200, state.factCount, "<= 200");
   assert("series buffer is bounded", state.seriesCount <= 20, state.seriesCount, "<= 20");
   assert("queue shedding is counted", state.counters.dropped > 0, state.counters.dropped, "> 0");
-  record("bounded ingest of 400 events (ms)", ingest.ms, "local measurement only", true, {
+  measure("bounded ingest of 400 events (ms)", ingest.ms, "local measurement only", {
     note: "Not a ship gate. Repeat on target hardware before promoting.",
   });
 }
@@ -382,15 +431,15 @@ assert(
   { rankedSum, liveValue },
   "equal within 1e-6",
 );
-record("20k ingest wall time (ms)", ingestTimed.ms, "local measurement only — do not treat as a universal SLO", true);
-record("20k drain wall time (ms)", drainTimed.ms, "local measurement only — do not treat as a universal SLO", true);
-record("light snapshot rebuild (ms)", lightTimed.ms, "local measurement; candidate A gate is < 5 ms", true, {
-  note: `This machine ${lightTimed.ms < 5 ? "is inside" : "misses"} the 5 ms candidate. Not a fleet SLO.`,
+measure("20k ingest wall time (ms)", ingestTimed.ms, "local measurement only — do not treat as a universal SLO");
+measure("20k drain wall time (ms)", drainTimed.ms, "local measurement only — do not treat as a universal SLO");
+candidateGate("light snapshot rebuild (ms)", lightTimed.ms, 5, {
+  note: "Local in-memory rebuild versus candidate A. Not a fleet SLO.",
 });
-record("detail snapshot rebuild (ms)", detailTimed.ms, "local measurement; candidate A gate is < 16 ms", true, {
-  note: `This machine ${detailTimed.ms < 16 ? "is inside" : "misses"} the 16 ms candidate at 20k facts. JS in-memory stand-in, not SQLite/SwiftUI.`,
+candidateGate("detail snapshot rebuild (ms)", detailTimed.ms, 16, {
+  note: "Local in-memory rebuild versus candidate A at 20k facts. JS stand-in, not SQLite/SwiftUI.",
 });
-record("heap used after 20k facts (MiB)", afterHeap, "local measurement only", true, {
+measure("heap used after 20k facts (MiB)", afterHeap, "local measurement only", {
   note: `before=${beforeHeap.toFixed(2)} after=${afterHeap.toFixed(2)} delta=${(afterHeap - beforeHeap).toFixed(2)}`,
 });
 
@@ -422,22 +471,46 @@ const candidates = [
   },
 ];
 
-const report = {
-  generatedAt: new Date().toISOString(),
-  disclaimer:
-    "Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise.",
-  privacy: {
-    fixtures: "synthetic-only",
-    scannedFor: ["absolute local paths", "emails", "private URLs", "prompt/log bodies"],
-  },
-  windows: WINDOWS,
-  defaultLimits: DEFAULT_LIMITS,
-  agents: AGENTS,
-  models: MODELS,
-  results,
-  candidates,
-  failed,
-};
+const fakeMiss = classifyCandidate(21, 16);
+assert(
+  "candidate-miss classifier rejects pass",
+  fakeMiss.status === "MISS" && fakeMiss.ok === false && fakeMiss.outcome === "candidate-miss",
+  fakeMiss,
+  { status: "MISS", ok: false, outcome: "candidate-miss" },
+);
+const fakeMeet = classifyCandidate(2, 5);
+assert(
+  "candidate-met classifier",
+  fakeMeet.status === "MEET" && fakeMeet.ok === true && fakeMeet.outcome === "candidate-met",
+  fakeMeet,
+  { status: "MEET", ok: true, outcome: "candidate-met" },
+);
+const fakeMeasured = classifyMeasurement();
+assert(
+  "measurement classifier is not pass",
+  fakeMeasured.status === "MEASURED" && fakeMeasured.ok !== true && fakeMeasured.outcome === "measured-only",
+  fakeMeasured,
+  { status: "MEASURED", ok: null },
+);
+
+for (const row of results) {
+  if (row.kind === "measurement") {
+    assert(
+      `labeling: ${row.name}`,
+      row.status === "MEASURED" && row.ok !== true && row.status !== "PASS",
+      { status: row.status, ok: row.ok },
+      "MEASURED and not ok:true",
+    );
+  } else if (row.kind === "candidate-gate") {
+    const expected = classifyCandidate(row.measured, row.gateMs);
+    assert(
+      `labeling: ${row.name}`,
+      row.status === expected.status && row.ok === expected.ok && row.outcome === expected.outcome,
+      { status: row.status, ok: row.ok, outcome: row.outcome },
+      expected,
+    );
+  }
+}
 
 const privacyNeedles = [
   "/Users/",
@@ -447,9 +520,32 @@ const privacyNeedles = [
   "file://",
   "internal.",
 ];
-const reportText = JSON.stringify(report, null, 2);
-const privacyHits = privacyNeedles.filter((needle) => reportText.includes(needle));
+
+function buildReport() {
+  return {
+    generatedAt: new Date().toISOString(),
+    disclaimer:
+      "Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise. PASS is only for correctness assertions. Candidate gates are MEET or MISS. Ungated timings are MEASURED.",
+    privacy: {
+      fixtures: "synthetic-only",
+      scannedFor: ["absolute local paths", "emails", "private URLs", "prompt/log bodies"],
+    },
+    windows: WINDOWS,
+    defaultLimits: DEFAULT_LIMITS,
+    agents: AGENTS,
+    models: MODELS,
+    results,
+    candidates,
+    failed,
+    candidateMisses,
+  };
+}
+
+let report = buildReport();
+const privacyHits = privacyNeedles.filter((needle) => JSON.stringify(report).includes(needle));
 assert("public artifact privacy scan", privacyHits.length === 0, privacyHits, "[]");
+report = buildReport();
+const reportText = JSON.stringify(report, null, 2);
 
 writeFileSync(join(here, "benchmark-results.json"), reportText);
 writeFileSync(
@@ -461,9 +557,11 @@ writeFileSync(
     "",
     report.disclaimer,
     "",
-    "| Check | Measured | Suggested / expected | Result |",
-    "| --- | --- | --- | --- |",
-    ...results.map((row) => `| ${row.name} | ${String(format(row.measured)).replace(/\|/g, "/")} | ${String(format(row.suggested)).replace(/\|/g, "/")} | ${row.ok ? "PASS" : "FAIL"} |`),
+    "Result key: `PASS`/`FAIL` = correctness assertion. `MEET`/`MISS` = candidate gate. `MEASURED` = ungated local timing.",
+    "",
+    "| Check | Kind | Measured | Suggested / expected | Result |",
+    "| --- | --- | --- | --- | --- |",
+    ...results.map((row) => `| ${row.name} | ${row.kind} | ${String(format(row.measured)).replace(/\|/g, "/")} | ${String(format(row.suggested)).replace(/\|/g, "/")} | ${row.status} |`),
     "",
     "## Candidate budgets",
     "",
@@ -490,6 +588,10 @@ writeFileSync(
 );
 
 console.log("");
-console.log(failed === 0 ? "All assertions passed." : `${failed} assertion(s) failed.`);
+if (failed === 0) {
+  console.log(`All correctness assertions passed. Candidate misses: ${candidateMisses}.`);
+} else {
+  console.log(`${failed} correctness assertion(s) failed.`);
+}
 console.log("Wrote benchmark-results.md and benchmark-results.json");
 process.exit(failed === 0 ? 0 : 1);
