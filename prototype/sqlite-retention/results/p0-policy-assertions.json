@@ -1,0 +1,284 @@
+{
+  "prototype": "THROW AWAY sqlite retention policy assertions",
+  "kind": "post-hoc-logic",
+  "disclaimer": "Added after the 10k/100k/1m size timings. These are targeted logic assertions for the capacity ladder and Reset Data wipe. They are not a rerun of the 1m measurements.",
+  "machine": {
+    "label": "Apple silicon developer Mac",
+    "node": "25.6.1",
+    "sqliteUsed": "3.51.2 via node:sqlite"
+  },
+  "rows": [
+    {
+      "name": "cumulative watermark uses positive delta only",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "delta": 40,
+        "rebuild": false,
+        "watermark": 140
+      },
+      "suggested": {
+        "delta": 40,
+        "rebuild": false
+      }
+    },
+    {
+      "name": "counter rollback triggers source-scoped rebuild, not a negative delta",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "delta": 0,
+        "rebuild": true,
+        "watermark": 140
+      },
+      "suggested": {
+        "delta": 0,
+        "rebuild": true
+      }
+    },
+    {
+      "name": "decode TPS v1 formula",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": 60,
+      "suggested": "(output_total-1)/(duration-TTFT)=60"
+    },
+    {
+      "name": "decode TPS unavailable when n<2",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": null,
+      "suggested": "unavailable"
+    },
+    {
+      "name": "hot/query working set is 20k facts, not retention",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": 20000,
+      "suggested": 20000
+    },
+    {
+      "name": "warn trips on rows first",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "warn": true,
+        "hard": false,
+        "warnBy": "rows",
+        "hardBy": null
+      },
+      "suggested": "rows"
+    },
+    {
+      "name": "warn trips on bytes first",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "warn": true,
+        "hard": false,
+        "warnBy": "bytes",
+        "hardBy": null
+      },
+      "suggested": "bytes"
+    },
+    {
+      "name": "hard trips on rows first",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "warn": true,
+        "hard": true,
+        "warnBy": "rows",
+        "hardBy": "rows"
+      },
+      "suggested": "rows"
+    },
+    {
+      "name": "hard trips on bytes first",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "warn": true,
+        "hard": true,
+        "warnBy": "bytes",
+        "hardBy": "bytes"
+      },
+      "suggested": "bytes"
+    },
+    {
+      "name": "warn does not prune",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "bytes": 1,
+        "rows": 20,
+        "warn": true,
+        "hard": false,
+        "warnBy": "rows",
+        "hardBy": null,
+        "steps": [],
+        "ingestPaused": false,
+        "coverage": "complete",
+        "prunedBefore": null,
+        "earliestRetainedAt": 1776254400000,
+        "diagnosticCode": "CAPACITY_WARN",
+        "rawRemaining": 20
+      },
+      "suggested": "CAPACITY_WARN, no prune"
+    },
+    {
+      "name": "hard ceiling deletes superseded first",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": [
+        {
+          "action": "delete-superseded",
+          "changes": 5
+        }
+      ],
+      "suggested": "delete-superseded first"
+    },
+    {
+      "name": "hard ceiling then atomically compacts raw older than 90d",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": [
+        "delete-superseded",
+        "compact-gt-90d",
+        "delete-oldest-rollup",
+        "delete-oldest-rollup",
+        "delete-oldest-rollup",
+        "delete-oldest-rollup"
+      ],
+      "suggested": "compact-gt-90d and no raw >90d"
+    },
+    {
+      "name": "oldest rollup prune marks partial coverage and pruned_before",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "id": 1,
+        "warn_hit": 1,
+        "hard_hit": 0,
+        "trigger": "rows",
+        "ingest_paused": 0,
+        "coverage": "partial",
+        "pruned_before": 1784937600000,
+        "earliest_retained_at": 1784980800000,
+        "diagnostic_code": "RETENTION_PRUNED"
+      },
+      "suggested": "coverage=partial plus pruned_before and earliest_retained_at"
+    },
+    {
+      "name": "next prune deletes 7-90d raw but keeps the 7d protected window",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "midRaw": 0,
+        "protectedRaw": 5,
+        "steps": [
+          "delete-superseded",
+          "compact-gt-90d",
+          "delete-oldest-rollup",
+          "delete-oldest-rollup",
+          "delete-oldest-rollup",
+          "delete-oldest-rollup",
+          "delete-oldest-rollup",
+          "delete-oldest-7-90d-raw",
+          "delete-oldest-7-90d-raw",
+          "delete-oldest-7-90d-raw",
+          "delete-oldest-7-90d-raw",
+          "delete-oldest-7-90d-raw"
+        ]
+      },
+      "suggested": "no 7-90d raw, 5 protected 7d raw"
+    },
+    {
+      "name": "protected 7d window pauses ingest instead of silent delete",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "ingestPaused": true,
+        "diagnosticCode": "CAPACITY_PROTECTED_WINDOW",
+        "protectedAfterPause": 5
+      },
+      "suggested": "CAPACITY_PROTECTED_WINDOW and 7d raw remains"
+    },
+    {
+      "name": "Reset Data wipes App-owned telemetry stores",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": {
+        "usage_facts": 0,
+        "usage_observations": 0,
+        "fact_rollups": 0,
+        "cursors": 0,
+        "watermarks": 0,
+        "source_health": 0,
+        "diagnostics": 0,
+        "snapshots": 0,
+        "migration_backups": 0,
+        "export_copies": 0,
+        "retention_state": 0,
+        "telemetryPreferences": 0
+      },
+      "suggested": "all telemetry tables empty"
+    },
+    {
+      "name": "Reset Data keeps schema metadata",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": true,
+      "suggested": true
+    },
+    {
+      "name": "Reset Data keeps non-telemetry preferences",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": true,
+      "suggested": true
+    },
+    {
+      "name": "Reset Data does not modify source logs",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": true,
+      "suggested": true
+    },
+    {
+      "name": "Reset Data confirmation names unsaved-external export limit",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": "Reset Data deletes every App-owned telemetry store: Usage Facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies. Schema and non-telemetry preferences stay. Source Codex and Claude Code logs are not modified. Files you already saved outside the app cannot be deleted by the app.",
+      "suggested": "Reset Data deletes every App-owned telemetry store: Usage Facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies. Schema and non-telemetry preferences stay. Source Codex and Claude Code logs are not modified. Files you already saved outside the app cannot be deleted by the app."
+    },
+    {
+      "name": "public artifact privacy scan",
+      "kind": "assertion",
+      "status": "PASS",
+      "ok": true,
+      "measured": [],
+      "suggested": []
+    }
+  ]
+}

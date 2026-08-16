@@ -98,3 +98,69 @@ CREATE INDEX IF NOT EXISTS idx_facts_authority
   ON usage_facts (authority_key);
 CREATE INDEX IF NOT EXISTS idx_rollups_window
   ON fact_rollups (window_start, window_end, agent, model_display);
+
+CREATE TABLE IF NOT EXISTS usage_observations (
+  observation_id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  observed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watermarks (
+  source TEXT NOT NULL,
+  counter TEXT NOT NULL,
+  identity TEXT NOT NULL,
+  value INTEGER NOT NULL,
+  PRIMARY KEY (source, counter, identity)
+);
+
+CREATE TABLE IF NOT EXISTS diagnostics (
+  diagnostic_id INTEGER PRIMARY KEY,
+  code TEXT NOT NULL,
+  observed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  snapshot_id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  captured_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS migration_backups (
+  backup_id INTEGER PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  opaque_name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS export_copies (
+  export_id INTEGER PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  location TEXT NOT NULL CHECK (location IN ('app-managed', 'user-external'))
+);
+
+CREATE TABLE IF NOT EXISTS preferences (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  telemetry INTEGER NOT NULL CHECK (telemetry IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS retention_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  warn_hit INTEGER NOT NULL DEFAULT 0,
+  hard_hit INTEGER NOT NULL DEFAULT 0,
+  trigger TEXT,
+  ingest_paused INTEGER NOT NULL DEFAULT 0,
+  coverage TEXT NOT NULL DEFAULT 'complete',
+  pruned_before INTEGER,
+  earliest_retained_at INTEGER,
+  diagnostic_code TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_log_standin (
+  source TEXT PRIMARY KEY,
+  present INTEGER NOT NULL CHECK (present IN (0, 1))
+);

@@ -1,0 +1,28 @@
+# P0 policy logic assertions
+
+THROW AWAY. Post-hoc logic only. These rows were added after the 10k/100k/1m measurements and do not replace those size or query ranges.
+
+| Check | Kind | Measured | Suggested / expected | Result |
+| --- | --- | --- | --- | --- |
+| cumulative watermark uses positive delta only | assertion | {"delta":40,"rebuild":false,"watermark":140} | {"delta":40,"rebuild":false} | PASS |
+| counter rollback triggers source-scoped rebuild, not a negative delta | assertion | {"delta":0,"rebuild":true,"watermark":140} | {"delta":0,"rebuild":true} | PASS |
+| decode TPS v1 formula | assertion | 60 | (output_total-1)/(duration-TTFT)=60 | PASS |
+| decode TPS unavailable when n<2 | assertion | n/a | unavailable | PASS |
+| hot/query working set is 20k facts, not retention | assertion | 20000 | 20000 | PASS |
+| warn trips on rows first | assertion | {"warn":true,"hard":false,"warnBy":"rows","hardBy":null} | rows | PASS |
+| warn trips on bytes first | assertion | {"warn":true,"hard":false,"warnBy":"bytes","hardBy":null} | bytes | PASS |
+| hard trips on rows first | assertion | {"warn":true,"hard":true,"warnBy":"rows","hardBy":"rows"} | rows | PASS |
+| hard trips on bytes first | assertion | {"warn":true,"hard":true,"warnBy":"bytes","hardBy":"bytes"} | bytes | PASS |
+| warn does not prune | assertion | {"bytes":1,"rows":20,"warn":true,"hard":false,"warnBy":"rows","hardBy":null,"steps":[],"ingestPaused":false,"coverage":"complete","prunedBefore":null,"earliestRetainedAt":1776254400000,"diagnosticCode":"CAPACITY_WARN","rawRemaining":20} | CAPACITY_WARN, no prune | PASS |
+| hard ceiling deletes superseded first | assertion | [{"action":"delete-superseded","changes":5}] | delete-superseded first | PASS |
+| hard ceiling then atomically compacts raw older than 90d | assertion | ["delete-superseded","compact-gt-90d","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-rollup"] | compact-gt-90d and no raw >90d | PASS |
+| oldest rollup prune marks partial coverage and pruned_before | assertion | {"id":1,"warn_hit":1,"hard_hit":0,"trigger":"rows","ingest_paused":0,"coverage":"partial","pruned_before":1784937600000,"earliest_retained_at":1784980800000,"diagnostic_code":"RETENTION_PRUNED"} | coverage=partial plus pruned_before and earliest_retained_at | PASS |
+| next prune deletes 7-90d raw but keeps the 7d protected window | assertion | {"midRaw":0,"protectedRaw":5,"steps":["delete-superseded","compact-gt-90d","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-rollup","delete-oldest-7-90d-raw","delete-oldest-7-90d-raw","delete-oldest-7-90d-raw","delete-oldest-7-90d-raw","delete-oldest-7-90d-raw"]} | no 7-90d raw, 5 protected 7d raw | PASS |
+| protected 7d window pauses ingest instead of silent delete | assertion | {"ingestPaused":true,"diagnosticCode":"CAPACITY_PROTECTED_WINDOW","protectedAfterPause":5} | CAPACITY_PROTECTED_WINDOW and 7d raw remains | PASS |
+| Reset Data wipes App-owned telemetry stores | assertion | {"usage_facts":0,"usage_observations":0,"fact_rollups":0,"cursors":0,"watermarks":0,"source_health":0,"diagnostics":0,"snapshots":0,"migration_backups":0,"export_copies":0,"retention_state":0,"telemetryPreferences":0} | all telemetry tables empty | PASS |
+| Reset Data keeps schema metadata | assertion | true | true | PASS |
+| Reset Data keeps non-telemetry preferences | assertion | true | true | PASS |
+| Reset Data does not modify source logs | assertion | true | true | PASS |
+| Reset Data confirmation names unsaved-external export limit | assertion | Reset Data deletes every App-owned telemetry store: Usage Facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies. Schema and non-telemetry preferences stay. Source Codex and Claude Code logs are not modified. Files you already saved outside the app cannot be deleted by the app. | Reset Data deletes every App-owned telemetry store: Usage Facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies. Schema and non-telemetry preferences stay. Source Codex and Claude Code logs are not modified. Files you already saved outside the app cannot be deleted by the app. | PASS |
+| public artifact privacy scan | assertion | [] | [] | PASS |
+

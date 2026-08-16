@@ -130,3 +130,7 @@ Result key: `PASS`/`FAIL` = correctness assertion. `MEASURED` = ungated local ti
 - Workload timestamps are recency-biased (about 38% of facts fall in 7d), not a uniform 400-day history. B/C space savings are a lower bound for a mature steady user.
 - Remaining-raw Decode TPS samples after B/C are not All-history samples. All-history exact quantile is available only under A.
 
+
+## Post-hoc P0 policy assertions
+
+The 10k/100k/1m size and query ranges above were not rerun. Capacity-ladder and expanded Reset Data checks live in `p0-policy-assertions.md`. They are logic assertions added after those measurements.

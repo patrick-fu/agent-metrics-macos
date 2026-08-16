@@ -50,7 +50,7 @@
     <section class="intro">
       <span class="mark">临时原型 · 仅合成数据 · 可丢弃</span>
       <h1>持久 SQLite 该留多少 Usage Facts？</h1>
-      <p>20k 是热查询工作集，不是数据库保留策略。源日志消失不等于库应删除。精确 Decode TPS 分位数需要原始样本；rollup 不能重算。</p>
+      <p>20k 是热查询工作集，不是数据库保留策略。源日志消失不等于库应删除。容量硬顶按 bytes 或 rows 先到者触发：superseded → &gt;90d 原子 compact → 最旧 rollup（Coverage=partial）→ 7–90d raw。7 天保护窗超限则暂停 ingest，不静默删。Reset Data 清全部 App 遥测，不改源日志，也不保证删掉用户另存的导出。</p>
       <p class="note">本页只推动保留策略状态机。字节与查询区间来自本地 Node/SQLite harness，不是 AppKit 数字，也不是 fleet SLO。</p>
     </section>
 
@@ -67,8 +67,9 @@
           <button data-action="strategy-B">策略 B 90 天+rollup</button>
           <button data-action="strategy-C">策略 C 7 天+总量</button>
           <button data-action="log-gone">源日志消失</button>
-          <button data-action="fill-capacity">填到容量上限</button>
-          <button data-action="evict">按删除顺序腾出空间</button>
+          <button data-action="fill-warn-rows">警告：rows 先到</button>
+          <button data-action="fill-hard-bytes">硬顶：bytes 先到</button>
+          <button data-action="enforce-ceiling">执行硬顶裁剪</button>
           <button data-action="query-7d">查询 7 天精确分位数</button>
           <button data-action="query-all">查询 All 精确分位数</button>
           <button data-action="reset">Reset Data</button>
@@ -108,17 +109,18 @@
         ]
       },
       cap: {
-        title: "容量到上限",
-        blurb: "上限是存储压力阀，不是 20k 工作集。默认先丢 superseded，再丢最旧 contributing。",
+        title: "容量硬顶裁剪",
+        blurb: "警告/硬顶按 bytes 或 rows 任一先到触发。顺序：superseded → 大于 90 天 raw 原子 compact → 最旧 rollup 并标记 partial → 7 到 90 天 raw。7 天保护窗本身超限则暂停写入。",
         steps: [
-          { label: "切到策略 A", action: "strategy-A" },
-          { label: "填满容量", action: "fill-capacity" },
-          { label: "按顺序腾出空间", action: "evict" }
+          { label: "rows 先到警告", action: "fill-warn-rows" },
+          { label: "bytes 先到硬顶", action: "fill-hard-bytes" },
+          { label: "执行完整裁剪阶梯", action: "enforce-ceiling" },
+          { label: "保护窗再超限", action: "overflow-protected" }
         ]
       },
       reset: {
         title: "Reset Data",
-        blurb: "Reset Data 是用户明确清空，不是日志消失，也不是滚动保留。",
+        blurb: "Reset Data 是隐私清空：删掉 App 拥有的全部遥测。源 Codex/Claude 日志不动。你另存到外部的导出，App 无法保证删除。",
         steps: [
           { label: "先让日志消失", action: "log-gone" },
           { label: "执行 Reset Data", action: "reset" }
@@ -142,18 +144,33 @@
         strategy: "A",
         rawFacts: 100000,
         rollupDays: 0,
+        protectedRaw: 38000,
         logPresent: { "src-codex": true, "src-claude": true },
         dataState: { "src-codex": "present", "src-claude": "present" },
         coverageLive: "complete",
-        capacity: 250000,
-        used: 100000,
-        atCapacity: false,
+        coverageHistory: "complete",
+        usedRows: 100000,
+        usedBytes: 50,
+        warnRows: 1500000,
+        hardRows: 2000000,
+        warnBytes: 750,
+        hardBytes: 1024,
+        warnHit: false,
+        hardHit: false,
+        trigger: "无",
+        ingestPaused: false,
+        prunedBefore: "无",
+        earliestRetained: "全历史",
+        diagnostic: "无",
         lastEvicted: "无",
         lastQuery: "尚未查询",
         exactQuantile7d: "可用",
         exactQuantileAll: "可用",
         resetAt: "未重置",
         wiped: false,
+        prefsKept: "launch-at-login",
+        sourceLogsOwnedByApp: false,
+        externalExport: "用户另存副本仍在其磁盘上",
         lastChange: "初始：策略 A，原始 Facts 全部可查。"
       };
     }
@@ -163,35 +180,42 @@
       if (next.wiped) {
         next.rawFacts = 0;
         next.rollupDays = 0;
-        next.used = 0;
-        next.atCapacity = false;
+        next.protectedRaw = 0;
+        next.usedRows = 0;
+        next.usedBytes = 0;
         next.exactQuantile7d = "不可用";
         next.exactQuantileAll = "不可用";
         next.lastChange = "策略已切换，但 Reset Data 后还没有新的 Usage Facts。";
         return next;
       }
       if (strategy === "A") {
-        next.rawFacts = Math.max(next.used, 100000);
+        next.rawFacts = 100000;
+        next.protectedRaw = 38000;
         next.rollupDays = 0;
-        next.exactQuantile7d = next.rawFacts ? "可用" : "不可用";
-        next.exactQuantileAll = next.rawFacts ? "可用" : "不可用";
-        next.lastChange = "策略 A：无限或按容量保留原始 Usage Facts。All 精确分位数可用，直到触顶删除。";
+        next.usedRows = 100000;
+        next.usedBytes = 50;
+        next.exactQuantile7d = "可用";
+        next.exactQuantileAll = "可用";
+        next.lastChange = "策略 A：保留 raw，直到 bytes 或 rows 硬顶触发裁剪阶梯。";
       } else if (strategy === "B") {
         next.rawFacts = 62000;
+        next.protectedRaw = 38000;
         next.rollupDays = 310;
-        next.used = next.rawFacts + 3600;
+        next.usedRows = 65600;
+        next.usedBytes = 35;
         next.exactQuantile7d = "可用";
         next.exactQuantileAll = "不可用（90 天外只有 rollup）";
-        next.lastChange = "策略 B：90 天原始 + 更早按日 rollup。rollup 不能重算精确分位数。";
+        next.lastChange = "策略 B：90 天原始 + 更早按日 rollup。硬顶仍走同一裁剪阶梯。";
       } else {
         next.rawFacts = 18000;
+        next.protectedRaw = 18000;
         next.rollupDays = 393;
-        next.used = next.rawFacts + 3600;
+        next.usedRows = 21600;
+        next.usedBytes = 25;
         next.exactQuantile7d = "可用";
         next.exactQuantileAll = "不可用（7 天外只有总量）";
-        next.lastChange = "策略 C：只为 P0 7 天性能窗保留原始样本。All 只能看总量。";
+        next.lastChange = "策略 C：只为 P0 7 天性能窗保留原始样本。硬顶仍不得删 7 天保护窗。";
       }
-      next.atCapacity = next.used >= next.capacity;
       return next;
     }
 
@@ -208,28 +232,65 @@
           lastChange: "源日志消失：source_health.log_present=0，历史 Facts 仍在。实时窗变成 partial/stale，不是删除信号。"
         };
       }
-      if (action === "fill-capacity") {
+      if (action === "fill-warn-rows") {
         return {
           ...state,
-          strategy: "A",
-          used: state.capacity,
-          rawFacts: state.capacity,
-          atCapacity: true,
-          exactQuantileAll: "可用，但下一笔写入必须先删",
-          lastChange: "容量到上限。20k 工作集未变。下一笔写入要按删除顺序腾空间。"
+          usedRows: state.warnRows,
+          usedBytes: 400,
+          warnHit: true,
+          hardHit: false,
+          trigger: "rows",
+          diagnostic: "CAPACITY_WARN",
+          lastChange: "警告：rows 先到 150 万。尚未裁剪。bytes 仍低于 750 MiB。"
         };
       }
-      if (action === "evict") {
-        if (!state.atCapacity && state.used < state.capacity) {
-          return { ...state, lastChange: "还未到容量上限，不必删。" };
+      if (action === "fill-hard-bytes") {
+        return {
+          ...state,
+          usedRows: 400000,
+          usedBytes: state.hardBytes,
+          warnHit: true,
+          hardHit: true,
+          trigger: "bytes",
+          diagnostic: "CAPACITY_HARD",
+          lastChange: "硬顶：bytes 先到 1 GiB。下一步必须走裁剪阶梯，不是直接删最旧 contributing。"
+        };
+      }
+      if (action === "enforce-ceiling") {
+        if (!state.hardHit) {
+          return { ...state, lastChange: "还未到硬顶，只警告或无需处理。" };
         }
         return {
           ...state,
-          used: Math.max(0, state.used - 15000),
-          rawFacts: Math.max(0, state.rawFacts - 15000),
-          atCapacity: false,
-          lastEvicted: "先 superseded，再最旧 contributing；不是消失的源日志",
-          lastChange: "删除顺序：superseded → 最旧 contributing。源日志消失不参与这条队列。"
+          rawFacts: state.protectedRaw,
+          rollupDays: 40,
+          usedRows: 900000,
+          usedBytes: 480,
+          hardHit: false,
+          warnHit: true,
+          trigger: "bytes",
+          coverageHistory: "partial",
+          prunedBefore: "最早保留点之后",
+          earliestRetained: "7 天保护窗起点",
+          diagnostic: "RETENTION_PRUNED",
+          ingestPaused: false,
+          lastEvicted: "superseded → >90d 原子 compact → 最旧 rollup → 7–90d raw。7d 未删。",
+          exactQuantileAll: "不可用",
+          lastChange: "硬顶裁剪完成。历史 Coverage=partial，已记录 pruned_before / earliest retained。7 天 raw 仍在。"
+        };
+      }
+      if (action === "overflow-protected") {
+        return {
+          ...state,
+          hardHit: true,
+          usedRows: state.hardRows,
+          usedBytes: state.hardBytes,
+          rawFacts: state.protectedRaw,
+          ingestPaused: true,
+          coverageHistory: "partial",
+          diagnostic: "CAPACITY_PROTECTED_WINDOW",
+          lastEvicted: "未删 7 天保护窗",
+          lastChange: "7 天保护窗本身超过上限：暂停新 ingest，报 CAPACITY_PROTECTED_WINDOW，不静默删除 7 天 raw。"
         };
       }
       if (action === "query-7d") {
@@ -259,15 +320,28 @@
           ...state,
           rawFacts: 0,
           rollupDays: 0,
-          used: 0,
-          atCapacity: false,
-          lastEvicted: "无",
+          protectedRaw: 0,
+          usedRows: 0,
+          usedBytes: 0,
+          warnHit: false,
+          hardHit: false,
+          trigger: "无",
+          ingestPaused: false,
+          coverageLive: "unavailable",
+          coverageHistory: "unavailable",
+          prunedBefore: "无",
+          earliestRetained: "无",
+          diagnostic: "RESET_DATA",
+          lastEvicted: "App 遥测已清空",
           lastQuery: "尚未查询",
           exactQuantile7d: "不可用",
           exactQuantileAll: "不可用",
-          resetAt: "已清空 Facts / rollups / cursors",
+          resetAt: "已清空全部 App 遥测",
           wiped: true,
-          lastChange: "Reset Data：用户明确清空持久层。源日志是否还在不影响这次删除。"
+          prefsKept: "launch-at-login",
+          sourceLogsOwnedByApp: false,
+          externalExport: "用户另存副本仍在其磁盘上，App 不能保证删除",
+          lastChange: "Reset Data 删除 Usage Facts/observations/rollups/cursors/watermarks/source state/diagnostics/snapshots/backups/App 导出副本。保留 schema 与非遥测偏好。不改源日志。你另存到外部的导出无法由 App 保证删除。"
         };
       }
       return state;
@@ -290,16 +364,18 @@
       const fields = [
         ["策略", state.strategy, ""],
         ["原始 Usage Facts", String(state.rawFacts), ""],
-        ["rollup 天数", String(state.rollupDays), ""],
+        ["7 天保护窗 raw", String(state.protectedRaw), ""],
         ["热查询工作集", String(HOT), ""],
-        ["Claude 源日志", state.logPresent["src-claude"] ? "在" : "消失", state.logPresent["src-claude"] ? "good" : "warn"],
-        ["Claude Data State", state.dataState["src-claude"], state.logPresent["src-claude"] ? "good" : "warn"],
-        ["实时窗 Coverage", state.coverageLive, state.coverageLive === "complete" ? "good" : "warn"],
-        ["容量", state.used + " / " + state.capacity, state.atCapacity ? "bad" : ""],
+        ["Claude 源日志", state.logPresent["src-claude"] ? "在（App 不拥有）" : "消失（App 不拥有）", state.logPresent["src-claude"] ? "good" : "warn"],
+        ["历史 Coverage", state.coverageHistory, state.coverageHistory === "complete" ? "good" : "warn"],
+        ["触发器", state.trigger, state.hardHit ? "bad" : state.warnHit ? "warn" : ""],
+        ["ingest", state.ingestPaused ? "已暂停" : "可写", state.ingestPaused ? "bad" : "good"],
+        ["earliest retained", state.earliestRetained, ""],
+        ["pruned_before", state.prunedBefore, ""],
+        ["diagnostic", state.diagnostic, state.diagnostic === "CAPACITY_PROTECTED_WINDOW" ? "bad" : ""],
         ["7 天精确分位数", state.exactQuantile7d, state.exactQuantile7d === "可用" ? "good" : "warn"],
-        ["All 精确分位数", state.exactQuantileAll, state.exactQuantileAll === "可用" ? "good" : "bad"],
-        ["上次删除", state.lastEvicted, ""],
-        ["Reset Data", state.resetAt, ""]
+        ["Reset Data", state.resetAt, ""],
+        ["外部导出", state.externalExport, ""]
       ];
       const root = document.getElementById("state");
       root.innerHTML = fields.map(([k, v, cls]) => {
@@ -367,16 +443,18 @@
       prev = {
         策略: state.strategy,
         "原始 Usage Facts": String(state.rawFacts),
-        "rollup 天数": String(state.rollupDays),
+        "7 天保护窗 raw": String(state.protectedRaw),
         "热查询工作集": String(HOT),
-        "Claude 源日志": state.logPresent["src-claude"] ? "在" : "消失",
-        "Claude Data State": state.dataState["src-claude"],
-        "实时窗 Coverage": state.coverageLive,
-        容量: state.used + " / " + state.capacity,
+        "Claude 源日志": state.logPresent["src-claude"] ? "在（App 不拥有）" : "消失（App 不拥有）",
+        "历史 Coverage": state.coverageHistory,
+        触发器: state.trigger,
+        ingest: state.ingestPaused ? "已暂停" : "可写",
+        "earliest retained": state.earliestRetained,
+        pruned_before: state.prunedBefore,
+        diagnostic: state.diagnostic,
         "7 天精确分位数": state.exactQuantile7d,
-        "All 精确分位数": state.exactQuantileAll,
-        "上次删除": state.lastEvicted,
-        "Reset Data": state.resetAt
+        "Reset Data": state.resetAt,
+        外部导出: state.externalExport
       };
       state = reduce(state, action);
       if (!fromWalk) step = 0;

@@ -28,7 +28,7 @@ Query path vs retention: the 1m All raw scan (6.1–6.5 s) and even the 7d raw s
 
 ## A. Unlimited raw, optional capacity ceiling
 
-Keep every contributing Usage Fact until a byte or row ceiling. All windows can recompute exact Decode TPS. Disappeared source logs still leave history intact.
+Keep every contributing Usage Fact until a byte **or** row ceiling, whichever hits first. Hitting the ceiling does not jump to oldest contributing facts. It runs the shared prune ladder below. All windows can recompute exact Decode TPS until that ladder starts pruning. Disappeared source logs still leave history intact.
 
 Tradeoff: file growth is linear at ~500 B/fact. 1m is already 502 MB on this machine. Backup and VACUUM stay sub-second at 1m; source-scoped rebuild is 3.0–3.1 s and 90-day delete is 4.1–4.6 s. Choose A if All-history exact quantiles must remain possible.
 
@@ -52,7 +52,40 @@ Tradeoff: 90d / 1y / All exact Decode TPS are gone. That is a bigger product cut
 
 ## Source logs that later disappear
 
-Default keep. On this machine the harness marked `src-claude` `log_present=0` and retained 4789 / 47865 / 479789 facts at the three scales. Disappeared logs make live Coverage partial and Data State stale; they are not a delete signal. Reset Data is the only user-facing wipe.
+Default keep. On this machine the harness marked `src-claude` `log_present=0` and retained 4789 / 47865 / 479789 facts at the three scales. Disappeared logs make live Coverage partial and Data State stale; they are not a delete signal. They are also not a Reset Data signal.
+
+## Capacity prune ladder
+
+Warning and hard ceiling both trip on **bytes or rows, whichever arrives first**.
+
+Candidate numbers: warn at 750 MiB **or** 1.5 million logical facts; hard ceiling at 1 GiB **or** 2 million logical facts.
+
+When the hard ceiling is hit, the only legal order is:
+
+1. Delete superseded / non-contributing raw facts.
+2. Atomically compact raw facts older than 90 days into daily rollups.
+3. If still over, delete the oldest rollup windows. Record `retention_pruned_before`, the retained range, and set historical Coverage to **partial**.
+4. If still over, delete the oldest raw facts in the 7–90 day band. Never delete the <=7 day protected raw window.
+5. If that protected 7-day window itself exceeds the ceiling, **pause ingest** and emit `CAPACITY_PROTECTED_WINDOW`. Do not silently delete 7-day raw.
+
+Every prune must expose `earliest_retained_at` and partial coverage in the UI and diagnostics. Disappeared source logs are not in this queue.
+
+These ladder assertions are in `results/p0-policy-assertions.md`. They are post-hoc logic checks, not a rerun of the 1m timings.
+
+## Reset Data
+
+Reset Data is a privacy wipe of **all App-owned telemetry**, not just facts/rollups/cursors:
+
+- Usage Facts and observations
+- rollups
+- cursors and watermarks
+- source state and opaque identities
+- diagnostics
+- snapshots / caches
+- migration backups
+- App-managed export copies
+
+Keep schema / migration metadata and non-telemetry preferences. Never modify source Codex or Claude Code logs. Files the user already saved outside the app cannot be deleted by the app; the confirmation copy must say so.
 
 ## P0 choices for Patrick
 
@@ -60,13 +93,10 @@ Do not treat these as closed.
 
 1. Default retention: A, **B (recommended)**, or C.
 2. User-visible control in P0: no setting (**recommended**), or expose A/B/C.
-3. Capacity warning / ceiling, even on B:
-   - warn at 750 MiB or 1.5 million facts
-   - hard ceiling at 1 GiB or 2 million facts
-   - at the ceiling, stop accepting new facts until eviction finishes; do not silently write past the cap
-4. Delete order: superseded then oldest contributing (**recommended**); oldest first; or source-scoped only. Disappeared logs are not in this queue.
+3. Capacity warning / ceiling: accept the bytes-or-rows trigger and the prune ladder above (**recommended**).
+4. Delete order is no longer a free menu. The ladder in this file is the P0 candidate.
 5. Can a rollup recompute exact Decode TPS? **No**, unless the raw samples are still stored.
-6. Reset Data: delete Usage Facts, rollups, and cursors; keep schema; do not touch source logs. That is distinct from log disappearance.
+6. Reset Data: the expanded privacy wipe above (**recommended**).
 7. Backup / VACUUM:
    - `VACUUM INTO` before any schema change (549–588 ms at 1m)
    - `incremental_vacuum` after every compact (97–114 ms at 1m) — it is not a substitute for reclaiming space
@@ -76,4 +106,4 @@ Do not treat these as closed.
 
 If B is accepted:
 
-> Accept candidate B as the P0 SQLite retention default: keep raw Usage Facts for 90 days, roll older contributing facts into daily mutually exclusive token totals, and treat exact Decode TPS as available only while raw samples remain. Keep the 20k fact budget as the hot/query working set, not as retention. Do not delete canonical facts when a source log later disappears; mark `log_present=0` and degrade live Coverage / Data State instead. Warn at 750 MiB or 1.5 million facts and enforce a 1 GiB or 2 million fact ceiling by evicting superseded facts before oldest contributing facts. Reset Data wipes facts, rollups, and cursors only. Backup with `VACUUM INTO` before schema changes, run `incremental_vacuum` after compact, and run a full `VACUUM` after large deletes. Treat the Node timings as local evidence, not a fleet SLO.
+> Accept candidate B as the P0 SQLite retention default: keep raw Usage Facts for 90 days, roll older contributing facts into daily mutually exclusive token totals, and treat exact Decode TPS as available only while raw samples remain. Keep the 20k fact budget as the hot/query working set, not as retention. Do not delete canonical facts when a source log later disappears; mark `log_present=0` and degrade live Coverage / Data State instead. Warn at 750 MiB or 1.5 million facts and enforce a 1 GiB or 2 million fact ceiling on whichever limit arrives first. On the hard ceiling, delete superseded facts, atomically compact raw older than 90 days, then prune oldest rollups (marking historical Coverage partial and recording `retention_pruned_before` / earliest retained timestamp), then prune 7–90 day raw if still over. Never silently delete the 7-day protected raw window; if that window itself exceeds the ceiling, pause ingest and emit `CAPACITY_PROTECTED_WINDOW`. Reset Data wipes all App-owned telemetry (facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies), keeps schema metadata and non-telemetry preferences, does not modify source Coding Agent logs, and must warn that user-saved external exports cannot be deleted by the app. Backup with `VACUUM INTO` before schema changes, run `incremental_vacuum` after compact, and run a full `VACUUM` after large deletes. Treat the Node timings as local evidence, not a fleet SLO.

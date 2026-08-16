@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runPolicyAssertions } from "./policy.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tmpDir = join(here, "tmp");
@@ -71,6 +72,7 @@ const requestedScales = flag("scales", "10k,100k,1m")
   .filter((n) => Number.isFinite(n) && n > 0);
 const runsOverride = Number(flag("runs", "")) || null;
 const oneMBudgetMs = Number(flag("budget-1m-ms", String(15 * 60 * 1000)));
+const logicOnly = args.includes("--logic-only");
 
 const rows = [];
 let failed = 0;
@@ -1100,10 +1102,54 @@ function fmtRange(range) {
   return `${format(range.min)}–${format(range.max)} (n=${range.n})`;
 }
 
+function writePolicyArtifacts() {
+  const payload = {
+    prototype: "THROW AWAY sqlite retention policy assertions",
+    kind: "post-hoc-logic",
+    disclaimer:
+      "Added after the 10k/100k/1m size timings. These are targeted logic assertions for the capacity ladder and Reset Data wipe. They are not a rerun of the 1m measurements.",
+    machine: {
+      label: "Apple silicon developer Mac",
+      node: process.versions.node,
+      sqliteUsed: `${sqliteVersion()} via node:sqlite`,
+    },
+    rows,
+  };
+  writeFileSync(join(resultsDir, "p0-policy-assertions.json"), `${JSON.stringify(payload, null, 2)}\n`);
+  const lines = [
+    "# P0 policy logic assertions",
+    "",
+    "THROW AWAY. Post-hoc logic only. These rows were added after the 10k/100k/1m measurements and do not replace those size or query ranges.",
+    "",
+    "| Check | Kind | Measured | Suggested / expected | Result |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  for (const row of rows) {
+    lines.push(
+      `| ${row.name} | ${row.kind} | ${String(format(row.measured)).replaceAll("|", "/")} | ${String(format(row.suggested)).replaceAll("|", "/")} | ${row.status} |`,
+    );
+  }
+  lines.push("");
+  writeFileSync(join(resultsDir, "p0-policy-assertions.md"), `${lines.join("\n")}\n`);
+}
+
 function main() {
   mkdirSync(tmpDir, { recursive: true });
   mkdirSync(resultsDir, { recursive: true });
   semanticChecks();
+  runPolicyAssertions(assert, { schemaPath, now: NOW_MS });
+  if (logicOnly) {
+    const privacy = scanPrivacy();
+    assert("public artifact privacy scan", privacy.length === 0, privacy, []);
+    writePolicyArtifacts();
+    if (failed) {
+      console.error(`\n${failed} assertion(s) failed`);
+      process.exitCode = 1;
+    } else {
+      console.log("\nPolicy assertions passed. Existing 10k/100k/1m results were not rewritten.");
+    }
+    return;
+  }
 
   const tinyPath = join(tmpDir, "tiny-sqlite-retention-PROTOTYPE-wipe-me.db");
   const tiny = buildFresh(tinyPath, 2000, 7);
