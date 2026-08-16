@@ -1,0 +1,331 @@
+{
+  "generatedAt": "2026-08-16T21:38:47.178Z",
+  "disclaimer": "Measured numbers are from one local Node process and an in-memory stand-in. They are not AppKit, SQLite, or fleet facts. Suggested gates are candidate acceptance thresholds for Patrick to accept or revise.",
+  "privacy": {
+    "fixtures": "synthetic-only",
+    "scannedFor": [
+      "absolute local paths",
+      "emails",
+      "private URLs",
+      "prompt/log bodies"
+    ]
+  },
+  "windows": {
+    "outputThroughputSec": 180,
+    "tokenBurnSec": 600,
+    "callsSec": 600,
+    "performanceSec": {
+      "15m": 900,
+      "1h": 3600,
+      "24h": 86400,
+      "7d": 604800
+    },
+    "defaultPerformance": "1h",
+    "staleAfterSec": 30
+  },
+  "defaultLimits": {
+    "queueCapacityPerSource": 256,
+    "maxFacts": 20000,
+    "maxSeriesPoints": 180,
+    "maxInflightQueries": 1,
+    "maxEventsPerTick": 128,
+    "lightSnapshotIntervalMs": 1000,
+    "detailSnapshotIntervalMs": 250
+  },
+  "agents": [
+    "Codex",
+    "Claude Code"
+  ],
+  "models": [
+    "Orion 2",
+    "Nova Large",
+    "Sage Mini",
+    "Atlas Code",
+    "Ember",
+    "Quartz"
+  ],
+  "results": [
+    {
+      "name": "decode TPS v1 formula",
+      "measured": 60,
+      "suggested": "(output_total - 1) / (duration - TTFT) = 60",
+      "ok": true
+    },
+    {
+      "name": "decode TPS unavailable without call identity",
+      "measured": "unavailable",
+      "suggested": "unavailable",
+      "ok": true
+    },
+    {
+      "name": "decode TPS excludes retries",
+      "measured": "unavailable",
+      "suggested": "unavailable",
+      "ok": true
+    },
+    {
+      "name": "Top4 + Other tie-breaks alphabetically",
+      "measured": [
+        "Nova Large",
+        "Orion 2",
+        "Sage Mini",
+        "Atlas Code",
+        "其他 · 2"
+      ],
+      "suggested": [
+        "Nova Large",
+        "Orion 2",
+        "Sage Mini",
+        "Atlas Code",
+        "其他 · 2"
+      ],
+      "ok": true
+    },
+    {
+      "name": "fixed 3-minute output throughput window",
+      "measured": 10,
+      "suggested": 10,
+      "ok": true,
+      "note": "tokens / 180s, never a 30s visual placeholder"
+    },
+    {
+      "name": "detail query hidden by default",
+      "measured": "popover-hidden",
+      "suggested": "popover-hidden",
+      "ok": true
+    },
+    {
+      "name": "quality cohorts are not pooled",
+      "measured": {
+        "quality": "derived",
+        "value": 5
+      },
+      "suggested": {
+        "quality": "derived",
+        "value": 5
+      },
+      "ok": true
+    },
+    {
+      "name": "orthogonal Agent AND Model filters",
+      "measured": 2,
+      "suggested": 2,
+      "ok": true
+    },
+    {
+      "name": "stale window older than 30s",
+      "measured": "stale",
+      "suggested": "stale",
+      "ok": true
+    },
+    {
+      "name": "absent window stays unavailable, not zero",
+      "measured": "absent",
+      "suggested": "absent / unavailable",
+      "ok": true
+    },
+    {
+      "name": "failed source does not contribute facts",
+      "measured": 6,
+      "suggested": 6,
+      "ok": true
+    },
+    {
+      "name": "schema change marks partial coverage",
+      "measured": {
+        "coverage": "partial",
+        "schemaPartials": 6
+      },
+      "suggested": {
+        "coverage": "partial",
+        "schemaPartials": 6
+      },
+      "ok": true
+    },
+    {
+      "name": "hidden popover stops detail snapshot builds",
+      "measured": 1,
+      "suggested": 1,
+      "ok": true
+    },
+    {
+      "name": "status-item light snapshots continue while hidden",
+      "measured": 6,
+      "suggested": "> 1",
+      "ok": true
+    },
+    {
+      "name": "opening popover builds a detail snapshot",
+      "measured": {
+        "light": 1,
+        "detail": 1
+      },
+      "suggested": {
+        "light": ">=1",
+        "detail": ">=1"
+      },
+      "ok": true
+    },
+    {
+      "name": "per-source queue never exceeds capacity",
+      "measured": [
+        "codex:0",
+        "claude:0"
+      ],
+      "suggested": "<= 32",
+      "ok": true
+    },
+    {
+      "name": "fact store is bounded",
+      "measured": 64,
+      "suggested": "<= 200",
+      "ok": true
+    },
+    {
+      "name": "series buffer is bounded",
+      "measured": 20,
+      "suggested": "<= 20",
+      "ok": true
+    },
+    {
+      "name": "queue shedding is counted",
+      "measured": 336,
+      "suggested": "> 0",
+      "ok": true
+    },
+    {
+      "name": "bounded ingest of 400 events (ms)",
+      "measured": 0.4015419999999992,
+      "suggested": "local measurement only",
+      "ok": true,
+      "note": "Not a ship gate. Repeat on target hardware before promoting."
+    },
+    {
+      "name": "single query is accepted",
+      "measured": true,
+      "suggested": true,
+      "ok": true
+    },
+    {
+      "name": "serial query after release is accepted",
+      "measured": true,
+      "suggested": true,
+      "ok": true
+    },
+    {
+      "name": "query bound rejects overflow",
+      "measured": "query-bound",
+      "suggested": "query-bound",
+      "ok": true
+    },
+    {
+      "name": "high-volume facts stay within maxFacts",
+      "measured": 20000,
+      "suggested": "<= 20000",
+      "ok": true
+    },
+    {
+      "name": "Top4 + Other reconstructs selected throughput",
+      "measured": {
+        "rankedSum": 8365.111111111111,
+        "liveValue": 8365.111111111111
+      },
+      "suggested": "equal within 1e-6",
+      "ok": true
+    },
+    {
+      "name": "20k ingest wall time (ms)",
+      "measured": 3.878458000000002,
+      "suggested": "local measurement only — do not treat as a universal SLO",
+      "ok": true
+    },
+    {
+      "name": "20k drain wall time (ms)",
+      "measured": 833.127708,
+      "suggested": "local measurement only — do not treat as a universal SLO",
+      "ok": true
+    },
+    {
+      "name": "light snapshot rebuild (ms)",
+      "measured": 4.825083000000063,
+      "suggested": "local measurement; candidate A gate is < 5 ms",
+      "ok": true,
+      "note": "This machine is inside the 5 ms candidate. Not a fleet SLO."
+    },
+    {
+      "name": "detail snapshot rebuild (ms)",
+      "measured": 20.715832999999975,
+      "suggested": "local measurement; candidate A gate is < 16 ms",
+      "ok": true,
+      "note": "This machine misses the 16 ms candidate at 20k facts. JS in-memory stand-in, not SQLite/SwiftUI."
+    },
+    {
+      "name": "heap used after 20k facts (MiB)",
+      "measured": 33.28369140625,
+      "suggested": "local measurement only",
+      "ok": true,
+      "note": "before=13.54 after=33.28 delta=19.74"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "A",
+      "name": "Menu-bar conservative",
+      "recommended": true,
+      "limits": {
+        "queueCapacityPerSource": 256,
+        "maxFacts": 20000,
+        "maxSeriesPoints": 180,
+        "maxInflightQueries": 1,
+        "maxEventsPerTick": 128,
+        "lightSnapshotIntervalMs": 1000,
+        "detailSnapshotIntervalMs": 250
+      },
+      "cadence": {
+        "lightHz": 1,
+        "detailHzVisible": 4,
+        "detailHzHidden": 0
+      },
+      "degrade": "Shed newest per source, keep last good light snapshot, mark coverage partial."
+    },
+    {
+      "id": "B",
+      "name": "Balanced live",
+      "recommended": false,
+      "limits": {
+        "queueCapacityPerSource": 1024,
+        "maxFacts": 80000,
+        "maxSeriesPoints": 600,
+        "maxEventsPerTick": 512,
+        "lightSnapshotIntervalMs": 500,
+        "detailSnapshotIntervalMs": 100
+      },
+      "cadence": {
+        "lightHz": 2,
+        "detailHzVisible": 10,
+        "detailHzHidden": 0
+      },
+      "degrade": "Coalesce live series to 2s bins after 3 minutes; still isolate source failure."
+    },
+    {
+      "id": "C",
+      "name": "Burst-tolerant",
+      "recommended": false,
+      "limits": {
+        "queueCapacityPerSource": 4096,
+        "maxFacts": 250000,
+        "maxSeriesPoints": 1800,
+        "maxEventsPerTick": 2048,
+        "lightSnapshotIntervalMs": 500,
+        "detailSnapshotIntervalMs": 100
+      },
+      "cadence": {
+        "lightHz": 2,
+        "detailHzVisible": 10,
+        "detailHzHidden": 0
+      },
+      "degrade": "Keep more history; only if later retention evidence says 20k facts is too small."
+    }
+  ],
+  "failed": 0
+}

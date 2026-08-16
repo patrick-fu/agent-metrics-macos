@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>有界运行时与摘要下钻渲染临时原型</title>
+  <style>
+    :root{
+      color-scheme:light dark;
+      --bg:#e8ece7; --panel:#fff; --ink:#17211d; --muted:#647069; --line:#d9ded9;
+      --accent:#16624c; --accent2:#d9eee5; --warn:#8a5b00; --bad:#9b3232;
+      --shadow:0 18px 60px #10251b2b;
+      font:13px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:#dce3dc;color:var(--ink);min-height:100vh;padding:20px 16px 40px}
+    button,select{font:inherit;color:inherit}
+    button:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #2e78d2;outline-offset:2px}
+    .wrap{max-width:1100px;margin:0 auto}
+    .intro,.panel{background:var(--panel);border:1px solid #c5cdc6;border-radius:12px;padding:14px 16px;margin-bottom:14px}
+    .intro h1{margin:0 0 6px;font-size:20px}
+    .intro p{margin:0 0 8px;color:var(--muted)}
+    .mark{display:inline-block;border:1px dashed var(--warn);color:var(--warn);padding:2px 6px;border-radius:5px;font-size:10px;font-weight:800}
+    .stage{display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:start;margin-bottom:14px}
+    .status-item{width:210px;background:#1d2622;color:#e7eee9;border-radius:10px;padding:10px;min-height:72px}
+    .status-item b{display:block;font-size:22px}
+    .status-item small{color:#b7c3bc}
+    .popover{width:436px;min-height:620px;max-height:760px;overflow:auto;background:var(--panel);border:1px solid #bfc9c1;border-radius:18px;box-shadow:var(--shadow)}
+    .popover[hidden]{display:none}
+    header{padding:15px 16px 11px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:4}
+    .eyebrow{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:var(--accent)}
+    h1,h2,h3,p{margin:0} header h1{font-size:17px;margin-top:2px}
+    .sub{font-size:11px;color:var(--muted);margin-top:3px}
+    .prototype-mark{border:1px dashed var(--warn);color:var(--warn);padding:3px 6px;border-radius:5px;font-size:9px;font-weight:800;float:right}
+    .filters{padding:10px 14px;border-bottom:1px solid var(--line)}
+    .filter-row{display:grid;grid-template-columns:52px 1fr;gap:8px;align-items:start;margin:5px 0}
+    .filter-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding-top:6px}
+    .chips{display:flex;flex-wrap:wrap;gap:5px}
+    .chip,.seg button{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 8px;cursor:pointer}
+    .chip[aria-pressed=true],.seg button[aria-pressed=true]{border-color:var(--accent);background:var(--accent2);color:var(--accent);font-weight:700}
+    .chip[aria-pressed=true]::before{content:"✓ ";font-weight:900}
+    .logic{font-size:10px;color:var(--muted);margin:4px 0 0}
+    main{padding:12px 14px 18px}
+    .hero{padding:18px 14px;text-align:center;border-bottom:1px solid var(--line)}
+    .pulse{font-size:38px;font-weight:800;letter-spacing:0}
+    .pulse.live{animation:pulse 1.6s ease-in-out infinite}
+    @keyframes pulse{50%{opacity:.72}}
+    .drill-button{width:100%;display:grid;grid-template-columns:1fr auto;gap:8px;text-align:left;border:1px solid var(--line);background:var(--panel);padding:12px;margin:7px 0;border-radius:8px;cursor:pointer}
+    .drill-button strong{display:block}
+    .drill-button span{color:var(--muted);font-size:10px}
+    .drill-button::after{content:"›";font-size:22px}
+    .back{border:0;background:none;color:var(--accent);padding:0 0 10px;cursor:pointer}
+    .back::before{content:"← "}
+    .section{margin-bottom:14px}
+    .section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px}
+    .section h2{font-size:12px}
+    .window{font:600 10px ui-monospace,SFMono-Regular,monospace;color:var(--muted)}
+    .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+    .kpi{border:1px solid var(--line);border-radius:8px;padding:9px}
+    .kpi strong{display:block;font-size:17px;margin:3px 0}
+    .kpi small{display:block;color:var(--muted);font-size:9px}
+    .meta3{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:7px}
+    .meta{border-left:3px solid var(--line);padding:4px 5px;background:#f5f6f4;border-radius:3px;font-size:9px}
+    .meta b{display:block;font-size:8px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+    .meta.quality{border-left-style:double;border-left-color:#536d94}
+    .meta.state{border-left-color:var(--warn)}
+    .meta.coverage{border-left-color:var(--accent)}
+    .seg{display:flex;gap:4px;flex-wrap:wrap}
+    .range-line{display:grid;grid-template-columns:80px 1fr 42px;gap:7px;align-items:center;margin:7px 0}
+    .track{height:7px;border-radius:8px;background:#e1e5e1;position:relative}
+    .track::after{content:"";position:absolute;left:22%;right:18%;top:0;bottom:0;border-radius:8px;background:repeating-linear-gradient(90deg,var(--accent),var(--accent) 5px,#5eaa8f 5px,#5eaa8f 8px)}
+    .low-n{border:1px dashed var(--warn);border-radius:8px;padding:7px;background:#fff9e9;color:#59420f;font-size:10px}
+    .low-n::before{content:"△ "}
+    .chart{height:94px;border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;align-items:flex-end;gap:5px}
+    .bar{flex:1;border:1px solid #115642;background:repeating-linear-gradient(135deg,#68b595,#68b595 4px,#bde4d3 4px,#bde4d3 8px);border-radius:3px 3px 0 0}
+    .bar.partial{border-style:dashed;background:repeating-linear-gradient(135deg,#c0a05d,#c0a05d 3px,#f2dfb3 3px,#f2dfb3 7px)}
+    .chart-key{font-size:9px;color:var(--muted);margin-top:4px}
+    .table-link{border:0;background:none;color:var(--accent);text-decoration:underline;padding:0;cursor:pointer}
+    table.data{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px}
+    table.data th,table.data td{border:1px solid var(--line);padding:5px 6px;text-align:left}
+    .rank{display:grid;grid-template-columns:75px 1fr 64px;gap:6px;align-items:center;margin:5px 0;font-size:10px}
+    .rank i{height:6px;background:var(--accent);border-radius:3px}
+    .rank.other i{background:repeating-linear-gradient(90deg,#68736d,#68736d 4px,#c9cfcb 4px,#c9cfcb 7px)}
+    .note{font-size:10px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
+    .unavailable{font-style:italic}
+    .controls,.walk{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+    .controls button,.walk button{border:1px solid var(--line);background:#f7f8f6;border-radius:8px;padding:6px 9px;cursor:pointer}
+    .controls button[aria-pressed=true],.walk button[aria-current=true]{border-color:var(--accent);background:var(--accent2)}
+    pre.state{white-space:pre-wrap;font:11px/1.4 ui-monospace,SFMono-Regular,monospace;margin:0}
+    .visually-hidden{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+    @media (max-width:860px){.stage{grid-template-columns:1fr}.popover{width:min(436px,100%)}}
+    @media (prefers-reduced-motion:reduce){
+      .pulse.live{animation:none}
+    }
+    html.reduce-motion .pulse.live{animation:none}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="intro">
+      <span class="mark">临时原型 · 仅合成数据</span>
+      <h1>有界运行时与摘要下钻是否仍然正确？</h1>
+      <p>验证已接受的 D 方案弹窗，在合成多智能体、高流量、过时/部分/不可用、模式变更和源失败下，是否保持固定窗口、前 4 + 其他、轻/详快照分离，以及键盘与非颜色提示。</p>
+      <p>系统级 VoiceOver 朗读不在此自动验收，页面只提供可访问名称与结构。本地断言：<code>node prototype/bounded-runtime/harness.mjs</code></p>
+    </section>
+
+    <div class="stage">
+      <div>
+        <div id="statusItem" class="status-item" role="status" aria-live="polite" aria-label="菜单栏轻快照"></div>
+        <p class="logic">状态栏只读轻快照。弹窗隐藏时仍更新；详情快照停止。</p>
+      </div>
+      <div id="popover" class="popover" aria-label="编码智能体指标摘要下钻弹窗"></div>
+    </div>
+
+    <section class="panel">
+      <h2>自由操作</h2>
+      <div class="controls">
+        <button id="togglePopover" aria-pressed="true">弹窗可见</button>
+        <button id="toggleMotion" aria-pressed="false">降低动态</button>
+        <button id="tickClock">推进 1 秒</button>
+        <button id="burst">注入 400 条突发</button>
+        <button id="failClaude">失败 Claude 源</button>
+        <button id="recoverClaude">恢复 Claude 源</button>
+        <button id="schemaCodex">Codex 模式未知</button>
+      </div>
+      <div class="walk" role="tablist" aria-label="引导场景">
+        <button data-scene="multi" aria-current="true">多智能体筛选</button>
+        <button data-scene="volume">高流量有界</button>
+        <button data-scene="degrade">过时与不可用</button>
+        <button data-scene="schema">模式与源失败</button>
+        <button data-scene="hidden">隐藏停止渲染</button>
+        <button data-scene="a11y">键盘与数据表</button>
+      </div>
+      <p id="sceneHelp" class="sub"></p>
+    </section>
+
+    <section class="panel">
+      <h2>当前运行时状态</h2>
+      <pre id="state" class="state"></pre>
+    </section>
+  </div>
+
+  <script type="module">
+    import {
+      AGENTS, MODELS, WINDOWS, DEFAULT_LIMITS,
+      createRuntime, generateVolume, syntheticObservation
+    } from "./runtime.mjs";
+
+    const ui = {
+      detail: null,
+      tableOpen: false,
+      metric: "throughput",
+      scope: "总体",
+    };
+    const reduceQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const runtime = createRuntime({ now: 180_000, limits: { ...DEFAULT_LIMITS } });
+    seedSteady();
+    runtime.setPopoverVisible(true);
+    runtime.setReducedMotion(reduceQuery.matches);
+    runtime.tick(180_000);
+
+    const scenes = {
+      multi: "组内为或、两轴为且。只选 Claude Code + Nova Large，摘要应只反映该交集。",
+      volume: "连续注入超过队列上限的事件。单源丢弃不应让另一源停摆，事实与序列保持有界。",
+      degrade: "把时钟推到窗口之外。缺测显示“— 不可用”，过时显示 ◷，绝不当作 0。",
+      schema: "Codex 进入未知模式，Claude 源失败。失败源不写事实；未知模式只把覆盖率标成部分。",
+      hidden: "隐藏弹窗后再推进时钟。详情构建次数应冻结，状态栏轻快照继续增加。",
+      a11y: "用 Tab / Shift+Tab 走完筛选、下钻、返回；展开数据表。名称不只靠颜色。",
+    };
+
+    function seedSteady() {
+      const now = runtime.now();
+      const models = MODELS;
+      for (let i = 0; i < 36; i += 1) {
+        const source = i % 2 === 0 ? "codex" : "claude";
+        runtime.ingest(syntheticObservation({
+          source,
+          agent: source === "claude" ? "Claude Code" : "Codex",
+          modelDisplay: models[i % models.length],
+          factId: `seed-${i}`,
+          modelCallId: `seed-call-${i}`,
+          observedAt: now - 170000 + i * 4000,
+          outputTokens: 80 + (i % 5) * 20,
+          quality: i === 7 ? "estimated" : "derived",
+          coverage: i > 32 ? "partial" : "complete",
+        }));
+      }
+    }
+
+    function fmt(value, digits = 1) {
+      if (value == null || Number.isNaN(value)) return "— 不可用";
+      return value.toFixed(digits);
+    }
+    function qualityMark(q) {
+      return { measured: "● 实测", derived: "◇ 推导", estimated: "○ 估计", unavailable: "— 不可用" }[q] || q;
+    }
+    function stateMark(s) {
+      return { fresh: "● 新鲜", stale: "◷ 过时", absent: "○ 缺测", unavailable: "— 不可用" }[s] || s;
+    }
+    function coverageMark(c) {
+      return { complete: "● 完整", partial: "◑ 部分" }[c] || c;
+    }
+
+    function chipGroup(axis, values, selected) {
+      const name = axis === "agents" ? "智能体多选" : "模型多选";
+      return `<div class="chips" role="group" aria-label="${name}">${
+        values.map((value) => `<button class="chip" data-axis="${axis}" data-value="${value}" aria-pressed="${selected.includes(value)}">${value}</button>`).join("")
+      }</div>`;
+    }
+
+    function meta(metric) {
+      return `<div class="meta3" aria-label="测量质量、数据状态与覆盖率">
+        <div class="meta quality"><b>测量质量</b>${qualityMark(metric.quality)}</div>
+        <div class="meta state"><b>数据状态</b>${stateMark(metric.dataState)}</div>
+        <div class="meta coverage"><b>覆盖率</b>${coverageMark(metric.coverage)}</div>
+      </div>`;
+    }
+
+    function header(state) {
+      return `<header>
+        <span class="prototype-mark">临时原型 · 合成数据</span>
+        <span class="eyebrow">编码智能体指标</span>
+        <h1>实时活动</h1>
+        <p class="sub">固定 3 分钟吞吐窗口 · 组内或 / 两轴且</p>
+      </header>
+      <section class="filters">
+        <div class="filter-row"><span class="filter-label">智能体</span>${chipGroup("agents", ["全部", ...AGENTS], state.filters.agents)}</div>
+        <div class="filter-row"><span class="filter-label">模型</span>${chipGroup("models", ["全部", ...MODELS], state.filters.models)}</div>
+        <p class="logic">“全部”表示不限制。多选在同一轴上是并集。</p>
+      </section>`;
+    }
+
+    function kpis(detail) {
+      return `<section class="section">
+        <div class="section-head"><h2>固定实时窗口</h2><span class="window">180s / 600s / 600s</span></div>
+        <div class="kpis">
+          <article class="kpi"><small>输出吞吐 · 3 分钟</small><strong class="${detail.live.value == null ? "unavailable" : ""}">${fmt(detail.live.value)}</strong><small>词元/秒</small></article>
+          <article class="kpi"><small>词元消耗 · 10 分钟</small><strong class="${detail.burn.value == null ? "unavailable" : ""}">${fmt(detail.burn.value, 2)}</strong><small>互斥部分 / 秒</small></article>
+          <article class="kpi"><small>模型调用 · 10 分钟</small><strong class="${detail.calls.value == null ? "unavailable" : ""}">${fmt(detail.calls.value, 3)}</strong><small>去重调用 / 秒</small></article>
+        </div>
+        ${meta(detail.live)}
+      </section>`;
+    }
+
+    function performance(detail) {
+      const perf = detail.performance;
+      const rows = ui.scope === "总体"
+        ? `<div class="range-line"><span>解码 TPS</span><div class="track" aria-hidden="true"></div><b>${perf.overall.p50 == null ? "—" : fmt(perf.overall.p50, 0)}</b></div>
+           <p class="visually-hidden">第 25 百分位 ${fmt(perf.overall.p25, 0)}，中位数 ${fmt(perf.overall.p50, 0)}，第 75 百分位 ${fmt(perf.overall.p75, 0)}</p>`
+        : perf.byModel.map((row) => `<div class="range-line"><span>${row.label}</span><div class="track" aria-hidden="true"></div><b>${row.p50 == null ? "n="+row.n : fmt(row.p50, 0)}</b></div>`).join("");
+      const low = perf.lowN ? `<div class="low-n"><b>小样本 n=${perf.n}。</b>不足 5 个请求级观测时不显示百分位。</div>` : "";
+      return `<section class="section">
+        <div class="section-head"><h2>单次调用性能</h2>
+          <div class="seg" aria-label="独立性能时间范围">${["15m","1h","24h","7d"].map((value) => `<button data-range="${value}" aria-pressed="${detail.performanceRange===value}">${value}</button>`).join("")}</div>
+        </div>
+        <div class="seg" aria-label="性能分组">
+          <button data-scope="总体" aria-pressed="${ui.scope==="总体"}">总体</button>
+          <button data-scope="按模型" aria-pressed="${ui.scope==="按模型"}">按模型</button>
+        </div>
+        ${rows}${low}
+        <p class="chart-key">公式 v1 · 不含首次输出等待 · 重试不进入正常队列</p>
+      </section>`;
+    }
+
+    function seriesTable(detail) {
+      if (!ui.tableOpen) return "";
+      const rows = (detail.series || []).map((point) => `<tr>
+        <td>${point.at}</td>
+        <td>${point.throughput == null ? "— 不可用" : point.throughput.toFixed(2)}</td>
+        <td>${coverageMark(point.coverage)}</td>
+        <td>${qualityMark(point.quality)}</td>
+      </tr>`).join("");
+      return `<table class="data" aria-label="输出吞吐数据表">
+        <caption>可展开数据表，不依赖颜色区分完整与部分覆盖</caption>
+        <thead><tr><th scope="col">时间</th><th scope="col">词元/秒</th><th scope="col">覆盖率</th><th scope="col">测量质量</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4">没有序列点</td></tr>`}</tbody>
+      </table>`;
+    }
+
+    function trends(detail) {
+      const points = (detail.series || []).slice(-8);
+      const max = Math.max(1, ...points.map((point) => point.throughput || 0));
+      const bars = points.map((point) => `<i class="bar ${point.coverage === "partial" ? "partial" : ""}" style="height:${Math.max(8, (point.throughput || 0) / max * 100)}%" title="${fmt(point.throughput)}"></i>`).join("");
+      return `<section class="section">
+        <div class="section-head"><h2>趋势</h2></div>
+        <div class="chart" role="img" aria-label="输出吞吐趋势，虚线斜纹表示部分覆盖">${bars}</div>
+        <p class="chart-key">实线=完整 · 斜纹/虚线=部分 ·
+          <button class="table-link" id="tableToggle" aria-expanded="${ui.tableOpen}">${ui.tableOpen ? "隐藏数据表" : "显示数据表"}</button>
+        </p>
+        ${seriesTable(detail)}
+      </section>`;
+    }
+
+    function ranking(detail) {
+      const pack = detail.ranking.throughput;
+      const rows = [...pack.ranked, pack.other].filter(Boolean);
+      const max = Math.max(1, ...rows.map((row) => row.value));
+      return `<section class="section">
+        <div class="section-head"><h2>按模型</h2><span class="window">前 4 + 其他</span></div>
+        ${rows.map((row, index) => `<div class="rank ${row.label.startsWith("其他") ? "other" : ""}">
+          <span>${row.label}</span><i style="width:${row.value / max * 100}%"></i><b>${fmt(row.value)}</b>
+        </div>`).join("")}
+        <p class="chart-key">“其他”是明确聚合组。同分按字母顺序，避免排名跳动。</p>
+      </section>`;
+    }
+
+    function renderPopover() {
+      const root = document.getElementById("popover");
+      if (!runtime.getState().popoverVisible) {
+        root.hidden = true;
+        root.innerHTML = "";
+        return;
+      }
+      root.hidden = false;
+      const state = runtime.getState();
+      const detail = runtime.getDetailSnapshot();
+      if (!detail) {
+        root.innerHTML = `${header(state)}<main><p>详情快照尚未建立</p></main>`;
+        bindPopover();
+        return;
+      }
+      if (ui.detail) {
+        const body = ui.detail === "实时指标" ? `${kpis(detail)}${trends(detail)}`
+          : ui.detail === "性能" ? `${performance(detail)}${ranking(detail)}`
+          : `${trends(detail)}${ranking(detail)}${meta(detail.live)}`;
+        root.innerHTML = `${header(state)}<main>
+          <button class="back" data-back>返回摘要</button>
+          <h2>${ui.detail}</h2>
+          ${body}
+        </main>`;
+      } else {
+        const live = detail.live;
+        const reduce = state.reducedMotion || reduceQuery.matches;
+        root.innerHTML = `${header(state)}
+          <div class="hero">
+            <span class="eyebrow">3 分钟输出吞吐</span>
+            <div class="pulse ${reduce ? "" : "live"}">${fmt(live.value)}</div>
+            <p>词元/秒 · ${qualityMark(live.quality)} · ${coverageMark(live.coverage)}</p>
+          </div>
+          <main>
+            <button class="drill-button" data-detail="实时指标" aria-label="打开实时指标详情，固定 3 分钟、10 分钟窗口">
+              <span><strong>实时指标</strong>固定 3 分钟吞吐 / 10 分钟消耗 / 10 分钟调用</span>
+            </button>
+            <button class="drill-button" data-detail="性能" aria-label="打开单次调用性能详情">
+              <span><strong>性能</strong>${detail.performanceRange} 独立范围 · 小样本安全分布</span>
+            </button>
+            <button class="drill-button" data-detail="趋势与模型" aria-label="打开趋势与模型详情，前四加其他">
+              <span><strong>趋势与模型</strong>输出吞吐 · 前 4 + 其他</span>
+            </button>
+            <p class="note">先看极简摘要。不可用显示为“— 不可用”，绝不当作零。</p>
+          </main>`;
+      }
+      bindPopover();
+    }
+
+    function bindPopover() {
+      document.querySelectorAll("[data-axis]").forEach((button) => {
+        button.onclick = () => {
+          const axis = button.dataset.axis;
+          const value = button.dataset.value;
+          const current = [...runtime.getState().filters[axis]];
+          let next;
+          if (value === "全部") next = ["全部"];
+          else {
+            next = current.filter((item) => item !== "全部");
+            next = next.includes(value) ? next.filter((item) => item !== value) : [...next, value];
+            if (!next.length) next = ["全部"];
+          }
+          runtime.setFilters({ [axis]: next });
+          renderAll();
+        };
+      });
+      document.querySelectorAll("[data-detail]").forEach((button) => {
+        button.onclick = () => { ui.detail = button.dataset.detail; renderAll(); };
+      });
+      document.querySelector("[data-back]")?.addEventListener("click", () => { ui.detail = null; renderAll(); });
+      document.querySelectorAll("[data-range]").forEach((button) => {
+        button.onclick = () => { runtime.setPerformanceRange(button.dataset.range); renderAll(); };
+      });
+      document.querySelectorAll("[data-scope]").forEach((button) => {
+        button.onclick = () => { ui.scope = button.dataset.scope; renderAll(); };
+      });
+      document.getElementById("tableToggle")?.addEventListener("click", () => {
+        ui.tableOpen = !ui.tableOpen;
+        renderAll();
+      });
+    }
+
+    function renderStatus() {
+      const light = runtime.getLightSnapshot();
+      const el = document.getElementById("statusItem");
+      if (!light) {
+        el.textContent = "轻快照未建立";
+        return;
+      }
+      el.innerHTML = `<small>状态栏轻快照</small><b>${fmt(light.outputThroughput)}</b><small>${qualityMark(light.quality)} · ${stateMark(light.dataState)}</small>`;
+      el.setAttribute("aria-label", `菜单栏轻快照，输出吞吐 ${fmt(light.outputThroughput)} 词元每秒，${qualityMark(light.quality)}，${stateMark(light.dataState)}`);
+    }
+
+    function renderState() {
+      const state = runtime.getState();
+      document.getElementById("state").textContent = JSON.stringify({
+        now: state.now,
+        popoverVisible: state.popoverVisible,
+        reducedMotion: state.reducedMotion,
+        filters: state.filters,
+        factCount: state.factCount,
+        seriesCount: state.seriesCount,
+        sources: state.sources,
+        counters: {
+          ingested: state.counters.ingested,
+          accepted: state.counters.accepted,
+          dropped: state.counters.dropped,
+          lightBuilds: state.counters.lightBuilds,
+          detailBuilds: state.counters.detailBuilds,
+          popoverRenders: state.counters.popoverRenders,
+          statusRenders: state.counters.statusRenders,
+          rejectedQueries: state.counters.rejectedQueries,
+        },
+      }, null, 2);
+    }
+
+    function renderAll() {
+      renderStatus();
+      renderPopover();
+      renderState();
+    }
+
+    document.getElementById("togglePopover").onclick = (event) => {
+      const next = !runtime.getState().popoverVisible;
+      runtime.setPopoverVisible(next);
+      event.currentTarget.setAttribute("aria-pressed", String(next));
+      event.currentTarget.textContent = next ? "弹窗可见" : "弹窗已隐藏";
+      renderAll();
+    };
+    document.getElementById("toggleMotion").onclick = (event) => {
+      const next = !runtime.getState().reducedMotion;
+      runtime.setReducedMotion(next);
+      document.documentElement.classList.toggle("reduce-motion", next);
+      event.currentTarget.setAttribute("aria-pressed", String(next));
+      renderAll();
+    };
+    document.getElementById("tickClock").onclick = () => {
+      runtime.advance(1000, 250);
+      renderAll();
+    };
+    document.getElementById("burst").onclick = () => {
+      runtime.ingestMany(generateVolume({ count: 400, now: runtime.now(), windowMs: 1000, prefix: `burst-${runtime.now()}` }));
+      runtime.tick(runtime.now());
+      renderAll();
+    };
+    document.getElementById("failClaude").onclick = () => { runtime.failSource("claude"); runtime.tick(runtime.now()); renderAll(); };
+    document.getElementById("recoverClaude").onclick = () => { runtime.recoverSource("claude"); runtime.tick(runtime.now()); renderAll(); };
+    document.getElementById("schemaCodex").onclick = () => { runtime.setSchema("codex", "unknown"); runtime.tick(runtime.now()); renderAll(); };
+
+    document.querySelectorAll("[data-scene]").forEach((button) => {
+      button.onclick = () => {
+        document.querySelectorAll("[data-scene]").forEach((other) => other.setAttribute("aria-current", "false"));
+        button.setAttribute("aria-current", "true");
+        const key = button.dataset.scene;
+        document.getElementById("sceneHelp").textContent = scenes[key];
+        if (key === "multi") runtime.setFilters({ agents: ["Claude Code"], models: ["Nova Large"] });
+        if (key === "hidden") {
+          runtime.setPopoverVisible(false);
+          document.getElementById("togglePopover").setAttribute("aria-pressed", "false");
+          document.getElementById("togglePopover").textContent = "弹窗已隐藏";
+        }
+        if (key === "a11y") {
+          ui.detail = "趋势与模型";
+          ui.tableOpen = true;
+          runtime.setPopoverVisible(true);
+        }
+        runtime.tick(runtime.now());
+        renderAll();
+      };
+    });
+    document.getElementById("sceneHelp").textContent = scenes.multi;
+
+    document.addEventListener("keydown", (event) => {
+      if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+      if (event.key === "Escape" && ui.detail) {
+        ui.detail = null;
+        renderAll();
+      }
+    });
+
+    reduceQuery.addEventListener("change", () => {
+      runtime.setReducedMotion(reduceQuery.matches || runtime.getState().reducedMotion);
+      document.documentElement.classList.toggle("reduce-motion", reduceQuery.matches);
+      renderAll();
+    });
+
+    renderAll();
+    window.__prototype = { runtime, ui };
+  </script>
+</body>
+</html>
