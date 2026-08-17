@@ -292,7 +292,7 @@ public struct OTLPHTTPJSONDecoder: Sendable {
         "llm_request.context", "input_tokens", "cache_read_tokens", "cache_creation_tokens", "success",
         "status_code", "error", "response.has_tool_call", "stop_reason", "gen_ai.response.finish_reasons",
         "session.id", "app.version", "app.entrypoint", "organization.id", "user.account_uuid", "user.account_id",
-        "user.id", "user.email", "terminal.type", "user.groups", "identity.source"
+        "user.id", "user.email", "terminal.type", "user.groups", "identity.source", "workflow.run_id", "workflow.name"
     ]
 
     public init() {}

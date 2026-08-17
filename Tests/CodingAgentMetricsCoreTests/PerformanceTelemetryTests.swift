@@ -119,6 +119,22 @@ struct PerformanceTelemetryTests {
         #expect(columns.isDisjoint(with: ["session_id", "user_email", "terminal_type", "attribute_map"]))
     }
 
+    @Test func decoderIgnoresOfficialWorkflowMetadataWithoutPersistingIt() throws {
+        let workflowAttributes = [
+            "{\"key\":\"workflow.run_id\",\"value\":{\"stringValue\":\"run-1\"}}",
+            "{\"key\":\"workflow.name\",\"value\":{\"stringValue\":\"build\"}}",
+        ].joined(separator: ",")
+        let result = OTLPHTTPJSONDecoder().decode(
+            Data(officialTraceJSON(targetExtra: workflowAttributes).utf8), receivedAt: now
+        )
+        #expect(result.diagnostics.isEmpty)
+        #expect(result.facts.count == 1)
+        let store = try temporaryStore()
+        try store.upsertPerformanceFacts(result.facts)
+        let columns = try store.performanceFactColumnNames()
+        #expect(columns.isDisjoint(with: ["workflow_run_id", "workflow_name", "workflow_metadata"]))
+    }
+
     @Test func decoderRejectsWorkspaceHostPaths() {
         let result = OTLPHTTPJSONDecoder().decode(
             Data(officialTraceJSON(targetExtra: "{\"key\":\"workspace.host_paths\",\"value\":{\"stringValue\":\"/private/workspace\"}}").utf8),
