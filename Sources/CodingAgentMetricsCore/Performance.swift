@@ -101,6 +101,37 @@ public struct PerformanceDistribution: Sendable, Equatable {
     }
 }
 
+public enum PerformanceMetricKind: Sendable, Equatable {
+    case timeToFirstToken
+    case endToEnd
+    case decodeTPS
+}
+
+public struct PerformanceMetricPresentation: Sendable, Equatable {
+    public let valueText: String
+    public let secondaryText: String
+    public let unitText: String
+    public let qualityText: String
+    public let lowSampleText: String?
+    public let accessibilityHint: String?
+
+    public init(kind: PerformanceMetricKind, distribution: PerformanceDistribution) {
+        let isDecode = kind == .decodeTPS
+        unitText = isDecode ? "tokens/s" : "ms"
+        qualityText = distribution.measurementQuality == .derived ? "Derived" : distribution.measurementQuality.rawValue.capitalized
+        valueText = distribution.p50.map(Self.format) ?? "Unavailable"
+        let label = isDecode ? "p10" : "p95"
+        let secondary = isDecode ? distribution.p10 : distribution.p95
+        secondaryText = "p50 · \(label) \(secondary.map(Self.format) ?? "-") · n \(distribution.sampleCount)"
+        lowSampleText = (1..<5).contains(distribution.sampleCount) ? "Low sample" : nil
+        accessibilityHint = isDecode ? "Derived using \(DecodeTPSDefinition.version): \(DecodeTPSDefinition.formula)." : nil
+    }
+
+    private static func format(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+    }
+}
+
 public struct PerformanceSnapshot: Sendable, Equatable {
     public var range: PerformanceRange
     public var timeToFirstToken: PerformanceDistribution
@@ -122,7 +153,7 @@ public struct PerformanceSnapshotBuilder: Sendable {
         filter: MetricFilter = .all
     ) -> PerformanceSnapshot {
         let start = now.addingTimeInterval(-range.seconds)
-        let selected = facts.filter {
+        let selected = Self.coalesced(facts).filter {
             $0.observedAt >= start && $0.observedAt <= now && filter.includes($0)
         }
         let normal = selected.filter { !$0.isRetry }
@@ -147,6 +178,47 @@ public struct PerformanceSnapshotBuilder: Sendable {
             quantileDefinition: "nearest-rank"
         )
     }
+
+    /// The store normally enforces this invariant.  Keep the snapshot seam
+    /// defensive so callers supplying raw facts cannot double-count a request.
+    static func coalesced(_ facts: [PerformanceFact]) -> [PerformanceFact] {
+        Dictionary(grouping: facts) {
+            "\($0.codingAgent.rawValue):\($0.stableRequestID):\($0.measurementGranularity.rawValue)"
+        }
+        .values
+        .compactMap { candidates in
+            candidates.reduce(nil) { selected, candidate in
+                guard let selected else { return candidate }
+                return PerformanceFact.prefers(candidate, over: selected) ? candidate : selected
+            }
+        }
+    }
+}
+
+extension PerformanceFact {
+    /// Enhanced telemetry is authoritative. Equal-tier conflicts use a stable
+    /// total ordering rather than arrival order, and are never summed.
+    static func prefers(_ candidate: PerformanceFact, over existing: PerformanceFact) -> Bool {
+        if candidate.authorityTier != existing.authorityTier {
+            return candidate.authorityTier == .enhanced
+        }
+        return orderingKey(candidate) < orderingKey(existing)
+    }
+
+    private static func orderingKey(_ fact: PerformanceFact) -> String {
+        [
+            fact.observedAt.timeIntervalSince1970.description,
+            fact.durationMilliseconds.description,
+            fact.ttftMilliseconds.description,
+            String(fact.outputTotal),
+            fact.isRetry.description,
+            fact.model.raw,
+            fact.model.display,
+            fact.sourceChannel.rawValue,
+            fact.measurementRange.start.timeIntervalSince1970.description,
+            fact.measurementRange.end.timeIntervalSince1970.description,
+        ].joined(separator: "|")
+    }
 }
 
 extension MetricFilter {
@@ -157,26 +229,34 @@ extension MetricFilter {
 
 public enum OTLPReceiverConfigurationError: Error, Sendable, Equatable {
     case nonLoopbackHost(String)
+    case nonFixedPort(UInt16)
 }
 
 public struct OTLPReceiverConfiguration: Sendable, Equatable {
-    public var isEnabled: Bool
-    public var host: String
-    public var port: UInt16
+    public static let fixedHost = "127.0.0.1"
+    public static let fixedPort: UInt16 = 4318
+
+    public let isEnabled: Bool
+    public let host: String
+    public let port: UInt16
+    public let endpoint: URL
 
     public init() {
         isEnabled = false
-        host = "127.0.0.1"
-        port = 0
+        host = Self.fixedHost
+        port = Self.fixedPort
+        endpoint = URL(string: "http://\(Self.fixedHost):\(Self.fixedPort)/v1/traces")!
     }
 
-    public init(enabled: Bool, host: String = "127.0.0.1", port: UInt16 = 0) throws {
-        guard ["127.0.0.1", "::1"].contains(host) else {
+    public init(enabled: Bool, host: String = OTLPReceiverConfiguration.fixedHost, port: UInt16 = OTLPReceiverConfiguration.fixedPort) throws {
+        guard host == Self.fixedHost else {
             throw OTLPReceiverConfigurationError.nonLoopbackHost(host)
         }
+        guard port == Self.fixedPort else { throw OTLPReceiverConfigurationError.nonFixedPort(port) }
         isEnabled = enabled
-        self.host = host
-        self.port = port
+        self.host = Self.fixedHost
+        self.port = Self.fixedPort
+        endpoint = URL(string: "http://\(Self.fixedHost):\(Self.fixedPort)/v1/traces")!
     }
 }
 
@@ -190,15 +270,29 @@ public struct OTLPDecodeResult: Sendable, Equatable {
     public var diagnostics: [PerformanceIngestionDiagnostic]
 }
 
-/// The supported OTLP/HTTP JSON seam is intentionally narrow: one
-/// `claude_code.llm_request` span with only the allowlisted attributes below.
-/// Anything content-bearing or unknown rejects the entire POST.
+/// Only request timing, usage, model and opaque identifiers cross this seam.
+/// Raw envelopes are inspected then discarded; sensitive attributes reject the
+/// entire batch before any fact is produced.
 public struct OTLPHTTPJSONDecoder: Sendable {
-    private static let contentFieldFragments = ["prompt", "tool", "body", "credential", "path", "content", "raw", "code"]
-    private static let spanKeys: Set<String> = ["name", "startTimeUnixNano", "endTimeUnixNano", "attributes"]
-    private static let allowedSpanAttributes: Set<String> = [
-        "request.id", "request_id", "gen_ai.request.model", "model", "duration_ms", "ttft_ms",
-        "gen_ai.usage.output_tokens", "output_tokens", "retry_count",
+    private static let sensitiveFragments = [
+        "prompt", "user_prompt", "source code", "source_code", "tool.input", "tool.output", "tool.params",
+        "tool.result", "request.body", "response.body", "raw request", "raw_request", "raw response",
+        "raw_response", "credential", "authorization", "api_key", "api key", "file.path",
+        "file_path", "file.content", "file_content", "message.content", "message_content", "raw_body",
+        "path", "content"
+    ]
+    private static let requiredAttributes: Set<String> = [
+        "model", "gen_ai.request.model", "gen_ai.response.model", "duration_ms", "ttft_ms", "output_tokens",
+        "gen_ai.usage.output_tokens", "request_id", "gen_ai.response.id", "client_request_id", "attempt"
+    ]
+    /// Official Claude Code fields which are metadata-only but intentionally
+    /// not persisted by this product.
+    private static let safeIgnoredAttributes: Set<String> = [
+        "span.type", "gen_ai.system", "query_source", "agent_id", "parent_agent_id", "speed",
+        "llm_request.context", "input_tokens", "cache_read_tokens", "cache_creation_tokens", "success",
+        "status_code", "error", "response.has_tool_call", "stop_reason", "gen_ai.response.finish_reasons",
+        "session.id", "app.version", "app.entrypoint", "organization.id", "user.account_uuid", "user.account_id",
+        "user.id", "user.email", "terminal.type", "user.groups", "identity.source"
     ]
 
     public init() {}
@@ -207,34 +301,17 @@ public struct OTLPHTTPJSONDecoder: Sendable {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return failure("INVALID_OTLP_JSON")
         }
-        guard Set(object.keys) == ["resourceSpans"], let resources = object["resourceSpans"] as? [[String: Any]] else {
-            return failure("REJECTED_UNALLOWLISTED_FIELD")
-        }
+        guard let resources = object["resourceSpans"] as? [[String: Any]] else { return failure("INVALID_OTLP_JSON") }
+        if containsSensitiveAttribute(in: object) { return failure("REJECTED_CONTENT_FIELD") }
         var facts: [PerformanceFact] = []
         for resource in resources {
-            guard Set(resource.keys) == ["resource", "scopeSpans"],
-                  let attributes = (resource["resource"] as? [String: Any])?["attributes"] as? [[String: Any]],
-                  let service = stringAttribute(attributes, key: "service.name"),
-                  ["claude-code", "claude-code-desktop"].contains(service),
-                  let scopes = resource["scopeSpans"] as? [[String: Any]] else {
-                return failure("UNSUPPORTED_REQUEST_TRACE")
-            }
-            guard attributes.allSatisfy({ $0.count == 2 && ["key", "value"].allSatisfy($0.keys.contains) && $0["key"] as? String == "service.name" }) else {
-                return attributeFailure(attributes) ?? failure("REJECTED_UNALLOWLISTED_FIELD")
-            }
+            guard let scopes = resource["scopeSpans"] as? [[String: Any]] else { return failure("UNSUPPORTED_REQUEST_TRACE") }
             for scope in scopes {
-                guard Set(scope.keys) == ["spans"], let spans = scope["spans"] as? [[String: Any]] else {
-                    return failure("REJECTED_UNALLOWLISTED_FIELD")
-                }
+                guard let spans = scope["spans"] as? [[String: Any]] else { return failure("UNSUPPORTED_REQUEST_TRACE") }
                 for span in spans {
-                    guard Set(span.keys).isSubset(of: Self.spanKeys),
-                          span["name"] as? String == "claude_code.llm_request",
-                          let start = nanoseconds(span["startTimeUnixNano"]),
-                          let end = nanoseconds(span["endTimeUnixNano"]), end > start,
-                          let attributes = span["attributes"] as? [[String: Any]] else {
-                        return failure("REJECTED_UNALLOWLISTED_FIELD")
-                    }
-                    if let failure = attributeFailure(attributes) { return failure }
+                    guard span["name"] as? String == "claude_code.llm_request" else { continue }
+                    guard let attributes = span["attributes"] as? [[String: Any]] else { return failure("INVALID_REQUEST_FIELDS") }
+                    if let failure = targetAttributeFailure(attributes) { return failure }
                     var values: [String: Any] = [:]
                     for attribute in attributes {
                         guard let key = attribute["key"] as? String,
@@ -244,26 +321,30 @@ public struct OTLPHTTPJSONDecoder: Sendable {
                         }
                         values[key] = value
                     }
-                    guard let requestID = string(values, keys: ["request.id", "request_id"]), !requestID.isEmpty,
-                          let model = string(values, keys: ["gen_ai.request.model", "model"]), !model.isEmpty,
-                          let ttft = number(values["ttft_ms"]), let output = integer(values["gen_ai.usage.output_tokens"] ?? values["output_tokens"]),
-                          let retries = integer(values["retry_count"]), ttft >= 0, output >= 0, retries >= 0 else {
+                    guard let requestID = string(values, keys: ["request_id", "gen_ai.response.id", "client_request_id"]), !requestID.isEmpty,
+                          let model = string(values, keys: ["gen_ai.request.model", "model", "gen_ai.response.model"]), !model.isEmpty,
+                          let duration = number(values["duration_ms"]), duration > 0,
+                          let ttft = number(values["ttft_ms"]), ttft >= 0, ttft <= duration,
+                          let output = integer(values["output_tokens"] ?? values["gen_ai.usage.output_tokens"]), output >= 0,
+                          let attempt = integer(values["attempt"]), attempt >= 1 else {
                         return failure("INVALID_REQUEST_FIELDS")
                     }
-                    let observedAt = Date(timeIntervalSince1970: Double(end) / 1_000_000_000)
+                    let end = nanoseconds(span["endTimeUnixNano"])
+                    let observedAt = end.map { Date(timeIntervalSince1970: Double($0) / 1_000_000_000) } ?? receivedAt
+                    let rangeStart = observedAt.addingTimeInterval(-duration / 1_000)
                     facts.append(PerformanceFact(
                         stableRequestID: requestID,
                         codingAgent: .claudeCode,
                         model: ModelIdentity(raw: model, display: model),
                         observedAt: observedAt,
-                        durationMilliseconds: number(values["duration_ms"]) ?? Double(end - start) / 1_000_000,
+                        durationMilliseconds: duration,
                         ttftMilliseconds: ttft,
                         outputTotal: output,
-                        isRetry: retries > 0,
+                        isRetry: attempt > 1,
                         sourceChannel: .claudeTelemetry,
                         authorityTier: .enhanced,
                         measurementGranularity: .modelCall,
-                        measurementRange: DateInterval(start: Date(timeIntervalSince1970: Double(start) / 1_000_000_000), end: observedAt)
+                        measurementRange: DateInterval(start: rangeStart, end: observedAt)
                     ))
                 }
             }
@@ -271,24 +352,41 @@ public struct OTLPHTTPJSONDecoder: Sendable {
         return OTLPDecodeResult(facts: facts, diagnostics: [])
     }
 
-    private func attributeFailure(_ attributes: [[String: Any]]) -> OTLPDecodeResult? {
+    private func targetAttributeFailure(_ attributes: [[String: Any]]) -> OTLPDecodeResult? {
         for attribute in attributes {
             guard attribute.count == 2, let key = attribute["key"] as? String, attribute["value"] != nil else {
                 return failure("REJECTED_UNALLOWLISTED_FIELD")
             }
-            let lower = key.lowercased()
-            if Self.contentFieldFragments.contains(where: lower.contains), !Self.allowedSpanAttributes.contains(key) {
-                return failure("REJECTED_CONTENT_FIELD")
-            }
-            if key != "service.name" && !Self.allowedSpanAttributes.contains(key) {
+            if !Self.requiredAttributes.contains(key) && !Self.safeIgnoredAttributes.contains(key) {
                 return failure("REJECTED_UNALLOWLISTED_FIELD")
             }
         }
         return nil
     }
 
-    private func stringAttribute(_ attributes: [[String: Any]], key: String) -> String? {
-        attributes.first { $0["key"] as? String == key }.flatMap { scalar($0["value"]) as? String }
+    private func containsSensitiveAttribute(in value: Any) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            if let key = dictionary["key"] as? String, isSensitiveAttributeKey(key) { return true }
+            return dictionary.values.contains(where: containsSensitiveAttribute)
+        }
+        if let array = value as? [Any] { return array.contains(where: containsSensitiveAttribute) }
+        return false
+    }
+
+    private func isSensitiveAttributeKey(_ key: String) -> Bool {
+        let normalized = key.lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: ".", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        if normalized == "code" { return true } // do not match safe `status_code`.
+        if normalized == "auth" || normalized.hasPrefix("auth_") || normalized.hasSuffix("_auth") { return true }
+        return Self.sensitiveFragments.contains { fragment in
+            normalized.contains(
+                fragment.replacingOccurrences(of: "-", with: "_")
+                    .replacingOccurrences(of: ".", with: "_")
+                    .replacingOccurrences(of: " ", with: "_")
+            )
+        }
     }
 
     private func string(_ values: [String: Any], keys: [String]) -> String? {
@@ -309,6 +407,7 @@ public struct OTLPHTTPJSONDecoder: Sendable {
 
     private func integer(_ value: Any?) -> Int? {
         if let value = value as? Int { return value }
+        if let value = value as? Double, value.rounded() == value { return Int(value) }
         if let value = value as? String { return Int(value) }
         return nil
     }

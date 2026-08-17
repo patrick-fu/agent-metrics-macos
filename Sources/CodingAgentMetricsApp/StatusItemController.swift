@@ -7,17 +7,20 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let statusItem: NSStatusItem
     private let panel: NSPanel
     private let runtime: TelemetryRuntime?
+    private let telemetry: EnhancedTelemetryController
     private var filter = MetricFilter.all
     private var eventMonitor: Any?
 
     override init() {
-        runtime = try? TelemetryRuntime(
+        let createdRuntime = try? TelemetryRuntime(
             storeURL: Self.storeURL(),
             sourceAdapters: [
                 CodexRolloutSourceAdapter(),
                 ClaudeTranscriptSourceAdapter(),
             ]
         )
+        runtime = createdRuntime
+        telemetry = EnhancedTelemetryController(runtime: createdRuntime)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: AppIdentity.popoverWidth, height: 292),
@@ -70,7 +73,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func renderSnapshot() {
         let snapshot = try? runtime?.lightSnapshot(filter: filter)
-        let root = SummaryPopoverView(snapshot: snapshot) { [weak self] newFilter, performanceRange in
+        let root = SummaryPopoverView(snapshot: snapshot, telemetry: telemetry) { [weak self] newFilter, performanceRange in
             guard let self else { return nil }
             guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter, performanceRange: performanceRange) else {
                 return nil

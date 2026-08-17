@@ -45,31 +45,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
             """
         )
         try migrateUsageFacts()
-        try exec(
-            """
-            CREATE TABLE IF NOT EXISTS performance_facts (
-                stable_request_id TEXT NOT NULL,
-                coding_agent_raw TEXT NOT NULL,
-                coding_agent_display TEXT NOT NULL,
-                model_raw TEXT NOT NULL,
-                model_display TEXT NOT NULL,
-                observed_at REAL NOT NULL,
-                duration_ms REAL NOT NULL,
-                ttft_ms REAL NOT NULL,
-                output_total INTEGER NOT NULL,
-                is_retry INTEGER NOT NULL,
-                source_channel TEXT NOT NULL,
-                authority_tier TEXT NOT NULL,
-                measurement_granularity TEXT NOT NULL,
-                measurement_range_start REAL NOT NULL,
-                measurement_range_end REAL NOT NULL,
-                PRIMARY KEY (
-                    coding_agent_raw, stable_request_id, measurement_granularity,
-                    measurement_range_start, measurement_range_end
-                )
-            );
-            """
-        )
+        try createPerformanceFactsTable()
+        try migratePerformanceFactsIfNeeded()
         try exec(
             """
             CREATE TABLE IF NOT EXISTS source_states (
@@ -304,6 +281,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
     }
 
     private func insertPerformance(_ fact: PerformanceFact) throws {
+        if let existing = try existingPerformanceFact(matching: fact), !PerformanceFact.prefers(fact, over: existing) {
+            return
+        }
         let sql = """
         INSERT OR REPLACE INTO performance_facts (
             stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
@@ -332,6 +312,27 @@ public final class SQLiteFactStore: @unchecked Sendable {
         sqlite3_bind_double(statement, 14, fact.measurementRange.start.timeIntervalSince1970)
         sqlite3_bind_double(statement, 15, fact.measurementRange.end.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.insertFailed }
+    }
+
+    private func existingPerformanceFact(matching fact: PerformanceFact) throws -> PerformanceFact? {
+        let sql = """
+        SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
+               observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
+               authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
+        FROM performance_facts
+        WHERE coding_agent_raw = ? AND stable_request_id = ? AND measurement_granularity = ?
+        LIMIT 1;
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, fact.codingAgent.rawValue)
+        bind(statement, 2, fact.stableRequestID)
+        bind(statement, 3, fact.measurementGranularity.rawValue)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return try performanceRow(statement)
     }
 
     private func deleteFacts(in scope: SourceFactScope) throws {
@@ -477,6 +478,69 @@ public final class SQLiteFactStore: @unchecked Sendable {
         for addition in additions {
             let name = addition.split(separator: " ").first.map(String.init) ?? addition
             if !names.contains(name) { try exec("ALTER TABLE usage_facts ADD COLUMN \(addition);") }
+        }
+    }
+
+    private func createPerformanceFactsTable() throws {
+        try exec(
+            """
+            CREATE TABLE IF NOT EXISTS performance_facts (
+                stable_request_id TEXT NOT NULL,
+                coding_agent_raw TEXT NOT NULL,
+                coding_agent_display TEXT NOT NULL,
+                model_raw TEXT NOT NULL,
+                model_display TEXT NOT NULL,
+                observed_at REAL NOT NULL,
+                duration_ms REAL NOT NULL,
+                ttft_ms REAL NOT NULL,
+                output_total INTEGER NOT NULL,
+                is_retry INTEGER NOT NULL,
+                source_channel TEXT NOT NULL,
+                authority_tier TEXT NOT NULL,
+                measurement_granularity TEXT NOT NULL,
+                measurement_range_start REAL NOT NULL,
+                measurement_range_end REAL NOT NULL,
+                PRIMARY KEY (coding_agent_raw, stable_request_id, measurement_granularity)
+            );
+            """
+        )
+    }
+
+    private func migratePerformanceFactsIfNeeded() throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(performance_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        var primaryKeyColumns: [(Int, String)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let ordinal = Int(sqlite3_column_int(statement, 5))
+            if ordinal > 0 { primaryKeyColumns.append((ordinal, text(statement, 1))) }
+        }
+        sqlite3_finalize(statement)
+        let expected = ["coding_agent_raw", "stable_request_id", "measurement_granularity"]
+        guard primaryKeyColumns.sorted(by: { $0.0 < $1.0 }).map(\.1) != expected else { return }
+
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try exec("ALTER TABLE performance_facts RENAME TO performance_facts_legacy;")
+            try createPerformanceFactsTable()
+            let sql = """
+            SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
+                   observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
+                   authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
+            FROM performance_facts_legacy;
+            """
+            var legacy: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &legacy, nil) == SQLITE_OK, let legacy else {
+                throw StoreError.prepareFailed
+            }
+            defer { sqlite3_finalize(legacy) }
+            while sqlite3_step(legacy) == SQLITE_ROW { try insertPerformance(try performanceRow(legacy)) }
+            try exec("DROP TABLE performance_facts_legacy;")
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
         }
     }
 

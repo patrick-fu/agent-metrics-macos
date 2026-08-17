@@ -3,9 +3,11 @@ import SwiftUI
 
 struct SettingsView: View {
     let lifecycleServices: AppLifecycleServices
+    let telemetry: EnhancedTelemetryController
 
     var body: some View {
         @Bindable var launchAtLogin = lifecycleServices.launchAtLogin
+        @Bindable var enhancedTelemetry = telemetry
 
         Divider()
         VStack(alignment: .leading, spacing: 8) {
@@ -29,6 +31,26 @@ struct SettingsView: View {
                 Text(launchAtLogin.statusMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Divider()
+            Toggle(
+                "Enhanced telemetry",
+                isOn: Binding(
+                    get: { enhancedTelemetry.isEnabled },
+                    set: { enhancedTelemetry.setEnabled($0) }
+                )
+            )
+            .accessibilityHint("Starts only this app-owned local receiver. It does not change Claude Code, shell, or environment settings.")
+            Text("Endpoint: \(enhancedTelemetry.endpoint)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            if let failureMessage = enhancedTelemetry.failureMessage {
+                Text(failureMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Enhanced telemetry error: \(failureMessage)")
             }
 
             Button("Check for Updates") {

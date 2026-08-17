@@ -4,11 +4,26 @@ public final class TelemetryRuntime: @unchecked Sendable {
     private let store: SQLiteFactStore
     private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
+    private let storeQueue = DispatchQueue(label: "dev.codingagentmetrics.runtime-store")
     private var receiver: OTLPHTTPReceiver?
     private var lastGoodSnapshot: LightSnapshot?
 
     public private(set) var sourceHealth: [SourceHealth] = []
     public let receiverConfiguration: OTLPReceiverConfiguration
+    private var startupFailureMessage: String?
+
+    public var receiverState: OTLPReceiverState {
+        storeQueue.sync { receiver?.state ?? .stopped }
+    }
+
+    public var receiverEndpoint: URL { receiverConfiguration.endpoint }
+
+    public var receiverFailureMessage: String? {
+        storeQueue.sync {
+            if case let .failed(message) = receiver?.state { return message }
+            return startupFailureMessage
+        }
+    }
 
     public convenience init(
         storeURL: URL,
@@ -30,11 +45,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
         self.sourceAdapters = sourceAdapters
         self.receiverConfiguration = receiverConfiguration
         if receiverConfiguration.isEnabled {
-            let receiver = OTLPHTTPReceiver(configuration: receiverConfiguration) { facts in
-                try? store.upsertPerformanceFacts(facts)
-            }
-            try receiver.start()
-            self.receiver = receiver
+            try setEnhancedTelemetryEnabled(true)
         }
     }
 
@@ -51,19 +62,52 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     public func lightSnapshot(filter: MetricFilter = .all, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
-        let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
-        lastGoodSnapshot = snapshot
-        return snapshot
+        try storeQueue.sync {
+            let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
+            lastGoodSnapshot = snapshot
+            return snapshot
+        }
     }
 
     public func lightSnapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
-        let snapshot = try snapshotFromStore(filter: filter, performanceRange: performanceRange)
-        lastGoodSnapshot = snapshot
-        return snapshot
+        try storeQueue.sync {
+            let snapshot = try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+            lastGoodSnapshot = snapshot
+            return snapshot
+        }
     }
 
     public func ingestPerformance(_ facts: [PerformanceFact]) throws {
-        try store.upsertPerformanceFacts(facts)
+        try storeQueue.sync { try store.upsertPerformanceFacts(facts) }
+    }
+
+    /// Starts or stops only this app-owned loopback listener.  It never alters
+    /// a shell, environment variable, or Claude Code configuration.
+    public func setEnhancedTelemetryEnabled(_ enabled: Bool) throws {
+        try storeQueue.sync {
+            if !enabled {
+                receiver?.stop()
+                receiver = nil
+                startupFailureMessage = nil
+                return
+            }
+            if receiver != nil { return }
+            do {
+                let configuration = try OTLPReceiverConfiguration(enabled: true)
+                let next = OTLPHTTPReceiver(configuration: configuration) { [weak self] facts in
+                    guard let self else { return }
+                    try self.storeQueue.sync { try self.store.upsertPerformanceFacts(facts) }
+                }
+                try next.start()
+                receiver = next
+                startupFailureMessage = nil
+            } catch {
+                receiver?.stop()
+                receiver = nil
+                startupFailureMessage = String(describing: error)
+                throw error
+            }
+        }
     }
 
     private func refresh(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {

@@ -13,15 +13,18 @@ struct SummaryPopoverView: View {
     @State private var activity: Activity = .burn
     @State private var performanceRange: PerformanceRange = .oneHour
     let lifecycleServices: AppLifecycleServices
+    let telemetry: EnhancedTelemetryController
     var loadSnapshot: (MetricFilter, PerformanceRange) -> LightSnapshot?
 
     init(
         snapshot: LightSnapshot?,
         lifecycleServices: AppLifecycleServices = .live,
+        telemetry: EnhancedTelemetryController? = nil,
         loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> LightSnapshot? = { _, _ in nil }
     ) {
         _snapshot = State(initialValue: snapshot)
         self.lifecycleServices = lifecycleServices
+        self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
         self.loadSnapshot = loadSnapshot
     }
 
@@ -81,7 +84,7 @@ struct SummaryPopoverView: View {
                 meta(title: "State", value: presentation?.dataStateText ?? "Absent")
                 meta(title: "Coverage", value: presentation?.coverageText ?? "Complete")
             }
-            SettingsView(lifecycleServices: lifecycleServices)
+            SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry)
         }
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
@@ -230,12 +233,21 @@ struct SummaryPopoverView: View {
     }
 
     private func performanceKPI(_ title: String, _ metric: PerformanceDistribution?, secondary: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        let kind: PerformanceMetricKind = title == "TTFT" ? .timeToFirstToken : (title == "E2E" ? .endToEnd : .decodeTPS)
+        let presentation = metric.map { PerformanceMetricPresentation(kind: kind, distribution: $0) }
+        return VStack(alignment: .leading, spacing: 1) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(metric?.p50.map(format) ?? "Unavailable").font(.caption.weight(.semibold)).monospacedDigit()
-            Text("p50 · \(secondary) \(metric.flatMap { secondary == "p10" ? $0.p10 : $0.p95 }.map(format) ?? "-") · n \(metric?.sampleCount ?? 0)")
+            Text("\(presentation?.valueText ?? "Unavailable") \(presentation?.unitText ?? (kind == .decodeTPS ? "tokens/s" : "ms"))")
+                .font(.caption.weight(.semibold)).monospacedDigit()
+            Text(presentation?.secondaryText ?? "p50 · \(secondary) - · n 0")
                 .font(.caption2).foregroundStyle(.secondary)
+            Text(presentation?.qualityText ?? "Unavailable")
+                .font(.caption2).foregroundStyle(.secondary)
+            if let lowSample = presentation?.lowSampleText {
+                Text(lowSample).font(.caption2).foregroundStyle(.orange)
+            }
         }
+        .accessibilityHint(presentation?.accessibilityHint ?? "")
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(6)
         .background(Color.primary.opacity(0.04))
