@@ -132,13 +132,13 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let attributes = try FileManager.default.attributesOfItem(atPath: file.url.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
-        let generation = "\(inode)-\(size)"
+        let generation = "\(inode)"
         let prior = forceRebuild ? nil : state.files[file.identity]
 
         var startOffset: Int64 = prior?.offset ?? 0
         var rebuiltFile = forceRebuild || prior == nil
         if let prior {
-            if prior.offset > size {
+            if prior.generation != generation || prior.offset > size {
                 startOffset = 0
                 rebuiltFile = true
             } else if prior.offset > 0 {
@@ -196,6 +196,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 let watermark = state.watermarks[file.identity] ?? 0
                 if totalOutput < watermark {
                     if forceRebuild {
+                        observations.removeAll()
                         if totalOutput > 0 {
                             observations.append(
                                 observation(
@@ -264,7 +265,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             model: context.model,
             sessionID: context.sessionID,
             turnID: context.turnID,
-            observedAt: CodexRolloutParser.parseTimestamp(timestamp) ?? clock.now,
+            observedAt: CodexRolloutParser.parseTimestamp(timestamp)!,
             outputTokens: outputTokens
         )
     }

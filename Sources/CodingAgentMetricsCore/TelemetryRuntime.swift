@@ -89,6 +89,14 @@ public final class TelemetryRuntime: @unchecked Sendable {
             )
             health.append(scan.health)
         } else {
+            guard sourceAdapters.count == 1 else {
+                health.append(SourceHealth(
+                    sourceID: "non-incremental",
+                    isHealthy: false,
+                    diagnosticCode: "MULTI_SOURCE_NON_INCREMENTAL_UNSUPPORTED"
+                ))
+                return
+            }
             let observations = try sourceAdapter.loadObservations(clock: clock)
             try store.replaceAll(CanonicalIngestor().ingest(observations))
             health.append(SourceHealth(sourceID: "unknown", isHealthy: true))

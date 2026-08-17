@@ -35,17 +35,44 @@ public struct SourceState: Sendable, Equatable, Codable {
     public var parserVersion: String
     public var files: [String: SourceFileCursor]
     public var watermarks: [String: Int]
+    /// Persisted parser diagnostics remain visible when no new bytes arrive.
+    public var diagnosticCodes: [String]
+    /// Claude message totals are authoritative for these sessions.
+    public var messageTotalSessions: [String]
+    /// Session totals were used only while message totals were absent.
+    public var sessionFallbackSessions: [String]
 
     public init(
         sourceID: String,
         parserVersion: String,
         files: [String: SourceFileCursor] = [:],
-        watermarks: [String: Int] = [:]
+        watermarks: [String: Int] = [:],
+        diagnosticCodes: [String] = [],
+        messageTotalSessions: [String] = [],
+        sessionFallbackSessions: [String] = []
     ) {
         self.sourceID = sourceID
         self.parserVersion = parserVersion
         self.files = files
         self.watermarks = watermarks
+        self.diagnosticCodes = diagnosticCodes
+        self.messageTotalSessions = messageTotalSessions
+        self.sessionFallbackSessions = sessionFallbackSessions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceID, parserVersion, files, watermarks, diagnosticCodes, messageTotalSessions, sessionFallbackSessions
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try container.decode(String.self, forKey: .sourceID)
+        parserVersion = try container.decode(String.self, forKey: .parserVersion)
+        files = try container.decodeIfPresent([String: SourceFileCursor].self, forKey: .files) ?? [:]
+        watermarks = try container.decodeIfPresent([String: Int].self, forKey: .watermarks) ?? [:]
+        diagnosticCodes = try container.decodeIfPresent([String].self, forKey: .diagnosticCodes) ?? []
+        messageTotalSessions = try container.decodeIfPresent([String].self, forKey: .messageTotalSessions) ?? []
+        sessionFallbackSessions = try container.decodeIfPresent([String].self, forKey: .sessionFallbackSessions) ?? []
     }
 }
 

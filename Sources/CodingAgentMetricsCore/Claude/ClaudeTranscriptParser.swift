@@ -7,6 +7,9 @@ public enum ClaudeTranscriptParser {
     public static let sourceID = "claude-code"
     public static let authority = "claude-code-transcript-usage"
 
+    /// These fixture-proven envelopes contain no supported usage evidence.
+    private static let ignoredEnvelopeTypes: Set<String> = ["user"]
+
     public static func fileIdentity(fromFileName name: String) -> String? {
         guard name.hasSuffix(".jsonl"), !name.contains(".jsonl.") else { return nil }
         let identity = String(name.dropLast(".jsonl".count))
@@ -17,19 +20,19 @@ public enum ClaudeTranscriptParser {
     public static func parseLine(_ line: String) -> ParsedClaudeTranscriptLine {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .ignored }
-        guard
-            let data = trimmed.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let type = object["type"] as? String,
-            let sessionID = object["sessionId"] as? String,
-            !sessionID.isEmpty
-        else {
+        guard let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String else {
             return .unknownSchema
         }
-        let timestamp = object["timestamp"] as? String
+        if ignoredEnvelopeTypes.contains(type) { return .ignored }
+        guard
+            let sessionID = object["sessionId"] as? String,
+            !sessionID.isEmpty,
+            let timestamp = object["timestamp"] as? String,
+            parseTimestamp(timestamp) != nil
+        else { return .unknownSchema }
         switch type {
-        case "user":
-            return .ignored
         case "assistant":
             guard
                 let uuid = object["uuid"] as? String,
@@ -82,14 +85,13 @@ public enum ClaudeTranscriptParser {
 
     private static func intValue(_ value: Any?) -> Int? {
         switch value {
-        case let value as Int:
-            return value
-        case let value as Int64:
-            return Int(value)
+        case is Bool:
+            return nil
         case let value as NSNumber:
-            return value.intValue
-        case let value as Double where value.rounded() == value:
-            return Int(value)
+            guard CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+            let integer = value.int64Value
+            guard value.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+            return Int(exactly: integer)
         default:
             return nil
         }

@@ -52,7 +52,7 @@ public enum CodexRolloutParser {
             return .unknownSchema
         }
 
-        let ordinal = intValue(object["ordinal"]).map { UInt64($0) }
+        let ordinal = intValue(object["ordinal"]).flatMap { $0 >= 0 ? UInt64($0) : nil }
         let timestamp = object["timestamp"] as? String
         let payload = object["payload"] as? [String: Any] ?? [:]
 
@@ -102,7 +102,13 @@ public enum CodexRolloutParser {
             let info = payload["info"] as? [String: Any] ?? [:]
             let total = intValue((info["total_token_usage"] as? [String: Any])?["output_tokens"])
             let last = intValue((info["last_token_usage"] as? [String: Any])?["output_tokens"])
-            guard let total else { return .unknownSchema }
+            guard
+                let timestamp,
+                parseTimestamp(timestamp) != nil,
+                let total,
+                total >= 0,
+                last.map({ $0 >= 0 }) ?? true
+            else { return .unknownSchema }
             return .tokenCount(
                 totalOutput: total,
                 lastOutput: last,
@@ -122,14 +128,13 @@ public enum CodexRolloutParser {
 
     public static func intValue(_ value: Any?) -> Int? {
         switch value {
-        case let value as Int:
-            return value
-        case let value as Int64:
-            return Int(value)
+        case is Bool:
+            return nil
         case let value as NSNumber:
-            return value.intValue
-        case let value as Double:
-            return Int(value)
+            guard CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+            let integer = value.int64Value
+            guard value.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+            return Int(exactly: integer)
         default:
             return nil
         }

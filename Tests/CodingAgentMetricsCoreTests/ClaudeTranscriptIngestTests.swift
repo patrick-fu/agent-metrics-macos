@@ -174,6 +174,33 @@ struct ClaudeTranscriptIngestTests {
         #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1800, 900])
     }
 
+    @Test func messageTotalsAreAuthoritativeOverSessionTotalsAndReplaceEarlierFallback() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        try home.writeTranscript(lines: [
+            userLine(),
+            sessionUsageLine(outputTokens: 1800, timestamp: "2026-04-15T12:00:10.000Z"),
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+
+        try home.writeTranscript(lines: [
+            userLine(),
+            sessionUsageLine(outputTokens: 1800, timestamp: "2026-04-15T12:00:10.000Z"),
+            assistantLine(outputTokens: 1800, timestamp: "2026-04-15T12:00:12.000Z"),
+        ], terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1800])
+    }
+
     @Test func rollbackRebuildsSourceAndNeverCreatesNegativeFacts() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempClaudeHome()
@@ -202,8 +229,8 @@ struct ClaudeTranscriptIngestTests {
         let snapshot = try runtime.lightSnapshot()
         let facts = try SQLiteFactStore(url: storeURL).allFacts()
         #expect(facts.allSatisfy { $0.outputTokens >= 0 })
-        #expect(facts.map(\.outputTokens) == [1800, 900, 100])
-        #expect(snapshot.outputThroughput.selectedOutputTokens == 2800)
+        #expect(facts.map(\.outputTokens) == [100])
+        #expect(snapshot.outputThroughput.selectedOutputTokens == 100)
     }
 
     @Test func truncateReplaceAndRestartStayConsistent() throws {
@@ -281,6 +308,43 @@ struct ClaudeTranscriptIngestTests {
             health.sourceID == "claude-code" && health.diagnosticCode == "UNKNOWN_SCHEMA" && !health.isHealthy
         })
         #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+
+        let repeated = try runtime.lightSnapshot()
+        #expect(repeated.outputThroughput.dataState == .unavailable)
+        #expect(runtime.sourceHealth.contains { $0.sourceID == "claude-code" && $0.diagnosticCode == "UNKNOWN_SCHEMA" && !$0.isHealthy })
+    }
+
+    @Test func disappearedTranscriptKeepsFactsAndCursorUntilItReturns() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeTranscript(lines: [userLine(), assistantLine(outputTokens: 1800)], terminated: true)
+        let runtime = try TelemetryRuntime(storeURL: storeURL, sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root), clock: clock)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        let stateBefore = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code"))
+
+        try FileManager.default.removeItem(at: home.transcriptURL)
+        let unavailable = try runtime.lightSnapshot()
+        #expect(unavailable.outputThroughput.selectedOutputTokens == 1800)
+        #expect(unavailable.outputThroughput.coverage == .partial)
+        #expect(runtime.sourceHealth.contains { $0.sourceID == "claude-code" && $0.diagnosticCode == "SOURCE_UNAVAILABLE" && !$0.isHealthy })
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1800])
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code")?.files == stateBefore.files)
+
+        try home.writeTranscript(lines: [userLine(), assistantLine(outputTokens: 1800), assistantLine(outputTokens: 2700)], terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 2700)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens).sorted() == [900, 1800])
+    }
+
+    @Test func usageRequiresValidTimestampAndIntegralNonnegativeTokenCount() {
+        let base = "{\"type\":\"assistant\",\"uuid\":\"u\",\"sessionId\":\"s\",\"timestamp\":%@,\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"usage\":{\"output_tokens\":%@}}}"
+        #expect(ClaudeTranscriptParser.parseLine(String(format: base, "null", "1")) == .unknownSchema)
+        #expect(ClaudeTranscriptParser.parseLine(String(format: base, "\"not-a-date\"", "1")) == .unknownSchema)
+        #expect(ClaudeTranscriptParser.parseLine(String(format: base, "\"2026-04-15T12:00:10Z\"", "true")) == .unknownSchema)
+        #expect(ClaudeTranscriptParser.parseLine(String(format: base, "\"2026-04-15T12:00:10Z\"", "1.5")) == .unknownSchema)
+        #expect(ClaudeTranscriptParser.parseLine(String(format: base, "\"2026-04-15T12:00:10Z\"", "-1")) == .unknownSchema)
     }
 
     @Test func parserVersionChangeRebuildsSourceAndClearsWatermarks() throws {

@@ -98,4 +98,5 @@ public struct LightSnapshot: Sendable, Equatable {
     public var codingAgents: [CodingAgent]
     public var modelIdentities: [ModelIdentity]
     public var generatedAt: Date
+    public var sourceHealth: [SourceHealth]
 }

@@ -13,22 +13,26 @@ public struct SnapshotBuilder: Sendable {
             outputThroughput: outputThroughput(
                 sample: sample,
                 allFacts: allFacts,
-                coverage: sourceHealth.contains { !$0.isHealthy } ? .partial : .complete
+                coverage: sourceHealth.contains { !$0.isHealthy } ? .partial : .complete,
+                sourceHealth: sourceHealth
             ),
             codingAgents: uniqueAgents(in: allFacts),
             modelIdentities: uniqueModels(in: allFacts),
-            generatedAt: now
+            generatedAt: now,
+            sourceHealth: sourceHealth
         )
     }
 
     private func outputThroughput(
         sample: LiveSample,
         allFacts: [UsageFact],
-        coverage: Coverage
+        coverage: Coverage,
+        sourceHealth: [SourceHealth]
     ) -> OutputThroughputMetric {
         let window = sample.windowSeconds
         if sample.contributingFacts.isEmpty {
-            let state: DataState = allFacts.isEmpty ? .absent : .stale
+            let allSourcesUnavailable = !sourceHealth.isEmpty && sourceHealth.allSatisfy { !$0.isHealthy }
+            let state: DataState = allSourcesUnavailable ? .unavailable : (allFacts.isEmpty ? .absent : .stale)
             return OutputThroughputMetric(
                 tokensPerSecond: nil,
                 selectedOutputTokens: nil,
@@ -37,7 +41,7 @@ public struct SnapshotBuilder: Sendable {
                 dataState: state,
                 coverage: coverage,
                 definitionVersion: OutputThroughputDefinition.version,
-                sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
+                sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "unavailable",
                 scope: .all
             )
         }
@@ -71,7 +75,9 @@ public struct SnapshotBuilder: Sendable {
     }
 
     private func authority(in facts: [UsageFact]) -> String? {
-        facts.last?.authority
+        let authorities = Set(facts.map(\.authority))
+        if authorities.count > 1 { return "mixed" }
+        return authorities.first
     }
 
     private func uniqueAgents(in facts: [UsageFact]) -> [CodingAgent] {

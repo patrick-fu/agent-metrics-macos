@@ -252,8 +252,8 @@ struct CodexRolloutIngestTests {
         let snapshot = try runtime.lightSnapshot()
         let facts = try SQLiteFactStore(url: storeURL).allFacts()
         #expect(facts.allSatisfy { $0.outputTokens >= 0 })
-        #expect(facts.map(\.outputTokens) == [1800, 900, 100])
-        #expect(snapshot.outputThroughput.selectedOutputTokens == 2800)
+        #expect(facts.map(\.outputTokens) == [100])
+        #expect(snapshot.outputThroughput.selectedOutputTokens == 100)
     }
 
     @Test func truncateReplaceRestartAndArchiveStayConsistent() throws {

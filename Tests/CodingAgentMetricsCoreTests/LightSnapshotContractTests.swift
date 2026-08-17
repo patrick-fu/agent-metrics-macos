@@ -16,6 +16,71 @@ struct LightSnapshotContractTests {
         #expect(snapshot.outputThroughput.windowSeconds == 180)
     }
 
+    @Test func onlyUnhealthySourceWithoutFactsIsUnavailableWithUnavailableAuthority() {
+        let now = Date(timeIntervalSince1970: 1_771_200)
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [], now: now),
+            allFacts: [],
+            now: now,
+            sourceHealth: [SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA")]
+        )
+
+        #expect(snapshot.outputThroughput.dataState == .unavailable)
+        #expect(snapshot.outputThroughput.coverage == .partial)
+        #expect(snapshot.outputThroughput.sourceAuthority == "unavailable")
+        #expect(snapshot.sourceHealth == [SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA")])
+    }
+
+    @Test func multipleAuthoritiesAreReportedAsMixedRatherThanArbitrarilyChosen() {
+        let now = Date(timeIntervalSince1970: 1_771_200)
+        var first = makeFact(outputTokens: 180, observedAt: now.addingTimeInterval(-2))
+        first.authority = "codex-rollout-token-count"
+        var second = makeFact(outputTokens: 180, observedAt: now.addingTimeInterval(-1))
+        second.authority = "claude-code-transcript-usage"
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [first, second], now: now),
+            allFacts: [first, second],
+            now: now
+        )
+        #expect(snapshot.outputThroughput.sourceAuthority == "mixed")
+    }
+
+    @Test func oldSourceStatePayloadDecodesWithoutNewDiagnosticFields() throws {
+        let payload = """
+        {"sourceID":"claude-code","parserVersion":"1.0.0","files":{},"watermarks":{}}
+        """
+        let state = try JSONDecoder().decode(SourceState.self, from: Data(payload.utf8))
+        #expect(state.diagnosticCodes.isEmpty)
+        #expect(state.messageTotalSessions.isEmpty)
+        #expect(state.sessionFallbackSessions.isEmpty)
+    }
+
+    @Test func nonIncrementalAdapterCannotEraseOtherSourcesInMultiSourceRuntime() throws {
+        let clock = FixedClock(now: Date(timeIntervalSince1970: 1_771_200))
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cam-multi-source-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let codex = UsageObservation(
+            observationIdentity: "incremental-codex",
+            schemaVersion: "synthetic-codex-token-count-v1",
+            codingAgent: .codex,
+            model: ModelIdentity(raw: "gpt-synthetic-orion", display: "Synthetic Orion"),
+            sessionID: "session",
+            turnID: "turn",
+            observedAt: clock.now.addingTimeInterval(-1),
+            outputTokens: 180
+        )
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapters: [SingleObservationIncrementalAdapter(observation: codex), FixedSourceAdapter(observations: [])],
+            clock: clock
+        )
+        let snapshot = try runtime.lightSnapshot()
+        #expect(snapshot.outputThroughput.selectedOutputTokens == 180)
+        #expect(snapshot.outputThroughput.coverage == .partial)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.id) == ["incremental-codex"])
+    }
+
     @Test func inWindowZeroTokensIsConfirmedZero() {
         let now = Date(timeIntervalSince1970: 1_771_200)
         let fact = makeFact(outputTokens: 0, observedAt: now.addingTimeInterval(-5))
@@ -168,6 +233,23 @@ struct LightSnapshotContractTests {
 
         func loadObservations(clock: any Clock) throws -> [UsageObservation] {
             observations
+        }
+    }
+
+    private final class SingleObservationIncrementalAdapter: IncrementalSourceAdapter, @unchecked Sendable {
+        let observation: UsageObservation
+        init(observation: UsageObservation) { self.observation = observation }
+        var sourceID: String { "incremental-codex" }
+        var sourceRebuildScope: SourceFactScope { .schemaVersion("synthetic-codex-token-count-v1") }
+        func rebuiltFileScope(for identity: String) -> SourceFactScope { .idPrefix(identity) }
+        func loadObservations(clock: any Clock) throws -> [UsageObservation] { [observation] }
+        func scan(clock: any Clock, state: SourceState?) throws -> SourceScan {
+            SourceScan(
+                observations: [observation],
+                state: SourceState(sourceID: sourceID, parserVersion: "1"),
+                rebuildSource: false,
+                health: SourceHealth(sourceID: sourceID, isHealthy: true)
+            )
         }
     }
 }
