@@ -3,20 +3,31 @@ import Foundation
 public struct TrendBuilder: Sendable {
     public init() {}
 
-    public func build(facts: [UsageFact], now: Date, filter: MetricFilter = .all) -> TrendSnapshot {
+    public func build(
+        facts: [UsageFact],
+        now: Date,
+        filter: MetricFilter = .all,
+        sourceHealth: [SourceHealth] = []
+    ) -> TrendSnapshot {
         let filtered = facts.filter(filter.includes)
         let selection = AuthorityCoalescing.select(filtered)
+        let health = relevantHealth(sourceHealth, filter: filter, facts: filtered)
+        let scope: OutputThroughputScope = filter.agents.isAll && filter.models.isAll ? .all : .selected
+        let emptyReason: UnavailableReasonCode = filtered.isEmpty && !facts.isEmpty && scope == .selected
+            ? .filterExcludesObservations : .noObservations
         return TrendSnapshot(
-            outputThroughput: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: OutputThroughputDefinition.windowSeconds, bucketSeconds: 5, kind: .output, conflict: selection.hasConflict),
-            tokenBurn: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: TokenBurnDefinition.windowSeconds, bucketSeconds: 30, kind: .burn, conflict: selection.hasConflict),
+            outputThroughput: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: OutputThroughputDefinition.windowSeconds, bucketSeconds: 5, kind: .output, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
+            tokenBurn: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: TokenBurnDefinition.windowSeconds, bucketSeconds: 30, kind: .burn, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
             // Calls KPI retains one stable identity through an authority conflict.
-            calls: chart(facts: filtered, originalFacts: filtered, now: now, windowSeconds: CallsDefinition.windowSeconds, bucketSeconds: 30, kind: .calls, conflict: selection.hasConflict)
+            calls: chart(facts: filtered, originalFacts: filtered, now: now, windowSeconds: CallsDefinition.windowSeconds, bucketSeconds: 30, kind: .calls, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
+            generatedAt: now,
+            sourceHealth: health
         )
     }
 
     private enum Kind { case output, burn, calls }
 
-    private func chart(facts: [UsageFact], originalFacts: [UsageFact], now: Date, windowSeconds: Int, bucketSeconds: Int, kind: Kind, conflict: Bool) -> TrendChart {
+    private func chart(facts: [UsageFact], originalFacts: [UsageFact], now: Date, windowSeconds: Int, bucketSeconds: Int, kind: Kind, conflict: Bool, sourceHealth: [SourceHealth], scope: OutputThroughputScope, emptyReason: UnavailableReasonCode) -> TrendChart {
         let duration = TimeInterval(bucketSeconds)
         let closedEnd = floor(now.timeIntervalSince1970 / duration) * duration
         let start = closedEnd - TimeInterval(windowSeconds)
@@ -24,9 +35,17 @@ public struct TrendBuilder: Sendable {
         let completeStarts = stride(from: start, to: closedEnd, by: duration).map { Date(timeIntervalSince1970: $0) }
         let starts = completeStarts + (hasOpenBucket ? [Date(timeIntervalSince1970: closedEnd)] : [])
         // Open buckets are placeholders only; no rank or metric metadata uses them.
-        let completeFacts = facts.filter { $0.observedAt.timeIntervalSince1970 >= start && $0.observedAt.timeIntervalSince1970 < closedEnd }
-        let originalCompleteFacts = originalFacts.filter { $0.observedAt.timeIntervalSince1970 >= start && $0.observedAt.timeIntervalSince1970 < closedEnd }
-        let capable = deduplicateCalls(completeFacts.filter { supports($0, kind: kind) }, kind: kind)
+        let degraded = sourceHealth.filter { !$0.isHealthy }
+        let completeFacts = facts.filter {
+            $0.observedAt.timeIntervalSince1970 >= start && $0.observedAt.timeIntervalSince1970 < closedEnd
+        }
+        let originalCompleteFacts = originalFacts.filter {
+            $0.observedAt.timeIntervalSince1970 >= start && $0.observedAt.timeIntervalSince1970 < closedEnd
+        }
+        let capable = deduplicateCalls(
+            completeFacts.filter { supports($0, kind: kind) && $0.measurementQuality != .unavailable },
+            kind: kind
+        )
         let identities = Dictionary(grouping: capable, by: { $0.model.raw })
         let displayNames = identities.mapValues { $0.map(\.model.display).min() ?? $0[0].model.raw }
         let totals = identities.mapValues { $0.reduce(0) { $0 + amount($1, kind: kind) } }
@@ -50,18 +69,56 @@ public struct TrendBuilder: Sendable {
             } + (hidden.isEmpty ? [] : [(.other, "Other", .other, hidden)])
         }
 
-        let anyEstimated = capable.contains { $0.measurementQuality == .estimated }
+        let qualities = capable.map(\.measurementQuality)
+        let anyEstimated = qualities.contains(.estimated)
+        let mixedQuality = Set(qualities).count > 1
         let hasUnsupported = !originalCompleteFacts.isEmpty && capable.count != originalCompleteFacts.count
-        let coverage: Coverage = conflict || hasUnsupported ? .partial : .complete
-        let authority = authority(in: capable) ?? authority(in: completeFacts) ?? authority(in: originalCompleteFacts) ?? "unavailable"
-        let state: DataState? = capable.isEmpty ? (originalFacts.isEmpty ? .absent : .stale) : nil
-        let quality: MeasurementQuality = capable.isEmpty ? .unavailable : (anyEstimated ? .estimated : .derived)
+        let retainedHealth = degraded.filter { health in
+            originalFacts.contains { matches(health, fact: $0) }
+        }
+        let coverage: Coverage = conflict || hasUnsupported || mixedQuality || !degraded.isEmpty ? .partial : .complete
+        let authority = authority(in: capable) ?? authority(in: completeFacts) ?? authority(in: originalCompleteFacts)
+            ?? authority(in: originalFacts) ?? "unavailable"
+        let state: DataState?
+        if capable.isEmpty {
+            state = !retainedHealth.isEmpty
+                ? .stale
+                : (!degraded.isEmpty ? .unavailable : (originalFacts.isEmpty ? .absent : .stale))
+        } else {
+            state = retainedHealth.isEmpty ? nil : .stale
+        }
+        let quality = MeasurementQuality.combined(qualities, derivedResult: true)
         let series = groups.map { identity, title, role, group in
             let emphasis: TrendSeriesEmphasis = role == .other ? .other : (anyEstimated ? .estimated : (coverage == .partial ? .partial : .normal))
             return TrendSeries(identity: identity, title: title, colorSlot: role == .other ? "other" : (group.first ?? "calls"), role: role, emphasis: emphasis, buckets: buckets(starts: starts, completeCount: completeStarts.count, duration: duration, facts: capable.filter { group.contains($0.model.raw) }, kind: kind, bucketSeconds: bucketSeconds))
         }
         let partSeries = kind == .burn ? tokenPartSeries(starts: starts, completeCount: completeStarts.count, duration: duration, facts: capable, bucketSeconds: bucketSeconds) : []
-        return TrendChart(windowSeconds: windowSeconds, bucketSeconds: bucketSeconds, series: series, partSeries: partSeries, measurementQuality: quality, dataState: state, coverage: coverage, sourceAuthority: conflict ? "mixed" : authority, table: accessibleTable(starts: starts, duration: duration, series: series, partSeries: partSeries))
+        let degradation = degraded.first.flatMap { health -> (UnavailableReasonCode, MetricAction?)? in
+            guard let reason = health.reasonCode else { return nil }
+            return (reason, health.recommendedAction ?? MetricAction.recommended(for: reason))
+        }
+        let noDataReason = capable.isEmpty ? (conflict ? UnavailableReasonCode.authorityConflict : (degradation?.0 ?? emptyReason)) : degradation?.0
+        let lastUpdated = retainedHealth.compactMap { health in
+            originalFacts.filter { matches(health, fact: $0) }.map(\.observedAt).max()
+        }.min() ?? capable.map(\.observedAt).max() ?? originalFacts.map(\.observedAt).max()
+        let retained = !retainedHealth.isEmpty || (capable.isEmpty && !originalFacts.isEmpty)
+        return TrendChart(
+            windowSeconds: windowSeconds,
+            bucketSeconds: bucketSeconds,
+            series: series,
+            partSeries: partSeries,
+            measurementQuality: quality,
+            dataState: state,
+            coverage: coverage,
+            sourceAuthority: conflict ? "mixed" : authority,
+            freshness: .observed(at: lastUpdated, now: now, retained: retained),
+            sampleCount: capable.count,
+            definitionVersion: definitionVersion(for: kind),
+            scope: scope,
+            unavailableReason: noDataReason,
+            recommendedAction: degradation?.1 ?? MetricAction.recommended(for: noDataReason),
+            table: accessibleTable(starts: starts, duration: duration, series: series, partSeries: partSeries)
+        )
     }
 
     private func buckets(starts: [Date], completeCount: Int, duration: TimeInterval, facts: [UsageFact], kind: Kind, bucketSeconds: Int) -> [TrendBucket] {
@@ -115,6 +172,28 @@ public struct TrendBuilder: Sendable {
     }
     private func authority(in facts: [UsageFact]) -> String? {
         let authorities = Set(facts.map(\.authority)); return authorities.count == 1 ? authorities.first : (authorities.isEmpty ? nil : "mixed")
+    }
+    private func definitionVersion(for kind: Kind) -> String {
+        switch kind {
+        case .output: OutputThroughputDefinition.version
+        case .burn: TokenBurnDefinition.version
+        case .calls: CallsDefinition.version
+        }
+    }
+    private func relevantHealth(_ health: [SourceHealth], filter: MetricFilter, facts: [UsageFact]) -> [SourceHealth] {
+        health.filter { item in
+            guard item.impacts.contains(.usage) else { return false }
+            if filter.agents.isAll && filter.models.isAll { return true }
+            if facts.contains(where: { matches(item, fact: $0) }) { return true }
+            if !item.impactedAgents.isEmpty && !filter.agents.isAll {
+                return item.impactedAgents.map(\.rawValue).contains { filter.agents.selected.contains($0) }
+            }
+            if !filter.models.isAll && facts.isEmpty { return true }
+            return false
+        }
+    }
+    private func matches(_ health: SourceHealth, fact: UsageFact) -> Bool {
+        fact.sourceID != "unknown" && health.sourceID == fact.sourceID
     }
     private func partValue(_ part: TrendTokenPart, in parts: TokenParts?) -> Int? {
         switch part { case .inputUncached: parts?.inputUncached; case .cacheRead: parts?.cacheRead; case .cacheWrite: parts?.cacheWrite; case .outputVisible: parts?.outputVisible; case .reasoning: parts?.reasoning }

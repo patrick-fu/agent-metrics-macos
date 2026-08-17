@@ -27,11 +27,20 @@ extension FixtureLocator {
     }
 }
 
-public struct SyntheticCodexSourceAdapter: SourceAdapter {
+public struct SyntheticCodexSourceAdapter: SourceOwnedAdapter {
     public var fixtureURL: URL
 
     public init(fixtureURL: URL) {
         self.fixtureURL = fixtureURL
+    }
+
+    public var sourceOwnership: SourceOwnership {
+        SourceOwnership(
+            sourceID: "synthetic-codex",
+            impacts: [.usage],
+            codingAgents: [.codex],
+            channels: [.synthetic]
+        )
     }
 
     public func loadObservations(clock: any Clock) throws -> [UsageObservation] {
@@ -55,6 +64,7 @@ public struct SyntheticCodexSourceAdapter: SourceAdapter {
         return UsageObservation(
             observationIdentity: payload.observationIdentity,
             schemaVersion: payload.schemaVersion,
+            sourceID: "synthetic-codex",
             codingAgent: .codex,
             model: ModelIdentity(raw: payload.modelRaw, display: payload.modelDisplay),
             sessionID: payload.sessionID,

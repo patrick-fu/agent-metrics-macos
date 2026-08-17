@@ -30,10 +30,19 @@ public enum DecodeTPSDefinition {
     public static let formula = "(output_total - 1) / (duration - ttft)"
 }
 
+public enum TimeToFirstTokenDefinition {
+    public static let version = "ttft-v1"
+}
+
+public enum EndToEndLatencyDefinition {
+    public static let version = "e2e-latency-v1"
+}
+
 /// A complete, request-scoped observation.  It deliberately has no content,
 /// raw attribute map, endpoint, path, or request body field.
 public struct PerformanceFact: Sendable, Equatable, Identifiable {
     public var stableRequestID: String
+    public var sourceID: String
     public var codingAgent: CodingAgent
     public var model: ModelIdentity
     public var observedAt: Date
@@ -45,11 +54,13 @@ public struct PerformanceFact: Sendable, Equatable, Identifiable {
     public var authorityTier: AuthorityTier
     public var measurementGranularity: UsageGranularity
     public var measurementRange: DateInterval
+    public var measurementQuality: MeasurementQuality
 
     public var id: String { "\(codingAgent.rawValue):\(stableRequestID)" }
 
     public init(
         stableRequestID: String,
+        sourceID: String = "claude-otel-request",
         codingAgent: CodingAgent,
         model: ModelIdentity,
         observedAt: Date,
@@ -60,9 +71,11 @@ public struct PerformanceFact: Sendable, Equatable, Identifiable {
         sourceChannel: SourceChannel,
         authorityTier: AuthorityTier,
         measurementGranularity: UsageGranularity,
-        measurementRange: DateInterval
+        measurementRange: DateInterval,
+        measurementQuality: MeasurementQuality = .measured
     ) {
         self.stableRequestID = stableRequestID
+        self.sourceID = sourceID
         self.codingAgent = codingAgent
         self.model = model
         self.observedAt = observedAt
@@ -74,6 +87,7 @@ public struct PerformanceFact: Sendable, Equatable, Identifiable {
         self.authorityTier = authorityTier
         self.measurementGranularity = measurementGranularity
         self.measurementRange = measurementRange
+        self.measurementQuality = measurementQuality
     }
 }
 
@@ -84,12 +98,40 @@ public struct PerformanceDistribution: Sendable, Equatable {
     public var sampleCount: Int
     public var measurementQuality: MeasurementQuality
     public var dataState: DataState?
+    public var coverage: Coverage
+    public var freshness: Freshness
+    public var sourceAuthority: String
+    public var scope: OutputThroughputScope
+    public var definitionVersion: String
+    public var unavailableReason: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
 
-    public init(values: [Double], quality: MeasurementQuality, includesP10: Bool) {
+    public var isLowSample: Bool { (1..<5).contains(sampleCount) }
+
+    public init(
+        values: [Double],
+        quality: MeasurementQuality,
+        includesP10: Bool,
+        dataState: DataState? = nil,
+        coverage: Coverage = .complete,
+        freshness: Freshness = .unavailable,
+        sourceAuthority: String = "unavailable",
+        scope: OutputThroughputScope = .all,
+        definitionVersion: String = "unavailable",
+        unavailableReason: UnavailableReasonCode? = nil,
+        recommendedAction: MetricAction? = nil
+    ) {
         let sorted = values.sorted()
         sampleCount = sorted.count
         measurementQuality = sorted.isEmpty ? .unavailable : quality
-        dataState = sorted.isEmpty ? .unavailable : nil
+        self.dataState = dataState ?? (sorted.isEmpty ? .unavailable : nil)
+        self.coverage = coverage
+        self.freshness = freshness
+        self.sourceAuthority = sourceAuthority
+        self.scope = scope
+        self.definitionVersion = definitionVersion
+        self.unavailableReason = unavailableReason
+        self.recommendedAction = recommendedAction
         p50 = Self.nearestRank(sorted, percentile: 0.5)
         p95 = Self.nearestRank(sorted, percentile: 0.95)
         p10 = includesP10 ? Self.nearestRank(sorted, percentile: 0.1) : nil
@@ -114,6 +156,14 @@ public struct PerformanceMetricPresentation: Sendable, Equatable {
     public let qualityText: String
     public let lowSampleText: String?
     public let accessibilityHint: String?
+    public let stateText: String
+    public let coverageText: String
+    public let freshnessText: String
+    public let definitionVersionText: String
+    public let sourceAuthorityText: String
+    public let scopeText: String
+    public let reasonText: String?
+    public let actionText: String?
 
     public init(kind: PerformanceMetricKind, distribution: PerformanceDistribution) {
         let isDecode = kind == .decodeTPS
@@ -125,6 +175,14 @@ public struct PerformanceMetricPresentation: Sendable, Equatable {
         secondaryText = "p50 · \(label) \(secondary.map(Self.format) ?? "-") · n \(distribution.sampleCount)"
         lowSampleText = (1..<5).contains(distribution.sampleCount) ? "Low sample" : nil
         accessibilityHint = isDecode ? "Derived using \(DecodeTPSDefinition.version): \(DecodeTPSDefinition.formula)." : nil
+        stateText = distribution.dataState?.displayLabel ?? "-"
+        coverageText = distribution.coverage.displayLabel
+        freshnessText = MetricMetadataPresentation.freshnessText(distribution.freshness)
+        definitionVersionText = distribution.definitionVersion
+        sourceAuthorityText = distribution.sourceAuthority
+        scopeText = distribution.scope == .all ? "All" : "Selected"
+        reasonText = distribution.unavailableReason?.message
+        actionText = distribution.recommendedAction?.message
     }
 
     private static func format(_ value: Double) -> String {
@@ -140,7 +198,11 @@ public struct PerformanceSnapshot: Sendable, Equatable {
     public var retryCount: Int
     public var invalidDecodeCount: Int
     public var unavailableReason: String?
+    public var unavailableReasonCode: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
     public var quantileDefinition: String
+    public var sourceHealth: [SourceHealth]
+    public var generatedAt: Date
 }
 
 public struct PerformanceSnapshotBuilder: Sendable {
@@ -150,33 +212,113 @@ public struct PerformanceSnapshotBuilder: Sendable {
         facts: [PerformanceFact],
         now: Date,
         range: PerformanceRange = .oneHour,
-        filter: MetricFilter = .all
+        filter: MetricFilter = .all,
+        sourceHealth: [SourceHealth] = []
     ) -> PerformanceSnapshot {
         let start = now.addingTimeInterval(-range.seconds)
-        let selected = Self.coalesced(facts).filter {
-            $0.observedAt >= start && $0.observedAt <= now && filter.includes($0)
+        let allSelected = Self.coalesced(facts).filter(filter.includes)
+        let current = allSelected.filter {
+            $0.observedAt >= start && $0.observedAt <= now
         }
-        let normal = selected.filter { !$0.isRetry }
-        let ttft = normal.map(\.ttftMilliseconds)
-        let e2e = normal.map(\.durationMilliseconds)
-        let validDecode = normal.compactMap { fact -> Double? in
+        let relevantHealth = sourceHealth.filter { health in
+            guard health.impacts.contains(.performance) else { return false }
+            if filter.agents.isAll && filter.models.isAll { return true }
+            if allSelected.contains(where: { Self.matches(health, fact: $0) }) { return true }
+            if !health.impactedAgents.isEmpty && !filter.agents.isAll {
+                return health.impactedAgents.map(\.rawValue).contains { filter.agents.selected.contains($0) }
+            }
+            if !filter.models.isAll && allSelected.isEmpty { return true }
+            return false
+        }
+        let unhealthy = relevantHealth.filter { !$0.isHealthy }
+        var selected = current
+        var retained = false
+        for health in unhealthy where !current.contains(where: { Self.matches(health, fact: $0) }) {
+            let sourceFacts = allSelected.filter { Self.matches(health, fact: $0) }
+            selected.append(contentsOf: Self.lastGoodFacts(sourceFacts, windowSeconds: range.seconds))
+            retained = retained || !sourceFacts.isEmpty
+        }
+        let retainedHealth = unhealthy.filter { health in
+            selected.contains { Self.matches(health, fact: $0) }
+        }
+        retained = retained || !retainedHealth.isEmpty
+
+        let normal = selected.filter { !$0.isRetry && $0.measurementQuality != .unavailable }
+        let validDecodeFacts = normal.filter { fact in
             let denominator = fact.durationMilliseconds - fact.ttftMilliseconds
-            guard fact.outputTotal >= 2, denominator > 0 else { return nil }
-            return Double(fact.outputTotal - 1) / (denominator / 1_000)
+            return fact.outputTotal >= 2 && denominator > 0
         }
-        let reason = normal.isEmpty
-            ? "Enable loopback OTel request traces; local logs do not contain request-level timings."
-            : nil
+        let validDecode = validDecodeFacts.map { fact in
+            Double(fact.outputTotal - 1) / ((fact.durationMilliseconds - fact.ttftMilliseconds) / 1_000)
+        }
+        let reason: UnavailableReasonCode? = unhealthy.compactMap(\.reasonCode).first
+            ?? (normal.isEmpty ? (allSelected.isEmpty && !facts.isEmpty ? .filterExcludesObservations : .requestTimingUnavailable) : nil)
+        let action = unhealthy.compactMap(\.recommendedAction).first ?? MetricAction.recommended(for: reason)
+        let qualities = normal.map(\.measurementQuality)
+        let mixedQuality = Set(qualities).count > 1
+        let baseCoverage: Coverage = !unhealthy.isEmpty || mixedQuality || selected.contains(where: { $0.measurementQuality == .unavailable })
+            ? .partial : .complete
+        let lastUpdated = Self.lastUpdated(in: normal, affectedBy: retainedHealth)
+        let freshness = Freshness.observed(at: lastUpdated, now: now, retained: retained)
+        let authority = Self.authority(in: normal)
+        let scope: OutputThroughputScope = filter.agents.isAll && filter.models.isAll ? .all : .selected
+        let state: DataState? = retained && !normal.isEmpty ? .stale : nil
+        let measuredQuality = MeasurementQuality.combined(qualities, derivedResult: false)
+        let derivedQuality = MeasurementQuality.combined(validDecodeFacts.map(\.measurementQuality), derivedResult: true)
         return PerformanceSnapshot(
             range: range,
-            timeToFirstToken: PerformanceDistribution(values: ttft, quality: .measured, includesP10: false),
-            endToEnd: PerformanceDistribution(values: e2e, quality: .measured, includesP10: false),
-            decodeTPS: PerformanceDistribution(values: validDecode, quality: .derived, includesP10: true),
+            timeToFirstToken: PerformanceDistribution(
+                values: normal.map(\.ttftMilliseconds), quality: measuredQuality, includesP10: false,
+                dataState: state, coverage: baseCoverage, freshness: freshness, sourceAuthority: authority,
+                scope: scope, definitionVersion: TimeToFirstTokenDefinition.version,
+                unavailableReason: reason, recommendedAction: action
+            ),
+            endToEnd: PerformanceDistribution(
+                values: normal.map(\.durationMilliseconds), quality: measuredQuality, includesP10: false,
+                dataState: state, coverage: baseCoverage, freshness: freshness, sourceAuthority: authority,
+                scope: scope, definitionVersion: EndToEndLatencyDefinition.version,
+                unavailableReason: reason, recommendedAction: action
+            ),
+            decodeTPS: PerformanceDistribution(
+                values: validDecode, quality: derivedQuality, includesP10: true,
+                dataState: retained && !validDecode.isEmpty ? .stale : nil,
+                coverage: baseCoverage == .partial || normal.count != validDecode.count ? .partial : .complete,
+                freshness: Freshness.observed(at: Self.lastUpdated(in: validDecodeFacts, affectedBy: retainedHealth), now: now, retained: retained),
+                sourceAuthority: Self.authority(in: validDecodeFacts), scope: scope,
+                definitionVersion: DecodeTPSDefinition.version,
+                unavailableReason: validDecode.isEmpty ? (reason ?? .unsupportedCapability) : reason,
+                recommendedAction: validDecode.isEmpty ? MetricAction.recommended(for: reason ?? .unsupportedCapability) : action
+            ),
             retryCount: selected.filter(\.isRetry).count,
             invalidDecodeCount: normal.count - validDecode.count,
-            unavailableReason: reason,
-            quantileDefinition: "nearest-rank"
+            unavailableReason: reason?.message,
+            unavailableReasonCode: reason,
+            recommendedAction: action,
+            quantileDefinition: "nearest-rank",
+            sourceHealth: relevantHealth,
+            generatedAt: now
         )
+    }
+
+    private static func matches(_ health: SourceHealth, fact: PerformanceFact) -> Bool {
+        fact.sourceID != "legacy-performance" && health.sourceID == fact.sourceID
+    }
+
+    private static func lastGoodFacts(_ facts: [PerformanceFact], windowSeconds: TimeInterval) -> [PerformanceFact] {
+        guard let last = facts.map(\.observedAt).max() else { return [] }
+        return facts.filter { $0.observedAt >= last.addingTimeInterval(-windowSeconds) && $0.observedAt <= last }
+    }
+
+    private static func lastUpdated(in facts: [PerformanceFact], affectedBy health: [SourceHealth]) -> Date? {
+        let affected = health.compactMap { item in
+            facts.filter { matches(item, fact: $0) }.map(\.observedAt).max()
+        }
+        return affected.min() ?? facts.map(\.observedAt).max()
+    }
+
+    private static func authority(in facts: [PerformanceFact]) -> String {
+        let sources = Set(facts.map(\.sourceID))
+        return sources.count > 1 ? "mixed" : (sources.first ?? "unavailable")
     }
 
     /// The store normally enforces this invariant.  Keep the snapshot seam
@@ -215,6 +357,8 @@ extension PerformanceFact {
             fact.model.raw,
             fact.model.display,
             fact.sourceChannel.rawValue,
+            fact.sourceID,
+            fact.measurementQuality.rawValue,
             fact.measurementRange.start.timeIntervalSince1970.description,
             fact.measurementRange.end.timeIntervalSince1970.description,
         ].joined(separator: "|")
@@ -334,6 +478,7 @@ public struct OTLPHTTPJSONDecoder: Sendable {
                     let rangeStart = observedAt.addingTimeInterval(-duration / 1_000)
                     facts.append(PerformanceFact(
                         stableRequestID: requestID,
+                        sourceID: "claude-otel-request",
                         codingAgent: .claudeCode,
                         model: ModelIdentity(raw: model, display: model),
                         observedAt: observedAt,

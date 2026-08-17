@@ -12,6 +12,7 @@ public struct CanonicalIngestor: Sendable {
             return UsageFact(
                 id: observation.observationIdentity,
                 schemaVersion: observation.schemaVersion,
+                sourceID: observation.sourceID,
                 codingAgent: observation.codingAgent,
                 model: observation.model,
                 sessionID: observation.sessionID,

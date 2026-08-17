@@ -18,6 +18,15 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
 
     public var sourceID: String { ClaudeTranscriptParser.sourceID }
 
+    public var sourceOwnership: SourceOwnership {
+        SourceOwnership(
+            sourceID: sourceID,
+            impacts: [.usage],
+            codingAgents: [.claudeCode],
+            channels: [.claudeTranscript]
+        )
+    }
+
     public var sourceRebuildScope: SourceFactScope {
         .schemaVersion(ClaudeTranscriptParser.schemaVersion)
     }
@@ -40,7 +49,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                 rebuildSource: true,
                 rebuiltFileIdentities: rebuilt.rebuiltFileIdentities,
                 diagnostics: [diagnostic] + rebuilt.diagnostics,
-                health: SourceHealth(sourceID: sourceID, isHealthy: false, diagnosticCode: diagnostic.code)
+                health: SourceHealth.usage(sourceID: sourceID, codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: diagnostic.code)
             )
         }
 
@@ -79,7 +88,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                 state: working,
                 rebuildSource: false,
                 diagnostics: working.diagnosticCodes.map { SourceDiagnostic(code: $0, sourceID: sourceID) },
-                health: SourceHealth(sourceID: sourceID, isHealthy: false, diagnosticCode: "SOURCE_UNAVAILABLE")
+                health: SourceHealth.usage(sourceID: sourceID, codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: "SOURCE_UNAVAILABLE")
             )
         }
 
@@ -97,7 +106,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                     observations: [],
                     state: working,
                     rebuildSource: true,
-                    health: SourceHealth(sourceID: sourceID, isHealthy: true)
+                    health: SourceHealth.usage(sourceID: sourceID, codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: true)
                 )
             }
             if result.requiresSourceRebuild {
@@ -105,7 +114,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                     observations: [],
                     state: working,
                     rebuildSource: true,
-                    health: SourceHealth(sourceID: sourceID, isHealthy: true)
+                    health: SourceHealth.usage(sourceID: sourceID, codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: true)
                 )
             }
             if result.rebuiltFile, !forceRebuild, !working.diagnosticCodes.isEmpty {
@@ -113,7 +122,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                     observations: [],
                     state: working,
                     rebuildSource: true,
-                    health: SourceHealth(sourceID: sourceID, isHealthy: true)
+                    health: SourceHealth.usage(sourceID: sourceID, codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: true)
                 )
             }
             if result.rebuiltFile { rebuiltFileIdentities.append(file.identity) }
@@ -133,8 +142,10 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             rebuildSource: false,
             rebuiltFileIdentities: rebuiltFileIdentities,
             diagnostics: uniqueDiagnostics,
-            health: SourceHealth(
+            health: SourceHealth.usage(
                 sourceID: sourceID,
+                codingAgent: .claudeCode,
+                channel: .claudeTranscript,
                 isHealthy: !missingKnownFiles && uniqueDiagnostics.isEmpty,
                 diagnosticCode: missingKnownFiles ? "SOURCE_UNAVAILABLE" : uniqueDiagnostics.first?.code
             )
@@ -323,6 +334,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         observations.append(UsageObservation(
             observationIdentity: "claude-transcript:\(fileIdentity):\(lineEndOffset)",
             schemaVersion: ClaudeTranscriptParser.schemaVersion,
+            sourceID: ClaudeTranscriptParser.sourceID,
             codingAgent: .claudeCode,
             model: model,
             sessionID: sessionID,

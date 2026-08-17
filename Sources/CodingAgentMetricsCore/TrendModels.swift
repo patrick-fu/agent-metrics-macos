@@ -108,6 +108,12 @@ public struct TrendChart: Sendable, Equatable {
     public var dataState: DataState?
     public var coverage: Coverage
     public var sourceAuthority: String
+    public var freshness: Freshness
+    public var sampleCount: Int
+    public var definitionVersion: String
+    public var scope: OutputThroughputScope
+    public var unavailableReason: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
     public var table: AccessibleTrendTable
 }
 
@@ -115,6 +121,8 @@ public struct TrendSnapshot: Sendable, Equatable {
     public var outputThroughput: TrendChart
     public var tokenBurn: TrendChart
     public var calls: TrendChart
+    public var generatedAt: Date
+    public var sourceHealth: [SourceHealth]
 }
 
 public enum TrendColorPalette {
@@ -134,12 +142,33 @@ public struct TrendPresentation: Sendable, Equatable {
     public var qualityText: String
     public var dataStateText: String
     public var coverageText: String
+    public var sourceAuthorityText: String
+    public var freshnessText: String
+    public var sampleCountText: String
+    public var definitionVersionText: String
+    public var scopeText: String
+    public var reasonText: String?
+    public var actionText: String?
     public var allowsContinuousAnimation: Bool
 
     public init(chart: TrendChart, reduceMotion: Bool = false) {
         qualityText = chart.measurementQuality.displayLabel
         dataStateText = chart.dataState?.displayLabel ?? "-"
         coverageText = chart.coverage.displayLabel
+        sourceAuthorityText = chart.sourceAuthority
+        freshnessText = Self.freshness(chart.freshness)
+        sampleCountText = "n \(chart.sampleCount)"
+        definitionVersionText = chart.definitionVersion
+        scopeText = chart.scope == .all ? "All" : "Selected"
+        reasonText = chart.unavailableReason?.message
+        actionText = chart.recommendedAction?.message
         allowsContinuousAnimation = !reduceMotion
+    }
+
+    private static func freshness(_ freshness: Freshness) -> String {
+        guard let age = freshness.ageSeconds else { return "No update" }
+        let seconds = Int(age.rounded(.down))
+        let ageText = seconds < 60 ? "\(seconds)s" : seconds < 3_600 ? "\(seconds / 60)m" : "\(seconds / 3_600)h"
+        return "Updated \(ageText) ago\(freshness.isRetained ? " · Retained" : "")"
     }
 }

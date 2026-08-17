@@ -36,6 +36,7 @@ public struct TokenParts: Sendable, Equatable, Codable {
 public struct UsageObservation: Sendable, Equatable {
     public var observationIdentity: String
     public var schemaVersion: String
+    public var sourceID: String
     public var codingAgent: CodingAgent
     public var model: ModelIdentity
     public var sessionID: String
@@ -49,6 +50,7 @@ public struct UsageObservation: Sendable, Equatable {
     public init(
         observationIdentity: String,
         schemaVersion: String,
+        sourceID: String = "unknown",
         codingAgent: CodingAgent,
         model: ModelIdentity,
         sessionID: String,
@@ -60,6 +62,7 @@ public struct UsageObservation: Sendable, Equatable {
     ) {
         self.observationIdentity = observationIdentity
         self.schemaVersion = schemaVersion
+        self.sourceID = sourceID
         self.codingAgent = codingAgent
         self.model = model
         self.sessionID = sessionID
@@ -78,6 +81,7 @@ public enum OutputThroughputScope: String, Sendable, Equatable, Codable {
 public struct UsageFact: Sendable, Equatable, Identifiable {
     public var id: String
     public var schemaVersion: String
+    public var sourceID: String
     public var codingAgent: CodingAgent
     public var model: ModelIdentity
     public var sessionID: String
@@ -98,6 +102,7 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
     public init(
         id: String,
         schemaVersion: String,
+        sourceID: String = "unknown",
         codingAgent: CodingAgent,
         model: ModelIdentity,
         sessionID: String,
@@ -117,6 +122,7 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
     ) {
         self.id = id
         self.schemaVersion = schemaVersion
+        self.sourceID = sourceID
         self.codingAgent = codingAgent
         self.model = model
         self.sessionID = sessionID
@@ -152,6 +158,10 @@ public struct OutputThroughputMetric: Sendable, Equatable {
     public var definitionVersion: String
     public var sourceAuthority: String
     public var scope: OutputThroughputScope
+    public var freshness: Freshness
+    public var sampleCount: Int
+    public var unavailableReason: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
 }
 
 public struct TokenBurnMetric: Sendable, Equatable {
@@ -165,11 +175,17 @@ public struct TokenBurnMetric: Sendable, Equatable {
     public var definitionVersion: String
     public var sourceAuthority: String
     public var scope: OutputThroughputScope
+    public var freshness: Freshness
+    public var sampleCount: Int
+    public var unavailableReason: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
 
     public init(
         tokensPerMinute: Double?, selectedBurnTokens: Int?, parts: TokenParts?, windowSeconds: Int,
         measurementQuality: MeasurementQuality, dataState: DataState?, coverage: Coverage,
-        definitionVersion: String, sourceAuthority: String, scope: OutputThroughputScope
+        definitionVersion: String, sourceAuthority: String, scope: OutputThroughputScope,
+        freshness: Freshness = .unavailable, sampleCount: Int = 0,
+        unavailableReason: UnavailableReasonCode? = nil, recommendedAction: MetricAction? = nil
     ) {
         self.tokensPerMinute = tokensPerMinute
         self.selectedBurnTokens = selectedBurnTokens
@@ -181,6 +197,10 @@ public struct TokenBurnMetric: Sendable, Equatable {
         self.definitionVersion = definitionVersion
         self.sourceAuthority = sourceAuthority
         self.scope = scope
+        self.freshness = freshness
+        self.sampleCount = sampleCount
+        self.unavailableReason = unavailableReason
+        self.recommendedAction = recommendedAction
     }
 
     public init(
@@ -202,6 +222,10 @@ public struct TokenBurnMetric: Sendable, Equatable {
         self.definitionVersion = TokenBurnDefinition.version
         self.sourceAuthority = sourceAuthority
         self.scope = .all
+        self.freshness = .unavailable
+        self.sampleCount = 0
+        self.unavailableReason = nil
+        self.recommendedAction = nil
     }
 }
 
@@ -215,6 +239,10 @@ public struct CallsMetric: Sendable, Equatable {
     public var definitionVersion: String
     public var sourceAuthority: String
     public var scope: OutputThroughputScope
+    public var freshness: Freshness
+    public var sampleCount: Int
+    public var unavailableReason: UnavailableReasonCode?
+    public var recommendedAction: MetricAction?
 
     public init(
         modelCallIDs: [String],
@@ -226,9 +254,15 @@ public struct CallsMetric: Sendable, Equatable {
         self.definitionVersion = CallsDefinition.version
         self.sourceAuthority = sourceAuthority
         self.scope = .all
+        self.freshness = .unavailable
+        self.sampleCount = 0
+        self.unavailableReason = nil
+        self.recommendedAction = nil
         guard capabilityAvailable else {
             callsPerMinute = nil; selectedCallCount = nil; measurementQuality = .unavailable
             dataState = .unavailable; coverage = .partial
+            unavailableReason = .stableModelCallIdentityUnavailable
+            recommendedAction = .enableEnhancedTelemetry
             return
         }
         let count = Set(modelCallIDs).count
@@ -237,6 +271,7 @@ public struct CallsMetric: Sendable, Equatable {
         measurementQuality = .derived
         dataState = count == 0 ? .zero : nil
         coverage = .complete
+        sampleCount = count
     }
 }
 

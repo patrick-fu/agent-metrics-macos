@@ -332,14 +332,14 @@ struct ClaudeTranscriptIngestTests {
         )
         #expect(try runtime.lightSnapshot().outputThroughput.dataState == .unavailable)
         #expect(runtime.sourceHealth == [
-            SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
+            SourceHealth.usage(sourceID: "claude-code", codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
         ])
 
         try home.writeTranscript(lines: [userLine(), assistantLine(outputTokens: 1800)], terminated: true)
         let recovered = try runtime.lightSnapshot()
         #expect(recovered.outputThroughput.selectedOutputTokens == 1800)
         #expect(recovered.outputThroughput.coverage == .complete)
-        #expect(runtime.sourceHealth == [SourceHealth(sourceID: "claude-code", isHealthy: true)])
+        #expect(runtime.sourceHealth == [SourceHealth.usage(sourceID: "claude-code", codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: true)])
         #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code")?.diagnosticCodes.isEmpty == true)
     }
 
@@ -405,7 +405,7 @@ struct ClaudeTranscriptIngestTests {
 
         #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
         #expect(runtime.sourceHealth == [
-            SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "PARSER_VERSION_CHANGED"),
+            SourceHealth.usage(sourceID: "claude-code", codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: "PARSER_VERSION_CHANGED"),
         ])
         let state = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code"))
         #expect(state.parserVersion == ClaudeTranscriptParser.semanticVersion)

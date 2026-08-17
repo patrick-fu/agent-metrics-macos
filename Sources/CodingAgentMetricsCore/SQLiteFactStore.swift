@@ -40,7 +40,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 authority_tier TEXT,
                 measurement_granularity TEXT,
                 measurement_range_start REAL,
-                measurement_range_end REAL
+                measurement_range_end REAL,
+                source_id TEXT
             );
             """
         )
@@ -241,6 +242,39 @@ public final class SQLiteFactStore: @unchecked Sendable {
         )
     }
 
+    public func latestObservedAt(sourceID: String, before: Date) throws -> Date? {
+        let sql = "SELECT MAX(observed_at) FROM usage_facts WHERE source_id = ? AND observed_at <= ?;"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sourceID)
+        sqlite3_bind_double(statement, 2, before.timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+    }
+
+    public func facts(sourceID: String, in interval: DateInterval) throws -> [UsageFact] {
+        let sql = """
+            SELECT * FROM usage_facts
+            WHERE source_id = ? AND observed_at >= ? AND observed_at <= ?
+            ORDER BY observed_at ASC, id ASC;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sourceID)
+        sqlite3_bind_double(statement, 2, interval.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 3, interval.end.timeIntervalSince1970)
+        var facts: [UsageFact] = []
+        while sqlite3_step(statement) == SQLITE_ROW { facts.append(try row(statement)) }
+        return facts
+    }
+
     private func insert(_ fact: UsageFact, replace: Bool = false) throws {
         let sql = """
         INSERT \(replace ? "OR REPLACE " : "")INTO usage_facts (
@@ -251,7 +285,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
             normalized_burn_total, model_call_id
             , model_call_capability, source_channel, authority_tier,
             measurement_granularity, measurement_range_start, measurement_range_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            , source_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -284,6 +319,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
         bind(statement, 24, fact.measurementGranularity.rawValue)
         sqlite3_bind_double(statement, 25, fact.measurementRange.start.timeIntervalSince1970)
         sqlite3_bind_double(statement, 26, fact.measurementRange.end.timeIntervalSince1970)
+        bind(statement, 27, fact.sourceID)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw StoreError.insertFailed
         }
@@ -298,7 +334,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
             stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
             observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
             authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            , source_id, measurement_quality
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -320,6 +357,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
         bind(statement, 13, fact.measurementGranularity.rawValue)
         sqlite3_bind_double(statement, 14, fact.measurementRange.start.timeIntervalSince1970)
         sqlite3_bind_double(statement, 15, fact.measurementRange.end.timeIntervalSince1970)
+        bind(statement, 16, fact.sourceID)
+        bind(statement, 17, fact.measurementQuality.rawValue)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.insertFailed }
     }
 
@@ -327,7 +366,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
         let sql = """
         SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
                observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
-               authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
+               authority_tier, measurement_granularity, measurement_range_start, measurement_range_end,
+               source_id, measurement_quality
         FROM performance_facts
         WHERE coding_agent_raw = ? AND stable_request_id = ? AND measurement_granularity = ?
         LIMIT 1;
@@ -382,6 +422,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
         return UsageFact(
             id: text(statement, 0),
             schemaVersion: text(statement, 1),
+            sourceID: optionalText(statement, 26) ?? "unknown",
             codingAgent: CodingAgent(rawValue: text(statement, 2), displayName: text(statement, 3)),
             model: ModelIdentity(raw: text(statement, 4), display: text(statement, 5)),
             sessionID: text(statement, 6),
@@ -416,6 +457,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
         }
         return PerformanceFact(
             stableRequestID: text(statement, 0),
+            sourceID: optionalText(statement, 15) ?? "legacy-performance",
             codingAgent: CodingAgent(rawValue: text(statement, 1), displayName: text(statement, 2)),
             model: ModelIdentity(raw: text(statement, 3), display: text(statement, 4)),
             observedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
@@ -429,7 +471,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
             measurementRange: DateInterval(
                 start: Date(timeIntervalSince1970: sqlite3_column_double(statement, 13)),
                 end: Date(timeIntervalSince1970: sqlite3_column_double(statement, 14))
-            )
+            ),
+            measurementQuality: optionalText(statement, 16).flatMap(MeasurementQuality.init(rawValue:)) ?? .measured
         )
     }
 
@@ -476,6 +519,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
             "model_call_id TEXT",
             "model_call_capability TEXT", "source_channel TEXT", "authority_tier TEXT",
             "measurement_granularity TEXT", "measurement_range_start REAL", "measurement_range_end REAL",
+            "source_id TEXT",
         ]
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "PRAGMA table_info(usage_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -488,6 +532,19 @@ public final class SQLiteFactStore: @unchecked Sendable {
             let name = addition.split(separator: " ").first.map(String.init) ?? addition
             if !names.contains(name) { try exec("ALTER TABLE usage_facts ADD COLUMN \(addition);") }
         }
+        try exec(
+            """
+            UPDATE usage_facts
+            SET source_id = CASE schema_version
+                WHEN 'codex-rollout-v1' THEN 'codex'
+                WHEN 'claude-code-transcript-v1' THEN 'claude-code'
+                WHEN 'synthetic-codex-token-count-v1' THEN 'synthetic-codex'
+                WHEN 'synthetic-stable-call-v1' THEN 'synthetic-codex'
+                ELSE 'unknown'
+            END
+            WHERE source_id IS NULL OR source_id = '';
+            """
+        )
     }
 
     private func createPerformanceFactsTable() throws {
@@ -509,6 +566,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 measurement_granularity TEXT NOT NULL,
                 measurement_range_start REAL NOT NULL,
                 measurement_range_end REAL NOT NULL,
+                source_id TEXT,
+                measurement_quality TEXT,
                 PRIMARY KEY (coding_agent_raw, stable_request_id, measurement_granularity)
             );
             """
@@ -521,11 +580,19 @@ public final class SQLiteFactStore: @unchecked Sendable {
             throw StoreError.prepareFailed
         }
         var primaryKeyColumns: [(Int, String)] = []
+        var columnNames = Set<String>()
         while sqlite3_step(statement) == SQLITE_ROW {
+            columnNames.insert(text(statement, 1))
             let ordinal = Int(sqlite3_column_int(statement, 5))
             if ordinal > 0 { primaryKeyColumns.append((ordinal, text(statement, 1))) }
         }
         sqlite3_finalize(statement)
+        if !columnNames.contains("source_id") {
+            try exec("ALTER TABLE performance_facts ADD COLUMN source_id TEXT;")
+        }
+        if !columnNames.contains("measurement_quality") {
+            try exec("ALTER TABLE performance_facts ADD COLUMN measurement_quality TEXT;")
+        }
         let expected = ["coding_agent_raw", "stable_request_id", "measurement_granularity"]
         guard primaryKeyColumns.sorted(by: { $0.0 < $1.0 }).map(\.1) != expected else { return }
 
@@ -536,7 +603,8 @@ public final class SQLiteFactStore: @unchecked Sendable {
             let sql = """
             SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
                    observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
-                   authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
+                   authority_tier, measurement_granularity, measurement_range_start, measurement_range_end,
+                   source_id, measurement_quality
             FROM performance_facts_legacy;
             """
             var legacy: OpaquePointer?

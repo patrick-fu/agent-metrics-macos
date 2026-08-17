@@ -100,10 +100,11 @@ struct LightSnapshotContractTests {
         let snapshot = SnapshotBuilder().buildLightSnapshot(sample: sample, allFacts: [fact], now: now)
 
         #expect(sample.selectedOutputTokens == 0)
-        #expect(snapshot.outputThroughput.tokensPerSecond == nil)
-        #expect(snapshot.outputThroughput.measurementQuality == .unavailable)
+        #expect(snapshot.outputThroughput.tokensPerSecond == 5)
+        #expect(snapshot.outputThroughput.measurementQuality == .derived)
         #expect(snapshot.outputThroughput.dataState == .stale)
         #expect(snapshot.outputThroughput.coverage == .complete)
+        #expect(snapshot.outputThroughput.freshness.isRetained)
     }
 
     @Test func qualityStateAndCoverageAreIndependentFields() {

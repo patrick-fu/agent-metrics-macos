@@ -13,6 +13,15 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
 
     public var sourceID: String { CodexRolloutParser.sourceID }
 
+    public var sourceOwnership: SourceOwnership {
+        SourceOwnership(
+            sourceID: sourceID,
+            impacts: [.usage],
+            codingAgents: [.codex],
+            channels: [.codexRollout]
+        )
+    }
+
     public var sourceRebuildScope: SourceFactScope {
         .schemaVersion(CodexRolloutParser.schemaVersion)
     }
@@ -38,8 +47,10 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 rebuildSource: true,
                 rebuiltFileIdentities: rebuilt.rebuiltFileIdentities,
                 diagnostics: [parserVersionChanged] + rebuilt.diagnostics,
-                health: SourceHealth(
+                health: SourceHealth.usage(
                     sourceID: sourceID,
+                    codingAgent: .codex,
+                    channel: .codexRollout,
                     isHealthy: false,
                     diagnosticCode: parserVersionChanged.code
                 )
@@ -112,8 +123,10 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 collected.append(item)
             }
         }
-        let health = SourceHealth(
+        let health = SourceHealth.usage(
             sourceID: sourceID,
+            codingAgent: .codex,
+            channel: .codexRollout,
             isHealthy: uniqueDiagnostics.isEmpty,
             diagnosticCode: uniqueDiagnostics.first?.code
         )
@@ -270,6 +283,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         UsageObservation(
             observationIdentity: "codex-rollout:\(fileIdentity):\(ordinal)",
             schemaVersion: CodexRolloutParser.schemaVersion,
+            sourceID: CodexRolloutParser.sourceID,
             codingAgent: .codex,
             model: context.model,
             sessionID: context.sessionID,

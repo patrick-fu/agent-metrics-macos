@@ -386,7 +386,7 @@ struct CodexRolloutIngestTests {
         let snapshot = try runtime.lightSnapshot()
         #expect(snapshot.outputThroughput.measurementQuality == .unavailable)
         #expect(runtime.sourceHealth == [
-            SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
+            SourceHealth.usage(sourceID: "codex", codingAgent: .codex, channel: .codexRollout, isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
         ])
         #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
     }
@@ -421,7 +421,7 @@ struct CodexRolloutIngestTests {
 
         #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
         #expect(runtime.sourceHealth == [
-            SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "PARSER_VERSION_CHANGED"),
+            SourceHealth.usage(sourceID: "codex", codingAgent: .codex, channel: .codexRollout, isHealthy: false, diagnosticCode: "PARSER_VERSION_CHANGED"),
         ])
         let state = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
         #expect(state.parserVersion == CodexRolloutParser.semanticVersion)

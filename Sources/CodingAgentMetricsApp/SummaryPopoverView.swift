@@ -92,11 +92,10 @@ struct SummaryPopoverView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            HStack(spacing: 8) {
-                meta(title: "Quality", value: presentation?.qualityText ?? "Unavailable")
-                meta(title: "State", value: presentation?.dataStateText ?? "Absent")
-                meta(title: "Coverage", value: presentation?.coverageText ?? "Complete")
-            }
+            metricMetadata(presentation?.outputMetadata)
+            Text(presentation?.sourceHealthText ?? "Source health unavailable")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Button("View Trends") {
                 guard let filter = snapshot?.filter, let loaded = loadTrends(filter) else { return }
                 trends = loaded
@@ -145,11 +144,24 @@ struct SummaryPopoverView: View {
     }
 
     private func trendSection(title: String, aggregate: String, chart: TrendChart, style: TrendChartView.Style) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let presentation = TrendPresentation(chart: chart)
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title).font(.subheadline)
                 Spacer()
                 Text(aggregate).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Text("\(presentation.qualityText) · \(presentation.dataStateText) · \(presentation.coverageText) · \(presentation.sampleCountText)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("\(presentation.freshnessText) · \(presentation.sourceAuthorityText) · \(presentation.scopeText) · \(presentation.definitionVersionText)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let reason = presentation.reasonText {
+                Text(reason).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let action = presentation.actionText {
+                Text(action).font(.caption2).foregroundStyle(.tint)
             }
             TrendChartView(chart: chart, style: style)
         }
@@ -165,11 +177,7 @@ struct SummaryPopoverView: View {
                 Text(presentation?.burnCompositionText ?? "Unavailable")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    meta(title: "Quality", value: presentation?.burnQualityText ?? "Unavailable")
-                    meta(title: "State", value: presentation?.burnStateText ?? "Absent")
-                    meta(title: "Coverage", value: presentation?.burnCoverageText ?? "Partial")
-                }
+                metricMetadata(presentation?.burnMetadata)
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(presentation?.callsDetailText ?? "Unavailable")
@@ -181,11 +189,7 @@ struct SummaryPopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 8) {
-                    meta(title: "Quality", value: presentation?.callsQualityText ?? "Unavailable")
-                    meta(title: "State", value: presentation?.callsStateText ?? "Unavailable")
-                    meta(title: "Coverage", value: presentation?.callsCoverageText ?? "Partial")
-                }
+                metricMetadata(presentation?.callsMetadata)
             }
         }
     }
@@ -307,8 +311,20 @@ struct SummaryPopoverView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             Text(presentation?.qualityText ?? "Unavailable")
                 .font(.caption2).foregroundStyle(.secondary)
+            Text("\(presentation?.stateText ?? "Unavailable") · \(presentation?.coverageText ?? "Partial")")
+                .font(.caption2).foregroundStyle(.secondary)
+            Text(presentation?.freshnessText ?? "No update")
+                .font(.caption2).foregroundStyle(.secondary)
+            Text("\(presentation?.sourceAuthorityText ?? "unavailable") · \(presentation?.scopeText ?? "All") · \(presentation?.definitionVersionText ?? "unavailable")")
+                .font(.caption2).foregroundStyle(.secondary)
             if let lowSample = presentation?.lowSampleText {
                 Text(lowSample).font(.caption2).foregroundStyle(.orange)
+            }
+            if let reason = presentation?.reasonText {
+                Text(reason).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let action = presentation?.actionText {
+                Text(action).font(.caption2).foregroundStyle(.tint)
             }
         }
         .accessibilityHint(presentation?.accessibilityHint ?? "")
@@ -337,5 +353,28 @@ struct SummaryPopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(6)
         .background(Color.primary.opacity(0.04))
+    }
+
+    @ViewBuilder
+    private func metricMetadata(_ metadata: MetricMetadataPresentation?) -> some View {
+        if let metadata {
+            HStack(spacing: 8) {
+                meta(title: "Quality", value: metadata.qualityText)
+                meta(title: "State", value: metadata.stateText)
+                meta(title: "Coverage", value: metadata.coverageText)
+            }
+            Text("\(metadata.freshnessText) · \(metadata.sampleCountText)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("\(metadata.sourceAuthorityText) · \(metadata.scopeText) · \(metadata.definitionVersionText)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let reason = metadata.reasonText {
+                Text(reason).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let action = metadata.actionText {
+                Text(action).font(.caption2).foregroundStyle(.tint)
+            }
+        }
     }
 }

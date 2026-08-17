@@ -69,7 +69,13 @@ struct FilteredLightSnapshotTests {
             sample: LiveSampler().sample(facts: [], filter: togglingAgents("codex"), now: now),
             allFacts: [],
             now: now,
-            sourceHealth: [SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "SOURCE_FAILURE")],
+            sourceHealth: [SourceHealth.usage(
+                sourceID: "codex",
+                codingAgent: .codex,
+                channel: .codexRollout,
+                isHealthy: false,
+                diagnosticCode: "SOURCE_FAILURE"
+            )],
             filter: togglingAgents("codex")
         )
         #expect(unavailable.outputThroughput.dataState == .unavailable)
@@ -134,8 +140,8 @@ struct FilteredLightSnapshotTests {
     @Test func coverageAndUnavailableUseOnlySelectedAgentSources() {
         let facts = mixedFacts(now: now)
         let health = [
-            SourceHealth(sourceID: "codex", isHealthy: true),
-            SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
+            SourceHealth.usage(sourceID: "codex", codingAgent: .codex, channel: .codexRollout, isHealthy: true),
+            SourceHealth.usage(sourceID: "claude-code", codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
         ]
 
         let codexOnly = SnapshotBuilder().buildLightSnapshot(
@@ -174,8 +180,8 @@ struct FilteredLightSnapshotTests {
     @Test func modelOnlyFilterScopesHealthToSourcesThatOwnTheSelectedModel() {
         let facts = mixedFacts(now: now)
         let health = [
-            SourceHealth(sourceID: "codex", isHealthy: true),
-            SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
+            SourceHealth.usage(sourceID: "codex", codingAgent: .codex, channel: .codexRollout, isHealthy: true),
+            SourceHealth.usage(sourceID: "claude-code", codingAgent: .claudeCode, channel: .claudeTranscript, isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
         ]
 
         var codexModel = MetricFilter()
@@ -209,7 +215,8 @@ struct FilteredLightSnapshotTests {
             modelRaw: "opus",
             display: "Opus",
             outputTokens: 540,
-            observedAt: now.addingTimeInterval(-181)
+            observedAt: now.addingTimeInterval(-181),
+            sourceID: "claude-code"
         )
         let unavailableClaudeModel = SnapshotBuilder().buildLightSnapshot(
             sample: LiveSampler().sample(facts: [staleClaude], filter: claudeModel, now: now),
@@ -218,9 +225,9 @@ struct FilteredLightSnapshotTests {
             sourceHealth: health,
             filter: claudeModel
         )
-        #expect(unavailableClaudeModel.outputThroughput.dataState == .unavailable)
+        #expect(unavailableClaudeModel.outputThroughput.dataState == .stale)
         #expect(unavailableClaudeModel.outputThroughput.coverage == .partial)
-        #expect(unavailableClaudeModel.outputThroughput.tokensPerSecond == nil)
+        #expect(unavailableClaudeModel.outputThroughput.tokensPerSecond == 3)
     }
 
     @Test func optionsSortByDisplayThenRaw() {
@@ -339,9 +346,9 @@ private func build(facts: [UsageFact], filter: MetricFilter) -> LightSnapshot {
 
 private func mixedFacts(now: Date) -> [UsageFact] {
     [
-        makeFact(agent: .codex, modelRaw: "gpt-a", display: "A", outputTokens: 180, observedAt: now.addingTimeInterval(-10)),
-        makeFact(agent: .codex, modelRaw: "gpt-b", display: "B", outputTokens: 360, observedAt: now.addingTimeInterval(-20)),
-        makeFact(agent: .claudeCode, modelRaw: "opus", display: "Opus", outputTokens: 540, observedAt: now.addingTimeInterval(-30)),
+        makeFact(agent: .codex, modelRaw: "gpt-a", display: "A", outputTokens: 180, observedAt: now.addingTimeInterval(-10), sourceID: "codex"),
+        makeFact(agent: .codex, modelRaw: "gpt-b", display: "B", outputTokens: 360, observedAt: now.addingTimeInterval(-20), sourceID: "codex"),
+        makeFact(agent: .claudeCode, modelRaw: "opus", display: "Opus", outputTokens: 540, observedAt: now.addingTimeInterval(-30), sourceID: "claude-code"),
     ]
 }
 
@@ -350,11 +357,13 @@ private func makeFact(
     modelRaw: String,
     display: String,
     outputTokens: Int,
-    observedAt: Date
+    observedAt: Date,
+    sourceID: String = "unknown"
 ) -> UsageFact {
     UsageFact(
         id: "fact-\(agent.rawValue)-\(modelRaw)-\(outputTokens)-\(observedAt.timeIntervalSince1970)",
         schemaVersion: "synthetic-filter-v1",
+        sourceID: sourceID,
         codingAgent: agent,
         model: ModelIdentity(raw: modelRaw, display: display),
         sessionID: "session",

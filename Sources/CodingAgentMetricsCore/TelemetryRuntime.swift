@@ -7,7 +7,6 @@ public final class TelemetryRuntime: @unchecked Sendable {
     private let storeQueue = DispatchQueue(label: "dev.codingagentmetrics.runtime-store")
     private let lifecycleGate = NSLock()
     private var receiver: OTLPHTTPReceiver?
-    private var lastGoodSnapshot: LightSnapshot?
     private var activeReceiverToken: UUID?
     private let beforePersistingPerformance: (@Sendable () -> Void)?
 
@@ -83,17 +82,13 @@ public final class TelemetryRuntime: @unchecked Sendable {
 
     public func lightSnapshot(filter: MetricFilter = .all, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
         try storeQueue.sync {
-            let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
-            lastGoodSnapshot = snapshot
-            return snapshot
+            try refresh(filter: filter, performanceRange: performanceRange)
         }
     }
 
     public func lightSnapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
         try storeQueue.sync {
-            let snapshot = try snapshotFromStore(filter: filter, performanceRange: performanceRange)
-            lastGoodSnapshot = snapshot
-            return snapshot
+            try snapshotFromStore(filter: filter, performanceRange: performanceRange)
         }
     }
 
@@ -107,8 +102,22 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 start: Date(timeIntervalSince1970: closedEnd - TimeInterval(TokenBurnDefinition.windowSeconds)),
                 end: clock.now
             )
-            let facts = try store.facts(in: interval, limit: Self.maximumTrendFacts)
-            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter)
+            var facts = try store.facts(in: interval, limit: Self.maximumTrendFacts)
+            let currentSourceIDs = Set(facts.map(\.sourceID))
+            for health in sourceHealth where !health.isHealthy && health.impacts.contains(.usage)
+                && !currentSourceIDs.contains(health.sourceID) {
+                guard let last = try store.latestObservedAt(sourceID: health.sourceID, before: clock.now) else { continue }
+                let retained = try store.facts(
+                    sourceID: health.sourceID,
+                    in: DateInterval(
+                        start: last.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
+                        end: last
+                    )
+                )
+                let existing = Set(facts.map(\.id))
+                facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
+            }
+            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter, sourceHealth: sourceHealth)
         }
     }
 
@@ -176,22 +185,38 @@ public final class TelemetryRuntime: @unchecked Sendable {
             do {
                 try refresh(sourceAdapter: sourceAdapter, health: &health)
             } catch {
-                health.append(SourceHealth(
-                    sourceID: sourceID(for: sourceAdapter),
-                    isHealthy: false,
-                    diagnosticCode: "SOURCE_FAILURE"
-                ))
+                let ownership = sourceOwnership(for: sourceAdapter)
+                health.append(ownership.health(isHealthy: false, diagnosticCode: "SOURCE_FAILURE"))
             }
+        }
+        if let performanceHealth = performanceSourceHealth() {
+            health.append(performanceHealth)
         }
         sourceHealth = health
         return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
     }
 
     private func snapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
-        let facts = try store.facts(in: DateInterval(
+        var facts = try store.facts(in: DateInterval(
             start: clock.now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
             end: clock.now
         ))
+        let unhealthyUsageSources = sourceHealth.filter {
+            !$0.isHealthy && $0.impacts.contains(.usage)
+        }
+        let currentSourceIDs = Set(facts.map(\.sourceID))
+        for health in unhealthyUsageSources where !currentSourceIDs.contains(health.sourceID) {
+            guard let last = try store.latestObservedAt(sourceID: health.sourceID, before: clock.now) else { continue }
+            let retained = try store.facts(
+                sourceID: health.sourceID,
+                in: DateInterval(
+                    start: last.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
+                    end: last
+                )
+            )
+            let existing = Set(facts.map(\.id))
+            facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
+        }
         let performanceFacts = try store.allPerformanceFacts()
         let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
@@ -237,11 +262,29 @@ public final class TelemetryRuntime: @unchecked Sendable {
             }
             let observations = try sourceAdapter.loadObservations(clock: clock)
             try store.replaceAll(CanonicalIngestor().ingest(observations))
-            health.append(SourceHealth(sourceID: "unknown", isHealthy: true))
+            health.append(sourceOwnership(for: sourceAdapter).health(isHealthy: true))
         }
     }
 
-    private func sourceID(for sourceAdapter: any SourceAdapter) -> String {
-        (sourceAdapter as? any IncrementalSourceAdapter)?.sourceID ?? "unknown"
+    private func sourceOwnership(for sourceAdapter: any SourceAdapter) -> SourceOwnership {
+        (sourceAdapter as? any SourceOwnedAdapter)?.sourceOwnership
+            ?? SourceOwnership(sourceID: "unknown", impacts: [.usage], codingAgents: [], channels: [])
+    }
+
+    private func performanceSourceHealth() -> SourceHealth? {
+        let ownership = SourceOwnership(
+            sourceID: "claude-otel-request",
+            impacts: [.performance],
+            codingAgents: [.claudeCode],
+            channels: [.claudeTelemetry]
+        )
+        if startupFailureMessage != nil {
+            return ownership.health(isHealthy: false, diagnosticCode: "SOURCE_FAILURE")
+        }
+        guard let receiver else { return nil }
+        if case .failed = receiver.state {
+            return ownership.health(isHealthy: false, diagnosticCode: "SOURCE_FAILURE")
+        }
+        return ownership.health(isHealthy: receiver.isRunning)
     }
 }

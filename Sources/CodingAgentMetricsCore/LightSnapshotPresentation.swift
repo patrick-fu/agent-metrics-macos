@@ -14,6 +14,50 @@ public struct FilterChip: Sendable, Equatable, Identifiable {
     }
 }
 
+public struct MetricMetadataPresentation: Sendable, Equatable {
+    public var qualityText: String
+    public var stateText: String
+    public var coverageText: String
+    public var freshnessText: String
+    public var sampleCountText: String
+    public var definitionVersionText: String
+    public var sourceAuthorityText: String
+    public var scopeText: String
+    public var reasonText: String?
+    public var actionText: String?
+
+    public init(
+        quality: MeasurementQuality,
+        state: DataState?,
+        coverage: Coverage,
+        freshness: Freshness,
+        sampleCount: Int,
+        definitionVersion: String,
+        sourceAuthority: String,
+        scope: OutputThroughputScope,
+        unavailableReason: UnavailableReasonCode?,
+        recommendedAction: MetricAction?
+    ) {
+        qualityText = quality.displayLabel
+        stateText = state?.displayLabel ?? "-"
+        coverageText = coverage.displayLabel
+        freshnessText = Self.freshnessText(freshness)
+        sampleCountText = "n \(sampleCount)"
+        definitionVersionText = definitionVersion
+        sourceAuthorityText = sourceAuthority
+        scopeText = scope == .all ? "All" : "Selected"
+        reasonText = unavailableReason?.message
+        actionText = recommendedAction?.message
+    }
+
+    static func freshnessText(_ freshness: Freshness) -> String {
+        guard let age = freshness.ageSeconds else { return "No update" }
+        let seconds = Int(age.rounded(.down))
+        let ageText = seconds < 60 ? "\(seconds)s" : seconds < 3_600 ? "\(seconds / 60)m" : "\(seconds / 3_600)h"
+        return "Updated \(ageText) ago\(freshness.isRetained ? " · Retained" : "")"
+    }
+}
+
 public struct LightSnapshotPresentation: Sendable, Equatable {
     public var title: String
     public var windowLabel: String
@@ -40,6 +84,10 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var modelActiveCount: Int
     public var agentChips: [FilterChip]
     public var modelChips: [FilterChip]
+    public var outputMetadata: MetricMetadataPresentation
+    public var burnMetadata: MetricMetadataPresentation
+    public var callsMetadata: MetricMetadataPresentation
+    public var sourceHealthText: String
 
     public init(snapshot: LightSnapshot) {
         title = "Output Throughput"
@@ -53,24 +101,63 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         qualityText = snapshot.outputThroughput.measurementQuality.displayLabel
         dataStateText = snapshot.outputThroughput.dataState?.displayLabel ?? "-"
         coverageText = snapshot.outputThroughput.coverage.displayLabel
+        outputMetadata = MetricMetadataPresentation(
+            quality: snapshot.outputThroughput.measurementQuality,
+            state: snapshot.outputThroughput.dataState,
+            coverage: snapshot.outputThroughput.coverage,
+            freshness: snapshot.outputThroughput.freshness,
+            sampleCount: snapshot.outputThroughput.sampleCount,
+            definitionVersion: snapshot.outputThroughput.definitionVersion,
+            sourceAuthority: snapshot.outputThroughput.sourceAuthority,
+            scope: snapshot.outputThroughput.scope,
+            unavailableReason: snapshot.outputThroughput.unavailableReason,
+            recommendedAction: snapshot.outputThroughput.recommendedAction
+        )
         burnValueText = snapshot.tokenBurn.tokensPerMinute.map(Self.format) ?? "Unavailable"
         burnUnitText = "tokens/min"
         burnQualityText = snapshot.tokenBurn.measurementQuality.displayLabel
         burnStateText = snapshot.tokenBurn.dataState?.displayLabel ?? "-"
         burnCoverageText = snapshot.tokenBurn.coverage.displayLabel
         burnCompositionText = Self.composition(snapshot.tokenBurn.parts)
+        burnMetadata = MetricMetadataPresentation(
+            quality: snapshot.tokenBurn.measurementQuality,
+            state: snapshot.tokenBurn.dataState,
+            coverage: snapshot.tokenBurn.coverage,
+            freshness: snapshot.tokenBurn.freshness,
+            sampleCount: snapshot.tokenBurn.sampleCount,
+            definitionVersion: snapshot.tokenBurn.definitionVersion,
+            sourceAuthority: snapshot.tokenBurn.sourceAuthority,
+            scope: snapshot.tokenBurn.scope,
+            unavailableReason: snapshot.tokenBurn.unavailableReason,
+            recommendedAction: snapshot.tokenBurn.recommendedAction
+        )
         callsValueText = snapshot.calls.callsPerMinute.map(Self.format) ?? "Unavailable"
         callsUnitText = "calls/min"
         callsQualityText = snapshot.calls.measurementQuality.displayLabel
         callsStateText = snapshot.calls.dataState?.displayLabel ?? "-"
         callsCoverageText = snapshot.calls.coverage.displayLabel
-        callsUnavailableReason = snapshot.calls.dataState == .unavailable ? "Stable Model Call ID unavailable for this source" : nil
+        callsUnavailableReason = snapshot.calls.dataState == .unavailable ? snapshot.calls.unavailableReason?.message : nil
         if let callCount = snapshot.calls.selectedCallCount {
             callsDetailText = "\(callCount) distinct stable Model Call IDs"
         } else {
             callsDetailText = callsUnavailableReason ?? "Unavailable"
         }
         callsWindowLabel = "\(snapshot.calls.windowSeconds / 60)m"
+        callsMetadata = MetricMetadataPresentation(
+            quality: snapshot.calls.measurementQuality,
+            state: snapshot.calls.dataState,
+            coverage: snapshot.calls.coverage,
+            freshness: snapshot.calls.freshness,
+            sampleCount: snapshot.calls.sampleCount,
+            definitionVersion: snapshot.calls.definitionVersion,
+            sourceAuthority: snapshot.calls.sourceAuthority,
+            scope: snapshot.calls.scope,
+            unavailableReason: snapshot.calls.unavailableReason,
+            recommendedAction: snapshot.calls.recommendedAction
+        )
+        sourceHealthText = snapshot.sourceHealth.isEmpty ? "Source health unavailable" : snapshot.sourceHealth.map { health in
+            "\(health.sourceID): \(health.isHealthy ? "Healthy" : health.reasonCode?.rawValue ?? "Degraded")"
+        }.joined(separator: " · ")
         agentActiveCount = snapshot.filter.agents.activeCount
         modelActiveCount = snapshot.filter.models.activeCount
         agentChips = Self.chips(
@@ -137,7 +224,7 @@ extension DataState {
         switch self {
         case .zero: "Zero"
         case .stale: "Stale"
-        case .absent: "Absent"
+        case .absent: "No data"
         case .unavailable: "Unavailable"
         }
     }

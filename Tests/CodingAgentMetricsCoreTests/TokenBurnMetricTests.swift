@@ -88,7 +88,7 @@ struct TokenBurnMetricTests {
             sample: LiveSampler().sample(facts: [codex, claude], now: now), allFacts: [codex, claude], now: now,
             sourceHealth: [SourceHealth(sourceID: "codex", isHealthy: true), SourceHealth(sourceID: "claude-code", isHealthy: true)]
         )
-        #expect(snapshot.tokenBurn.coverage == .complete)
+        #expect(snapshot.tokenBurn.coverage == .partial)
         #expect(snapshot.calls.callsPerMinute == nil)
         #expect(snapshot.calls.dataState == .unavailable)
         #expect(snapshot.calls.coverage == .complete)
@@ -131,7 +131,7 @@ struct TokenBurnMetricTests {
         )
         #expect(snapshot.calls.selectedCallCount == 0)
         #expect(snapshot.calls.callsPerMinute == 0)
-        #expect(snapshot.calls.dataState == .zero)
+        #expect(snapshot.calls.dataState == .stale)
         #expect(snapshot.calls.coverage == .complete)
     }
 
@@ -145,9 +145,9 @@ struct TokenBurnMetricTests {
         let snapshot = SnapshotBuilder().buildLightSnapshot(
             sample: LiveSampler().sample(facts: [first, second], now: now), allFacts: [first, second], now: now
         )
-        #expect(snapshot.calls.selectedCallCount == 0)
-        #expect(snapshot.calls.dataState == .zero)
-        #expect(snapshot.calls.coverage == .complete)
+        #expect(snapshot.calls.selectedCallCount == 1)
+        #expect(snapshot.calls.dataState == .stale)
+        #expect(snapshot.calls.coverage == .partial)
     }
 
     @Test func unsupportedCallsDoNotTurnAHealthyScopePartial() {
