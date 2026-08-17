@@ -3,10 +3,12 @@ import Foundation
 /// Incrementally reads only the allowlisted Claude Code transcript usage shapes.
 /// Transcript text, working directories, credentials, and unfinished tails are never retained.
 public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
+    static let maximumAppendBytesPerFile = 512 * 1_024
     public var home: URL
     private static let maximumDirectoryEntries = 4_096
     private static let maximumTranscriptFiles = 256
     private static let maximumDirectoryDepth = 12
+    private static let fingerprintSampleBytes = 64 * 1_024
 
     public init(home: URL) {
         self.home = home
@@ -79,6 +81,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         )
         working.sourceID = sourceID
         working.parserVersion = ClaudeTranscriptParser.semanticVersion
+        working.diagnosticCodes.removeAll { $0 == "SOURCE_OVERLOADED" }
 
         let files = try discoverTranscripts()
         let missingKnownFiles = !Set(working.files.keys).subtracting(files.map(\.identity)).isEmpty
@@ -162,6 +165,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
         let generation = "\(inode)"
+        let lastModifiedAt = attributes[.modificationDate] as? Date
         let prior = forceRebuild ? nil : state.files[file.identity]
         var startOffset = prior?.offset ?? 0
         var rebuiltFile = forceRebuild || prior == nil
@@ -170,11 +174,18 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             if prior.generation != generation || prior.offset > size {
                 startOffset = 0
                 rebuiltFile = true
-            } else if prior.offset > 0 {
-                let handle = try FileHandle(forReadingFrom: file.url)
-                defer { try? handle.close() }
-                let prefix = try handle.read(upToCount: Int(prior.offset)) ?? Data()
-                if ClaudeTranscriptParser.fingerprint(prefix) != prior.prefixFingerprint {
+            } else if let priorSize = prior.lastObservedSize,
+                      let priorModifiedAt = prior.lastModifiedAt {
+                if size < priorSize || (size == priorSize && lastModifiedAt != priorModifiedAt) {
+                    startOffset = 0
+                    rebuiltFile = true
+                }
+            } else {
+                startOffset = 0
+                rebuiltFile = true
+            }
+            if !rebuiltFile, prior.offset > 0 {
+                if try cursorFingerprint(file.url, upTo: prior.offset) != prior.prefixFingerprint {
                     startOffset = 0
                     rebuiltFile = true
                 }
@@ -188,11 +199,21 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         let handle = try FileHandle(forReadingFrom: file.url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(startOffset))
-        let appended = try handle.readToEnd() ?? Data()
-        let lines = completeLines(in: appended)
+        let appended = try handle.read(upToCount: Self.maximumAppendBytesPerFile) ?? Data()
+        let lines = BoundedJSONL.completeLines(
+            in: appended,
+            maximumBatchBytes: Self.maximumAppendBytesPerFile,
+            discardingOversizedLine: !rebuiltFile && prior?.discardingOversizedLine == true
+        )
         let newOffset = startOffset + lines.consumed
         var observations: [UsageObservation] = []
         var diagnostics: [SourceDiagnostic] = []
+        if lines.encounteredOversizedLine {
+            diagnostics.append(SourceDiagnostic(code: "SOURCE_LINE_TOO_LONG", sourceID: sourceID))
+        }
+        if startOffset + Int64(appended.count) < size {
+            diagnostics.append(SourceDiagnostic(code: "SOURCE_OVERLOADED", sourceID: sourceID))
+        }
         var rollback = false
         var requiresSourceRebuild = false
         var authoritativeSessions = Set(state.messageTotalSessions)
@@ -298,16 +319,16 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             if rollback || requiresSourceRebuild { break }
         }
 
-        let prefixHandle = try FileHandle(forReadingFrom: file.url)
-        defer { try? prefixHandle.close() }
-        let prefix = try prefixHandle.read(upToCount: Int(newOffset)) ?? Data()
         state.files[file.identity] = SourceFileCursor(
             fileIdentity: file.identity,
             locator: file.locator,
             generation: generation,
-            prefixFingerprint: ClaudeTranscriptParser.fingerprint(prefix),
+            prefixFingerprint: try cursorFingerprint(file.url, upTo: newOffset),
             offset: newOffset,
-            parserVersion: ClaudeTranscriptParser.semanticVersion
+            parserVersion: ClaudeTranscriptParser.semanticVersion,
+            lastObservedSize: size,
+            lastModifiedAt: lastModifiedAt,
+            discardingOversizedLine: lines.discardingOversizedLine
         )
         return ClaudeFileScanResult(
             observations: observations,
@@ -375,22 +396,6 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         state.watermarks = state.watermarks.filter { key, _ in !key.hasPrefix("\(identity):") }
     }
 
-    private func completeLines(in data: Data) -> (lines: [(value: String?, endOffset: Int64)], consumed: Int64) {
-        var lines: [(value: String?, endOffset: Int64)] = []
-        var start = data.startIndex
-        var consumed = 0
-        while let newline = data[start...].firstIndex(of: 10) {
-            let lineData = data[start..<newline]
-            let next = data.index(after: newline)
-            consumed += data.distance(from: start, to: next)
-            let line = String(data: Data(lineData), encoding: .utf8)
-            let trimmed = line?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed?.isEmpty == false || line == nil { lines.append((trimmed, Int64(consumed))) }
-            start = next
-        }
-        return (lines, Int64(consumed))
-    }
-
     private func discoverTranscripts() throws -> [DiscoveredClaudeTranscript] {
         let projects = home.appendingPathComponent("projects", isDirectory: true)
         guard FileManager.default.fileExists(atPath: projects.path) else { return [] }
@@ -430,6 +435,18 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             discovered[identity] = item
         }
         return discovered.values.sorted { $0.locator < $1.locator }
+    }
+
+    private func cursorFingerprint(_ url: URL, upTo offset: Int64) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let sample = Int64(Self.fingerprintSampleBytes)
+        var data = try handle.read(upToCount: Int(min(offset, sample))) ?? Data()
+        if offset > sample {
+            try handle.seek(toOffset: UInt64(max(sample, offset - sample)))
+            data.append(try handle.read(upToCount: Int(min(sample, offset - sample))) ?? Data())
+        }
+        return ClaudeTranscriptParser.fingerprint(data)
     }
 }
 

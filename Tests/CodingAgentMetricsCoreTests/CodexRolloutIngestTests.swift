@@ -3,6 +3,153 @@ import Testing
 @testable import CodingAgentMetricsCore
 
 struct CodexRolloutIngestTests {
+    @Test func oversizedContentLineIsSkippedBoundedlyAndFollowingUsageRemainsReachable() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let privateBody = String(repeating: "CONTENT_DO_NOT_PERSIST_", count: 30_000)
+        let oversizedContent = """
+        {"timestamp":"2026-04-15T12:00:00.000Z","ordinal":1,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\(privateBody)"}]}}
+        """
+        #expect(oversizedContent.utf8.count > CodexRolloutSourceAdapter.maximumAppendBytesPerFile)
+        try home.writeActiveRollout(lines: [
+            oversizedContent,
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 4),
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        let firstState = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        #expect(firstState.files.values.first?.offset == Int64(CodexRolloutSourceAdapter.maximumAppendBytesPerFile))
+        #expect(firstState.files.values.first?.discardingOversizedLine == true)
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        #expect(runtime.sourceHealth.contains { $0.diagnosticCode == "SOURCE_LINE_TOO_LONG" })
+        let encodedState = try String(decoding: JSONEncoder().encode(
+            #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        ), as: UTF8.self)
+        #expect(!encodedState.contains("CONTENT_DO_NOT_PERSIST"))
+    }
+
+    @Test func thirdBoundedBatchRetainsSessionTurnAndModelContext() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let ignored = """
+        {"timestamp":"2026-04-15T12:00:02.000Z","ordinal":3,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\(String(repeating: "S", count: 1_024))"}]}}
+        """
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+        ] + Array(repeating: ignored, count: 1_100) + [
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 1_104),
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+
+        _ = try runtime.lightSnapshot()
+        _ = try runtime.lightSnapshot()
+        _ = try runtime.lightSnapshot()
+
+        let fact = try #require(try SQLiteFactStore(url: storeURL).allFacts().first)
+        #expect(fact.sessionID == "01900000-0000-7000-8000-000000000013")
+        #expect(fact.turnID == "01900000-0000-7000-8000-000000000113")
+        #expect(fact.model.raw == "gpt-synthetic-orion")
+        #expect(fact.model.display == "gpt-synthetic-orion")
+        let state = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        let context = try #require(state.files.values.first?.parserContext)
+        #expect(context.sessionID == fact.sessionID)
+        #expect(context.turnID == fact.turnID)
+        #expect(context.model == fact.model)
+        #expect(!String(decoding: try JSONEncoder().encode(state), as: UTF8.self).contains(String(repeating: "S", count: 64)))
+    }
+
+    @Test func legacyFileCursorDecodesWithoutMutationMetadataOrParserContext() throws {
+        let payload = Data(#"{"fileIdentity":"file","locator":"relative","generation":"1","prefixFingerprint":"hash","offset":42,"parserVersion":"1"}"#.utf8)
+
+        let cursor = try JSONDecoder().decode(SourceFileCursor.self, from: payload)
+
+        #expect(cursor.lastObservedSize == nil)
+        #expect(cursor.lastModifiedAt == nil)
+        #expect(cursor.parserContext == nil)
+        #expect(cursor.discardingOversizedLine == nil)
+    }
+
+    @Test func sameLengthConsumedMiddleRewriteRebuildsInsteadOfSilentlyContinuing() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let padding = Array(repeating: sessionMetaLine(), count: 250)
+        let original = padding + [
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ] + padding
+        try home.writeActiveRollout(lines: original, terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+
+        let replacement = padding + [
+            turnContextLine(),
+            tokenCountLine(totalOutput: 2700, lastOutput: 2700, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ] + padding
+        try rewriteInPlace(
+            home.activeURL,
+            body: replacement.joined(separator: "\n") + "\n"
+        )
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 2700)
+        let facts = try SQLiteFactStore(url: storeURL).allFacts()
+        #expect(facts.count == 1)
+        #expect(facts.first?.outputTokens == 2700)
+    }
+
+    @Test func productionScanReadsAtMostOneBoundedAppendBatchPerFile() throws {
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        try home.writeActiveRollout(
+            lines: Array(repeating: sessionMetaLine(), count: 10_000),
+            terminated: true
+        )
+
+        let adapter = CodexRolloutSourceAdapter(sessionRoot: home.root)
+        var scan = try adapter.scan(
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:20Z")),
+            state: nil
+        )
+        let cursor = try #require(scan.state.files.values.first)
+
+        #expect(cursor.offset <= Int64(CodexRolloutSourceAdapter.maximumAppendBytesPerFile))
+        #expect(scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+        #expect(CodexRolloutSourceAdapter.maximumRolloutFiles == 256)
+
+        for _ in 0..<16 where scan.diagnostics.contains(where: { $0.code == "SOURCE_OVERLOADED" }) {
+            scan = try adapter.scan(
+                clock: FixedClock(now: isoDate("2026-04-15T12:00:20Z")),
+                state: scan.state
+            )
+        }
+        #expect(!scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+    }
+
     @Test func versionedCodexRolloutWithoutCallIdentityReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()
@@ -411,6 +558,14 @@ struct CodexRolloutIngestTests {
         try store.saveSourceState(SourceState(
             sourceID: "codex",
             parserVersion: "previous-semantic-version",
+            files: [identity: SourceFileCursor(
+                fileIdentity: identity,
+                locator: "sessions/synthetic.jsonl",
+                generation: "legacy",
+                prefixFingerprint: "legacy",
+                offset: 1_500_000,
+                parserVersion: "previous-semantic-version"
+            )],
             watermarks: [identity: 0]
         ))
         let runtime = try TelemetryRuntime(
@@ -632,6 +787,26 @@ private func tokenCountLine(
     """
     {"timestamp":"\(timestamp)","ordinal":\(ordinal),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\(inputTotal),"cached_input_tokens":\(cachedInput),"cache_write_input_tokens":800,"output_tokens":\(totalOutput),"reasoning_output_tokens":\(reasoningOutput),"total_tokens":6800},"last_token_usage":{"input_tokens":\(inputTotal),"cached_input_tokens":\(cachedInput),"cache_write_input_tokens":800,"output_tokens":\(lastOutput),"reasoning_output_tokens":\(reasoningOutput),"total_tokens":6800},"model_context_window":128000},"rate_limits":null}}
     """
+}
+
+private func rewriteInPlace(_ url: URL, body: String) throws {
+    let before = try FileManager.default.attributesOfItem(atPath: url.path)
+    let beforeSize = (before[.size] as? NSNumber)?.int64Value
+    let beforeInode = (before[.systemFileNumber] as? NSNumber)?.uint64Value
+    #expect(beforeSize == Int64(body.utf8.count))
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seek(toOffset: 0)
+    try handle.write(contentsOf: Data(body.utf8))
+    try handle.synchronize()
+    let previousModified = before[.modificationDate] as? Date ?? Date()
+    try FileManager.default.setAttributes(
+        [.modificationDate: previousModified.addingTimeInterval(5)],
+        ofItemAtPath: url.path
+    )
+    let after = try FileManager.default.attributesOfItem(atPath: url.path)
+    #expect((after[.systemFileNumber] as? NSNumber)?.uint64Value == beforeInode)
+    #expect((after[.size] as? NSNumber)?.int64Value == beforeSize)
 }
 
 private final class TempCodexHome {

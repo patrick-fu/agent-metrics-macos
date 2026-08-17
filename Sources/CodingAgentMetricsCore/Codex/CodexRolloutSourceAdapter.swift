@@ -1,6 +1,11 @@
 import Foundation
 
 public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
+    static let maximumAppendBytesPerFile = 512 * 1_024
+    static let maximumRolloutFiles = 256
+    private static let maximumDirectoryEntries = 4_096
+    private static let fingerprintSampleBytes = 64 * 1_024
+
     public var sessionRoot: URL
 
     public init(sessionRoot: URL) {
@@ -150,6 +155,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
         let generation = "\(inode)"
+        let lastModifiedAt = attributes[.modificationDate] as? Date
         let prior = forceRebuild ? nil : state.files[file.identity]
 
         var startOffset: Int64 = prior?.offset ?? 0
@@ -158,11 +164,21 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             if prior.generation != generation || prior.offset > size {
                 startOffset = 0
                 rebuiltFile = true
-            } else if prior.offset > 0 {
-                let handle = try FileHandle(forReadingFrom: file.url)
-                defer { try? handle.close() }
-                let prefix = try handle.read(upToCount: Int(prior.offset)) ?? Data()
-                if CodexRolloutParser.fingerprint(prefix) != prior.prefixFingerprint {
+            } else if let priorSize = prior.lastObservedSize,
+                      let priorModifiedAt = prior.lastModifiedAt {
+                if size < priorSize || (size == priorSize && lastModifiedAt != priorModifiedAt) {
+                    startOffset = 0
+                    rebuiltFile = true
+                }
+            } else {
+                startOffset = 0
+                rebuiltFile = true
+            }
+            if !rebuiltFile, prior.offset > 0 {
+                if prior.parserContext == nil {
+                    startOffset = 0
+                    rebuiltFile = true
+                } else if try cursorFingerprint(file.url, upTo: prior.offset) != prior.prefixFingerprint {
                     startOffset = 0
                     rebuiltFile = true
                 }
@@ -177,26 +193,41 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let handle = try FileHandle(forReadingFrom: file.url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(startOffset))
-        let appended = try handle.readToEnd() ?? Data()
-        let completeLines = completeLines(in: appended)
+        let appended = try handle.read(upToCount: Self.maximumAppendBytesPerFile) ?? Data()
+        let completeLines = BoundedJSONL.completeLines(
+            in: appended,
+            maximumBatchBytes: Self.maximumAppendBytesPerFile,
+            discardingOversizedLine: !rebuiltFile && prior?.discardingOversizedLine == true
+        )
         let consumed = completeLines.consumed
         let newOffset = startOffset + consumed
 
-        var context = FileParseContext(
+        var context = prior?.parserContext ?? SourceParserContext(
             sessionID: file.identity,
             turnID: file.identity,
             model: ModelIdentity(raw: "unknown", display: "unknown")
         )
-        if startOffset > 0 && !rebuiltFile {
-            context = try rehydrateContext(from: file.url, prefixOffset: startOffset, fallback: context)
+        if rebuiltFile {
+            context = SourceParserContext(
+                sessionID: file.identity,
+                turnID: file.identity,
+                model: ModelIdentity(raw: "unknown", display: "unknown")
+            )
         }
 
         var observations: [UsageObservation] = []
         var diagnostics: [SourceDiagnostic] = []
+        if completeLines.encounteredOversizedLine {
+            diagnostics.append(SourceDiagnostic(code: "SOURCE_LINE_TOO_LONG", sourceID: sourceID))
+        }
+        if startOffset + Int64(appended.count) < size {
+            diagnostics.append(SourceDiagnostic(code: "SOURCE_OVERLOADED", sourceID: sourceID))
+        }
         var rollback = false
 
-        for (line, ordinalFallback) in zip(completeLines.lines, completeLines.ordinals) {
-            switch CodexRolloutParser.parseLine(line) {
+        for line in completeLines.lines {
+            guard let value = line.value else { continue }
+            switch CodexRolloutParser.parseLine(value) {
             case .ignored:
                 continue
             case .unknownSchema:
@@ -220,7 +251,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                             observations.append(
                                 observation(
                                     fileIdentity: file.identity,
-                                    ordinal: ordinal ?? UInt64(ordinalFallback),
+                                    ordinal: ordinal ?? UInt64(line.ordinal),
                                     context: context,
                                     outputTokens: totalOutput,
                                     tokenParts: deltaParts(total: total, fileIdentity: file.identity, state: &state, reset: true),
@@ -237,7 +268,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                     observations.append(
                         observation(
                             fileIdentity: file.identity,
-                            ordinal: ordinal ?? UInt64(ordinalFallback),
+                            ordinal: ordinal ?? UInt64(line.ordinal),
                             context: context,
                             outputTokens: totalOutput - watermark,
                             tokenParts: deltaParts(total: total, fileIdentity: file.identity, state: &state),
@@ -251,16 +282,17 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             if rollback { break }
         }
 
-        let prefixHandle = try FileHandle(forReadingFrom: file.url)
-        defer { try? prefixHandle.close() }
-        let prefix = try prefixHandle.read(upToCount: Int(newOffset)) ?? Data()
         state.files[file.identity] = SourceFileCursor(
             fileIdentity: file.identity,
             locator: file.locator,
             generation: generation,
-            prefixFingerprint: CodexRolloutParser.fingerprint(prefix),
+            prefixFingerprint: try cursorFingerprint(file.url, upTo: newOffset),
             offset: newOffset,
-            parserVersion: CodexRolloutParser.semanticVersion
+            parserVersion: CodexRolloutParser.semanticVersion,
+            lastObservedSize: size,
+            lastModifiedAt: lastModifiedAt,
+            parserContext: context,
+            discardingOversizedLine: completeLines.discardingOversizedLine
         )
 
         return FileScanResult(
@@ -274,7 +306,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
     private func observation(
         fileIdentity: String,
         ordinal: UInt64,
-        context: FileParseContext,
+        context: SourceParserContext,
         outputTokens: Int,
         tokenParts: TokenParts? = nil,
         timestamp: String?,
@@ -330,31 +362,9 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         )
     }
 
-    private func completeLines(in data: Data) -> (lines: [String], ordinals: [Int], consumed: Int64) {
-        var lines: [String] = []
-        var ordinals: [Int] = []
-        var start = data.startIndex
-        var consumed = 0
-        var index = 0
-        while let newline = data[start...].firstIndex(of: 10) {
-            let lineData = data[start..<newline]
-            if let line = String(data: Data(lineData), encoding: .utf8) {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    lines.append(trimmed)
-                    ordinals.append(index)
-                }
-            }
-            let next = data.index(after: newline)
-            consumed += data.distance(from: start, to: next)
-            start = next
-            index += 1
-        }
-        return (lines, ordinals, Int64(consumed))
-    }
-
     private func discoverRollouts() throws -> [DiscoveredRollout] {
         var discovered: [String: DiscoveredRollout] = [:]
+        var entryCount = 0
         for subdirectory in ["archived_sessions", "sessions"] {
             let root = sessionRoot.appendingPathComponent(subdirectory, isDirectory: true)
             guard FileManager.default.fileExists(atPath: root.path) else { continue }
@@ -364,11 +374,18 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for case let url as URL in enumerator {
+                entryCount += 1
+                guard entryCount <= Self.maximumDirectoryEntries else {
+                    throw CodexRolloutAdapterError.discoveryLimitExceeded
+                }
                 let name = url.lastPathComponent
                 guard let identity = CodexRolloutParser.fileIdentity(fromFileName: name) else { continue }
                 let locator = relativeLocator(for: url)
                 let item = DiscoveredRollout(identity: identity, locator: locator, url: url)
                 if subdirectory == "sessions" || discovered[identity] == nil {
+                    guard discovered[identity] != nil || discovered.count < Self.maximumRolloutFiles else {
+                        throw CodexRolloutAdapterError.discoveryLimitExceeded
+                    }
                     discovered[identity] = item
                 }
             }
@@ -386,32 +403,16 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         return url.lastPathComponent
     }
 
-    private func rehydrateContext(
-        from url: URL,
-        prefixOffset: Int64,
-        fallback: FileParseContext
-    ) throws -> FileParseContext {
-        var context = fallback
+    private func cursorFingerprint(_ url: URL, upTo offset: Int64) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        let prefix = try handle.read(upToCount: Int(prefixOffset)) ?? Data()
-        let parsed = completeLines(in: prefix)
-        for line in parsed.lines {
-            switch CodexRolloutParser.parseLine(line) {
-            case let .sessionMeta(id, _, _):
-                context.sessionID = id
-            case let .turnContext(turnID, model, _, _):
-                if let turnID { context.turnID = turnID }
-                if let model {
-                    context.model = ModelIdentity(raw: model, display: model)
-                }
-            case let .turnLifecycle(turnID, _, _):
-                context.turnID = turnID
-            default:
-                continue
-            }
+        let sample = Int64(Self.fingerprintSampleBytes)
+        var data = try handle.read(upToCount: Int(min(offset, sample))) ?? Data()
+        if offset > sample {
+            try handle.seek(toOffset: UInt64(max(sample, offset - sample)))
+            data.append(try handle.read(upToCount: Int(min(sample, offset - sample))) ?? Data())
         }
-        return context
+        return CodexRolloutParser.fingerprint(data)
     }
 }
 
@@ -421,15 +422,13 @@ private struct DiscoveredRollout {
     var url: URL
 }
 
-private struct FileParseContext {
-    var sessionID: String
-    var turnID: String
-    var model: ModelIdentity
-}
-
 private struct FileScanResult {
     var observations: [UsageObservation]
     var diagnostics: [SourceDiagnostic]
     var rebuiltFile: Bool
     var rollback: Bool
+}
+
+private enum CodexRolloutAdapterError: Error {
+    case discoveryLimitExceeded
 }

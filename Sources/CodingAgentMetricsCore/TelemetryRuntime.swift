@@ -1,6 +1,23 @@
 import Foundation
 
 public final class TelemetryRuntime: @unchecked Sendable {
+    private struct PendingIncrementalScan {
+        var finalState: SourceState?
+        var deletionScopes: [SourceFactScope]
+        var health: SourceHealth
+        var completionHealth: SourceHealth
+        var replayAfterCompletion: IncrementalReplay?
+        var checkpointState: SourceState?
+    }
+
+    private struct IncrementalReplay {
+        var acceptedCount: Int
+        var lastAcceptedIdentity: String?
+        var acceptedPrefixDigest: String?
+        var deletionScopesApplied: Bool
+        var hadCommittedSourceState: Bool
+    }
+
     private let store: SQLiteFactStore
     private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
@@ -9,6 +26,9 @@ public final class TelemetryRuntime: @unchecked Sendable {
     private var receiver: OTLPHTTPReceiver?
     private var activeReceiverToken: UUID?
     private let beforePersistingPerformance: (@Sendable () -> Void)?
+    private var observationQueue = SourceObservationQueue()
+    private var pendingIncrementalScans: [String: PendingIncrementalScan] = [:]
+    private var incrementalReplays: [String: IncrementalReplay] = [:]
 
     public private(set) var sourceHealth: [SourceHealth] = []
     public let receiverConfiguration: OTLPReceiverConfiguration
@@ -102,22 +122,47 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 start: Date(timeIntervalSince1970: closedEnd - TimeInterval(TokenBurnDefinition.windowSeconds)),
                 end: clock.now
             )
-            var facts = try store.facts(in: interval, limit: Self.maximumTrendFacts)
+            let unhealthyUsageCount = sourceHealth.filter {
+                !$0.isHealthy && $0.impacts.contains(.usage)
+            }.count
+            let retainedReserve = min(
+                Self.maximumQueryFacts - 1,
+                unhealthyUsageCount * Self.maximumRetainedFactsPerSource
+            )
+            let window = try store.factWindow(
+                in: interval,
+                limit: Self.maximumQueryFacts - retainedReserve
+            )
+            var facts = window.rows
+            var snapshotHealth = sourceHealth
+            if window.isTruncated {
+                snapshotHealth = Self.applyingOverload(
+                    Self.overloadHealth(
+                        for: facts,
+                        truncatedSourceIDs: window.truncatedSourceIDs,
+                        impact: .usage
+                    ),
+                    to: snapshotHealth
+                )
+            }
             let currentSourceIDs = Set(facts.map(\.sourceID))
-            for health in sourceHealth where !health.isHealthy && health.impacts.contains(.usage)
+            for health in snapshotHealth where !health.isHealthy && health.impacts.contains(.usage)
                 && !currentSourceIDs.contains(health.sourceID) {
                 guard let last = try store.latestObservedAt(sourceID: health.sourceID, before: clock.now) else { continue }
-                let retained = try store.facts(
+                let remaining = Self.maximumQueryFacts - facts.count
+                guard remaining > 0 else { continue }
+                let retained = try store.factWindow(
                     sourceID: health.sourceID,
                     in: DateInterval(
                         start: last.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
                         end: last
-                    )
-                )
+                    ),
+                    limit: min(Self.maximumRetainedFactsPerSource, remaining)
+                ).rows
                 let existing = Set(facts.map(\.id))
                 facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
             }
-            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter, sourceHealth: sourceHealth)
+            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter, sourceHealth: snapshotHealth)
         }
     }
 
@@ -197,60 +242,292 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     private func snapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
-        var facts = try store.facts(in: DateInterval(
+        let unhealthyUsageCount = sourceHealth.filter {
+            !$0.isHealthy && $0.impacts.contains(.usage)
+        }.count
+        let retainedReserve = min(
+            Self.maximumQueryFacts - 1,
+            unhealthyUsageCount * Self.maximumRetainedFactsPerSource
+        )
+        let window = try store.factWindow(in: DateInterval(
             start: clock.now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
             end: clock.now
-        ))
-        let unhealthyUsageSources = sourceHealth.filter {
+        ), limit: Self.maximumQueryFacts - retainedReserve)
+        var facts = window.rows
+        var snapshotHealth = sourceHealth
+        if window.isTruncated {
+            snapshotHealth = Self.applyingOverload(
+                Self.overloadHealth(
+                    for: facts,
+                    truncatedSourceIDs: window.truncatedSourceIDs,
+                    impact: .usage
+                ),
+                to: snapshotHealth
+            )
+        }
+        let unhealthyUsageSources = snapshotHealth.filter {
             !$0.isHealthy && $0.impacts.contains(.usage)
         }
         let currentSourceIDs = Set(facts.map(\.sourceID))
         for health in unhealthyUsageSources where !currentSourceIDs.contains(health.sourceID) {
             guard let last = try store.latestObservedAt(sourceID: health.sourceID, before: clock.now) else { continue }
-            let retained = try store.facts(
+            let remaining = Self.maximumQueryFacts - facts.count
+            guard remaining > 0 else { continue }
+            let retained = try store.factWindow(
                 sourceID: health.sourceID,
                 in: DateInterval(
                     start: last.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
                     end: last
-                )
-            )
+                ),
+                limit: min(Self.maximumRetainedFactsPerSource, remaining)
+            ).rows
             let existing = Set(facts.map(\.id))
             facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
         }
-        let performanceFacts = try store.allPerformanceFacts()
+        let performanceWindow = try store.performanceFactWindow(
+            in: DateInterval(
+                start: clock.now.addingTimeInterval(-performanceRange.seconds),
+                end: clock.now
+            ),
+            limit: Self.maximumQueryFacts
+        )
+        let performanceFacts = performanceWindow.rows
+        if performanceWindow.isTruncated {
+            snapshotHealth = Self.applyingOverload(
+                Self.overloadHealth(
+                    for: performanceFacts,
+                    truncatedSourceIDs: performanceWindow.truncatedSourceIDs
+                ),
+                to: snapshotHealth
+            )
+        }
         let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
             sample: sample,
             allFacts: facts,
             performanceFacts: performanceFacts,
             now: clock.now,
-            sourceHealth: sourceHealth,
+            sourceHealth: snapshotHealth,
             filter: filter,
             performanceRange: performanceRange
         )
     }
 
-    private static let maximumTrendFacts = 20_000
+    public static let maximumQueryFacts = 20_000
+    public static let maximumRetainedFactsPerSource = 128
+
+    private static func overloadHealth(
+        for facts: [UsageFact],
+        truncatedSourceIDs: Set<String>,
+        impact: SourceImpact
+    ) -> [SourceHealth] {
+        let factsBySource = Dictionary(grouping: facts, by: \.sourceID)
+        return truncatedSourceIDs.sorted().map { sourceID in
+            let sourceFacts = factsBySource[sourceID, default: []]
+            return SourceHealth(
+                sourceID: sourceID,
+                isHealthy: false,
+                diagnosticCode: "SOURCE_OVERLOADED",
+                impacts: [impact],
+                impactedAgents: Set(sourceFacts.map(\.codingAgent)),
+                impactedChannels: Set(sourceFacts.map(\.sourceChannel)),
+                reasonCode: .sourceOverloaded,
+                recommendedAction: .updateSource
+            )
+        }
+    }
+
+    private static func overloadHealth(
+        for facts: [PerformanceFact],
+        truncatedSourceIDs: Set<String>
+    ) -> [SourceHealth] {
+        let factsBySource = Dictionary(grouping: facts, by: \.sourceID)
+        return truncatedSourceIDs.sorted().map { sourceID in
+            let sourceFacts = factsBySource[sourceID, default: []]
+            return SourceHealth(
+                sourceID: sourceID,
+                isHealthy: false,
+                diagnosticCode: "SOURCE_OVERLOADED",
+                impacts: [.performance],
+                impactedAgents: Set(sourceFacts.map(\.codingAgent)),
+                impactedChannels: Set(sourceFacts.map(\.sourceChannel)),
+                reasonCode: .sourceOverloaded,
+                recommendedAction: .updateSource
+            )
+        }
+    }
+
+    private static func applyingOverload(_ overloads: [SourceHealth], to health: [SourceHealth]) -> [SourceHealth] {
+        let overloadedSources = Set(overloads.map(\.sourceID))
+        let overloadedImpacts = Set(overloads.flatMap(\.impacts))
+        return health.filter {
+            !overloadedSources.contains($0.sourceID) || $0.impacts.isDisjoint(with: overloadedImpacts)
+        } + overloads
+    }
 
     private func refresh(
         sourceAdapter: any SourceAdapter,
         health: inout [SourceHealth]
     ) throws {
         if let incremental = sourceAdapter as? any IncrementalSourceAdapter {
-            let prior = try store.sourceState(sourceID: incremental.sourceID)
-            let scan = try incremental.scan(clock: clock, state: prior)
-            let scopes: [SourceFactScope]
-            if scan.rebuildSource {
-                scopes = [incremental.sourceRebuildScope]
-            } else {
-                scopes = scan.rebuiltFileIdentities.map { incremental.rebuiltFileScope(for: $0) }
+            let sourceID = incremental.sourceID
+            if pendingIncrementalScans[sourceID] == nil {
+                var prior = try store.sourceState(sourceID: sourceID)
+                prior?.diagnosticCodes.removeAll { $0 == "SOURCE_OVERLOADED" }
+                let persistedReplay = prior?.replayState
+                if persistedReplay?.hadCommittedSourceState == false {
+                    prior = nil
+                } else {
+                    prior?.replayState = nil
+                }
+                let scan = try incremental.scan(clock: clock, state: prior)
+                var replay = incrementalReplays[sourceID]
+                    ?? persistedReplay.map {
+                        IncrementalReplay(
+                            acceptedCount: $0.acceptedCount,
+                            lastAcceptedIdentity: $0.lastAcceptedIdentity,
+                            acceptedPrefixDigest: $0.acceptedPrefixDigest,
+                            deletionScopesApplied: $0.deletionScopesApplied,
+                            hadCommittedSourceState: $0.hadCommittedSourceState ?? true
+                        )
+                    }
+                    ?? IncrementalReplay(
+                        acceptedCount: 0,
+                        lastAcceptedIdentity: nil,
+                        acceptedPrefixDigest: nil,
+                        deletionScopesApplied: false,
+                        hadCommittedSourceState: prior != nil
+                    )
+                if replay.acceptedCount > 0, replay.acceptedPrefixDigest == nil {
+                    replay.acceptedCount = 0
+                    replay.lastAcceptedIdentity = nil
+                    replay.deletionScopesApplied = false
+                }
+
+                let ownership = sourceOwnership(for: sourceAdapter)
+                if replay.acceptedCount > scan.observations.count,
+                   replay.acceptedPrefixDigest != nil,
+                   !scan.health.isHealthy {
+                    incrementalReplays[sourceID] = replay
+                    health.append(SourceHealth(
+                        sourceID: sourceID,
+                        isHealthy: false,
+                        diagnosticCode: "SOURCE_OVERLOADED",
+                        impacts: ownership.impacts,
+                        impactedAgents: ownership.codingAgents,
+                        impactedChannels: ownership.channels,
+                        reasonCode: .sourceOverloaded,
+                        recommendedAction: .updateSource
+                    ))
+                    return
+                }
+
+                let candidateScopes: [SourceFactScope]
+                if scan.rebuildSource {
+                    candidateScopes = [incremental.sourceRebuildScope]
+                } else {
+                    candidateScopes = scan.rebuiltFileIdentities.map { incremental.rebuiltFileScope(for: $0) }
+                }
+                let acceptedPrefixMatches: Bool
+                if replay.acceptedCount == 0 {
+                    acceptedPrefixMatches = true
+                } else if replay.acceptedCount > scan.observations.count {
+                    acceptedPrefixMatches = false
+                } else {
+                    let candidateDigest = try ReplayCheckpoint.digest(
+                        observations: scan.observations.prefix(replay.acceptedCount),
+                        deletionScopes: candidateScopes
+                    )
+                    acceptedPrefixMatches = scan.observations[replay.acceptedCount - 1].observationIdentity
+                        == replay.lastAcceptedIdentity
+                        && candidateDigest == replay.acceptedPrefixDigest
+                }
+                if !acceptedPrefixMatches {
+                    replay.acceptedCount = 0
+                    replay.lastAcceptedIdentity = nil
+                    replay.acceptedPrefixDigest = nil
+                    replay.deletionScopesApplied = false
+                }
+
+                var scopes = candidateScopes
+                if replay.deletionScopesApplied { scopes = [] }
+
+                let remaining = scan.observations.dropFirst(replay.acceptedCount)
+                let queuedBefore = observationQueue.count(for: sourceID)
+                for observation in remaining {
+                    observationQueue.enqueue(observation, sourceID: sourceID)
+                }
+                let acceptedCount = observationQueue.count(for: sourceID) - queuedBefore
+                let overloaded = acceptedCount < remaining.count
+                let wasReplaying = incrementalReplays[sourceID] != nil || persistedReplay != nil
+                var finalState = scan.state
+                finalState.diagnosticCodes.removeAll { $0 == "SOURCE_OVERLOADED" }
+                finalState.replayState = nil
+                let overloadHealth = SourceHealth(
+                    sourceID: sourceID,
+                    isHealthy: false,
+                    diagnosticCode: "SOURCE_OVERLOADED",
+                    impacts: ownership.impacts,
+                    impactedAgents: ownership.codingAgents,
+                    impactedChannels: ownership.channels,
+                    reasonCode: .sourceOverloaded,
+                    recommendedAction: .updateSource
+                )
+                let acceptedEnd = replay.acceptedCount + acceptedCount
+                if acceptedCount > 0, overloaded {
+                    replay.acceptedCount = acceptedEnd
+                    replay.lastAcceptedIdentity = scan.observations[acceptedEnd - 1].observationIdentity
+                    replay.acceptedPrefixDigest = try ReplayCheckpoint.digest(
+                        observations: scan.observations.prefix(acceptedEnd),
+                        deletionScopes: candidateScopes
+                    )
+                }
+                pendingIncrementalScans[sourceID] = PendingIncrementalScan(
+                    finalState: overloaded ? nil : finalState,
+                    deletionScopes: scopes,
+                    health: overloaded || wasReplaying ? overloadHealth : scan.health,
+                    completionHealth: scan.health,
+                    replayAfterCompletion: overloaded ? replay : nil,
+                    checkpointState: overloaded
+                        ? (prior ?? SourceState(sourceID: sourceID, parserVersion: scan.state.parserVersion))
+                        : nil
+                )
             }
-            try store.applyIncremental(
-                facts: CanonicalIngestor().ingest(scan.observations),
-                deleting: scopes,
-                state: scan.state
+
+            guard var pending = pendingIncrementalScans[sourceID] else { return }
+            let observations = observationQueue.next(sourceID: sourceID)
+            let finishesScan = observationQueue.count(for: sourceID) == observations.count
+            if !pending.deletionScopes.isEmpty {
+                pending.replayAfterCompletion?.deletionScopesApplied = true
+            }
+            var stateToPersist = finishesScan ? pending.finalState : nil
+            if finishesScan,
+               stateToPersist == nil,
+               var checkpointState = pending.checkpointState,
+               let replay = pending.replayAfterCompletion {
+                checkpointState.replayState = SourceReplayState(
+                    acceptedCount: replay.acceptedCount,
+                    lastAcceptedIdentity: replay.lastAcceptedIdentity,
+                    acceptedPrefixDigest: replay.acceptedPrefixDigest,
+                    deletionScopesApplied: replay.deletionScopesApplied,
+                    hadCommittedSourceState: replay.hadCommittedSourceState
+                )
+                stateToPersist = checkpointState
+            }
+            try store.applyIncrementalChunk(
+                facts: CanonicalIngestor().ingest(observations),
+                deleting: pending.deletionScopes,
+                finalState: stateToPersist
             )
-            health.append(scan.health)
+            observationQueue.removeFirst(observations.count, sourceID: sourceID)
+            pending.deletionScopes = []
+            health.append(finishesScan && pending.finalState != nil ? pending.completionHealth : pending.health)
+            if finishesScan {
+                pendingIncrementalScans[sourceID] = nil
+                incrementalReplays[sourceID] = pending.replayAfterCompletion
+            } else {
+                pendingIncrementalScans[sourceID] = pending
+            }
         } else {
             guard sourceAdapters.count == 1 else {
                 health.append(SourceHealth(

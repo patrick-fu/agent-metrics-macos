@@ -12,31 +12,74 @@ public struct AuthoritySelection: Sendable, Equatable {
 
 /// Selects one canonical Usage Fact per durable observation identity.
 public enum AuthorityCoalescing {
-    public static func select(_ facts: [UsageFact]) -> AuthoritySelection {
-        let grouped = Dictionary(grouping: facts) { fact -> String in
-            guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else { return fact.id }
-            return [
-                fact.modelCallCapability.rawValue,
-                fact.codingAgent.rawValue,
-                modelCallID,
-                fact.measurementGranularity.rawValue,
-                String(fact.measurementRange.start.timeIntervalSince1970),
-                String(fact.measurementRange.end.timeIntervalSince1970),
-            ].joined(separator: ":")
+    private struct CohortKey: Hashable {
+        var factID: String?
+        var capability: String?
+        var codingAgent: String?
+        var modelCallID: String?
+        var granularity: String?
+        var rangeStart: TimeInterval?
+        var rangeEnd: TimeInterval?
+
+        init(_ fact: UsageFact) {
+            guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else {
+                factID = fact.id
+                capability = nil
+                codingAgent = nil
+                self.modelCallID = nil
+                granularity = nil
+                rangeStart = nil
+                rangeEnd = nil
+                return
+            }
+            factID = nil
+            capability = fact.modelCallCapability.rawValue
+            codingAgent = fact.codingAgent.rawValue
+            self.modelCallID = modelCallID
+            granularity = fact.measurementGranularity.rawValue
+            rangeStart = fact.measurementRange.start.timeIntervalSince1970
+            rangeEnd = fact.measurementRange.end.timeIntervalSince1970
         }
-        var selected: [UsageFact] = []
+    }
+
+    private struct CohortAccumulator {
+        var tier: AuthorityTier
+        var authority: String
+        var representative: UsageFact
         var hasConflict = false
-        for candidates in grouped.values {
-            let enhanced = candidates.filter { $0.authorityTier == .enhanced }
-            let tierCandidates = enhanced.isEmpty ? candidates : enhanced
-            guard Set(tierCandidates.map(\.authority)).count == 1 else {
-                hasConflict = true
+    }
+
+    public static func select(_ facts: [UsageFact]) -> AuthoritySelection {
+        var cohorts: [CohortKey: CohortAccumulator] = [:]
+        cohorts.reserveCapacity(facts.count)
+        for fact in facts {
+            let key = CohortKey(fact)
+            guard var current = cohorts[key] else {
+                cohorts[key] = CohortAccumulator(
+                    tier: fact.authorityTier,
+                    authority: fact.authority,
+                    representative: fact
+                )
                 continue
             }
-            if let representative = tierCandidates.min(by: { $0.id < $1.id }) {
-                selected.append(representative)
+            if fact.authorityTier == .enhanced && current.tier == .fallback {
+                cohorts[key] = CohortAccumulator(
+                    tier: .enhanced,
+                    authority: fact.authority,
+                    representative: fact
+                )
+                continue
             }
+            guard fact.authorityTier == current.tier else { continue }
+            current.hasConflict = current.hasConflict || fact.authority != current.authority
+            if fact.id < current.representative.id { current.representative = fact }
+            cohorts[key] = current
         }
-        return AuthoritySelection(facts: selected.sorted { $0.id < $1.id }, hasConflict: hasConflict)
+        let hasConflict = cohorts.values.contains(where: \.hasConflict)
+        let selected = cohorts.values
+            .filter { !$0.hasConflict }
+            .map(\.representative)
+            .sorted { $0.id < $1.id }
+        return AuthoritySelection(facts: selected, hasConflict: hasConflict)
     }
 }

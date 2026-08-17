@@ -2,6 +2,17 @@ import CodingAgentMetricsCore
 import CodingAgentMetricsLifecycle
 import SwiftUI
 
+@MainActor
+final class RuntimeSnapshots: ObservableObject {
+    @Published var light: LightSnapshot?
+    @Published var detail: TrendSnapshot?
+
+    init(light: LightSnapshot? = nil, detail: TrendSnapshot? = nil) {
+        self.light = light
+        self.detail = detail
+    }
+}
+
 struct SummaryPopoverView: View {
     private enum Activity: String, CaseIterable, Identifiable {
         case burn = "Burn"
@@ -9,24 +20,28 @@ struct SummaryPopoverView: View {
         var id: String { rawValue }
     }
 
-    @State private var snapshot: LightSnapshot?
-    @State private var trends: TrendSnapshot?
+    @ObservedObject private var snapshots: RuntimeSnapshots
     @State private var showsTrends = false
     @State private var activity: Activity = .burn
     @State private var performanceRange: PerformanceRange = .oneHour
+    @State private var requestedFilter: MetricFilter
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
-    var loadSnapshot: (MetricFilter, PerformanceRange) -> LightSnapshot?
-    var loadTrends: (MetricFilter) -> TrendSnapshot?
+    var loadSnapshot: (MetricFilter, PerformanceRange) -> Void
+    var loadTrends: (MetricFilter) -> Void
+    private var snapshot: LightSnapshot? { snapshots.light }
+    private var trends: TrendSnapshot? { snapshots.detail }
 
     init(
         snapshot: LightSnapshot?,
+        snapshots: RuntimeSnapshots? = nil,
         lifecycleServices: AppLifecycleServices = .live,
         telemetry: EnhancedTelemetryController? = nil,
-        loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> LightSnapshot? = { _, _ in nil },
-        loadTrends: @escaping (MetricFilter) -> TrendSnapshot? = { _ in nil }
+        loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> Void = { _, _ in },
+        loadTrends: @escaping (MetricFilter) -> Void = { _ in }
     ) {
-        _snapshot = State(initialValue: snapshot)
+        _snapshots = ObservedObject(wrappedValue: snapshots ?? RuntimeSnapshots(light: snapshot))
+        _requestedFilter = State(initialValue: snapshot?.filter ?? .all)
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
         self.loadSnapshot = loadSnapshot
@@ -97,9 +112,9 @@ struct SummaryPopoverView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Button("View Trends") {
-                guard let filter = snapshot?.filter, let loaded = loadTrends(filter) else { return }
-                trends = loaded
+                guard snapshot != nil else { return }
                 showsTrends = true
+                loadTrends(requestedFilter)
             }
             .accessibilityHint("Opens trend charts and exact values")
             SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry)
@@ -255,12 +270,8 @@ struct SummaryPopoverView: View {
     }
 
     private func apply(_ action: FilterChipAction, on axis: FilterAxis) {
-        snapshot = LightSnapshot.updated(
-            from: snapshot,
-            applying: action,
-            on: axis,
-            load: { filter in loadSnapshot(filter, performanceRange) }
-        )
+        requestedFilter.apply(action, on: axis)
+        loadSnapshot(requestedFilter, performanceRange)
     }
 
     private func performance(_ metric: PerformanceSnapshot?) -> some View {
@@ -334,8 +345,8 @@ struct SummaryPopoverView: View {
     }
 
     private func reloadPerformance(_ range: PerformanceRange) {
-        guard let snapshot else { return }
-        self.snapshot = loadSnapshot(snapshot.filter, range) ?? snapshot
+        guard snapshot != nil else { return }
+        loadSnapshot(requestedFilter, range)
     }
 
     private func format(_ value: Double) -> String {

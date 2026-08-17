@@ -47,8 +47,11 @@ public final class SQLiteFactStore: @unchecked Sendable {
         )
         try migrateUsageFacts()
         try exec("CREATE INDEX IF NOT EXISTS usage_facts_observed_at ON usage_facts(observed_at);")
+        try exec("CREATE INDEX IF NOT EXISTS usage_facts_source_observed_at ON usage_facts(source_id, observed_at);")
         try createPerformanceFactsTable()
         try migratePerformanceFactsIfNeeded()
+        try exec("CREATE INDEX IF NOT EXISTS performance_facts_observed_at ON performance_facts(observed_at);")
+        try exec("CREATE INDEX IF NOT EXISTS performance_facts_source_observed_at ON performance_facts(source_id, observed_at);")
         try exec(
             """
             CREATE TABLE IF NOT EXISTS source_states (
@@ -148,6 +151,20 @@ public final class SQLiteFactStore: @unchecked Sendable {
         state: SourceState,
         failureInjection: (() throws -> Void)? = nil
     ) throws {
+        try applyIncrementalChunk(
+            facts: facts,
+            deleting: scopes,
+            finalState: state,
+            failureInjection: failureInjection
+        )
+    }
+
+    func applyIncrementalChunk(
+        facts: [UsageFact],
+        deleting scopes: [SourceFactScope],
+        finalState: SourceState?,
+        failureInjection: (() throws -> Void)? = nil
+    ) throws {
         try exec("BEGIN IMMEDIATE;")
         do {
             for scope in scopes {
@@ -157,7 +174,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 try insert(fact, replace: true)
             }
             try failureInjection?()
-            try writeSourceState(state)
+            if let finalState { try writeSourceState(finalState) }
             try exec("COMMIT;")
         } catch {
             try? exec("ROLLBACK;")
@@ -212,6 +229,68 @@ public final class SQLiteFactStore: @unchecked Sendable {
         return facts
     }
 
+    public func performanceFactWindow(in interval: DateInterval, limit: Int) throws -> PerformanceFactWindow {
+        let boundedLimit = max(1, limit)
+        let counts = try performanceFactCounts(in: interval)
+        let allocations = Self.allocate(counts: counts, limit: boundedLimit)
+        var rows: [PerformanceFact] = []
+        for sourceID in allocations.keys.sorted() {
+            guard let allocation = allocations[sourceID], allocation > 0 else { continue }
+            rows.append(contentsOf: try performanceFacts(
+                sourceID: sourceID,
+                in: interval,
+                limit: allocation
+            ))
+        }
+        rows.sort {
+            if $0.observedAt != $1.observedAt { return $0.observedAt < $1.observedAt }
+            if $0.codingAgent.rawValue != $1.codingAgent.rawValue {
+                return $0.codingAgent.rawValue < $1.codingAgent.rawValue
+            }
+            if $0.stableRequestID != $1.stableRequestID {
+                return $0.stableRequestID < $1.stableRequestID
+            }
+            return $0.measurementGranularity.rawValue < $1.measurementGranularity.rawValue
+        }
+        let truncatedSourceIDs = Set(counts.compactMap { sourceID, count in
+            count > allocations[sourceID, default: 0] ? sourceID : nil
+        })
+        return PerformanceFactWindow(
+            rows: rows,
+            isTruncated: !truncatedSourceIDs.isEmpty,
+            truncatedSourceIDs: truncatedSourceIDs
+        )
+    }
+
+    private func performanceFacts(
+        sourceID: String,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [PerformanceFact] {
+        let sql = """
+            SELECT * FROM (
+                SELECT * FROM performance_facts
+                WHERE source_id = ? AND observed_at >= ? AND observed_at <= ?
+                ORDER BY observed_at DESC, coding_agent_raw DESC,
+                         stable_request_id DESC, measurement_granularity DESC
+                LIMIT \(limit)
+            )
+            ORDER BY observed_at ASC, coding_agent_raw ASC,
+                     stable_request_id ASC, measurement_granularity ASC;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sourceID)
+        sqlite3_bind_double(statement, 2, interval.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 3, interval.end.timeIntervalSince1970)
+        var rows: [PerformanceFact] = []
+        while sqlite3_step(statement) == SQLITE_ROW { rows.append(try performanceRow(statement)) }
+        return rows
+    }
+
     public func performanceFactColumnNames() throws -> Set<String> {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "PRAGMA table_info(performance_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -224,21 +303,44 @@ public final class SQLiteFactStore: @unchecked Sendable {
     }
 
     public func facts(in interval: DateInterval, limit: Int? = nil) throws -> [UsageFact] {
-        var sql = """
-            SELECT * FROM usage_facts
-            WHERE observed_at >= ? AND observed_at <= ?
-            ORDER BY observed_at ASC, id ASC
-            """
-        if let limit {
-            // The caller opts into bounded reads; cap is deterministic and avoids
-            // turning an untrusted UI query into a whole-store allocation.
-            sql += " LIMIT \(max(1, limit));"
-        } else {
-            sql += ";"
+        guard let limit else {
+            return try query(
+                """
+                SELECT * FROM usage_facts
+                WHERE observed_at >= ? AND observed_at <= ?
+                ORDER BY observed_at ASC, id ASC;
+                """,
+                binds: [interval.start.timeIntervalSince1970, interval.end.timeIntervalSince1970]
+            )
         }
-        return try query(
-            sql,
-            binds: [interval.start.timeIntervalSince1970, interval.end.timeIntervalSince1970]
+        return try factWindow(in: interval, limit: limit).rows
+    }
+
+    /// Reads the newest bounded working set, then restores chronological order
+    /// for metric builders. One bounded sentinel row makes truncation explicit.
+    public func factWindow(in interval: DateInterval, limit: Int) throws -> FactWindow {
+        let boundedLimit = max(1, limit)
+        let counts = try usageFactCounts(in: interval)
+        let allocations = Self.allocate(counts: counts, limit: boundedLimit)
+        var rows: [UsageFact] = []
+        for sourceID in allocations.keys.sorted() {
+            guard let allocation = allocations[sourceID], allocation > 0 else { continue }
+            rows.append(contentsOf: try factWindow(
+                sourceID: sourceID,
+                in: interval,
+                limit: allocation
+            ).rows)
+        }
+        rows.sort {
+            $0.observedAt == $1.observedAt ? $0.id < $1.id : $0.observedAt < $1.observedAt
+        }
+        let truncatedSourceIDs = Set(counts.compactMap { sourceID, count in
+            count > allocations[sourceID, default: 0] ? sourceID : nil
+        })
+        return FactWindow(
+            rows: rows,
+            isTruncated: !truncatedSourceIDs.isEmpty,
+            truncatedSourceIDs: truncatedSourceIDs
         )
     }
 
@@ -273,6 +375,95 @@ public final class SQLiteFactStore: @unchecked Sendable {
         var facts: [UsageFact] = []
         while sqlite3_step(statement) == SQLITE_ROW { facts.append(try row(statement)) }
         return facts
+    }
+
+    public func factWindow(sourceID: String, in interval: DateInterval, limit: Int) throws -> FactWindow {
+        let boundedLimit = max(1, limit)
+        let sql = """
+            SELECT * FROM (
+                SELECT * FROM usage_facts
+                WHERE source_id = ? AND observed_at >= ? AND observed_at <= ?
+                ORDER BY observed_at DESC, id DESC
+                LIMIT \(boundedLimit + 1)
+            )
+            ORDER BY observed_at ASC, id ASC;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sourceID)
+        sqlite3_bind_double(statement, 2, interval.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 3, interval.end.timeIntervalSince1970)
+        var facts: [UsageFact] = []
+        while sqlite3_step(statement) == SQLITE_ROW { facts.append(try row(statement)) }
+        let isTruncated = facts.count > boundedLimit
+        if isTruncated { facts.removeFirst(facts.count - boundedLimit) }
+        return FactWindow(
+            rows: facts,
+            isTruncated: isTruncated,
+            truncatedSourceIDs: isTruncated ? [sourceID] : []
+        )
+    }
+
+    private func usageFactCounts(in interval: DateInterval) throws -> [String: Int] {
+        try factCounts(table: "usage_facts", in: interval)
+    }
+
+    private func performanceFactCounts(in interval: DateInterval) throws -> [String: Int] {
+        try factCounts(table: "performance_facts", in: interval)
+    }
+
+    private func factCounts(table: String, in interval: DateInterval) throws -> [String: Int] {
+        let sql = """
+            SELECT source_id, COUNT(*) FROM \(table)
+            WHERE observed_at >= ? AND observed_at <= ?
+            GROUP BY source_id
+            ORDER BY source_id ASC;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, interval.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, interval.end.timeIntervalSince1970)
+        var counts: [String: Int] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            counts[text(statement, 0)] = Int(sqlite3_column_int64(statement, 1))
+        }
+        return counts
+    }
+
+    /// Max-min allocation keeps every quiet source whole before noisy sources
+    /// share the remaining bounded working set.
+    private static func allocate(counts: [String: Int], limit: Int) -> [String: Int] {
+        var allocations = Dictionary(uniqueKeysWithValues: counts.keys.map { ($0, 0) })
+        var active = counts.keys.sorted()
+        var remaining = max(0, limit)
+        while !active.isEmpty, remaining > 0 {
+            let share = remaining / active.count
+            let quiet = active.filter { counts[$0, default: 0] <= share }
+            if quiet.isEmpty {
+                let base = remaining / active.count
+                var remainder = remaining % active.count
+                for sourceID in active {
+                    allocations[sourceID] = base + (remainder > 0 ? 1 : 0)
+                    if remainder > 0 { remainder -= 1 }
+                }
+                remaining = 0
+            } else {
+                for sourceID in quiet {
+                    let count = counts[sourceID, default: 0]
+                    allocations[sourceID] = count
+                    remaining -= count
+                }
+                let quietSet = Set(quiet)
+                active.removeAll { quietSet.contains($0) }
+            }
+        }
+        return allocations
     }
 
     private func insert(_ fact: UsageFact, replace: Bool = false) throws {
@@ -593,6 +784,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
         if !columnNames.contains("measurement_quality") {
             try exec("ALTER TABLE performance_facts ADD COLUMN measurement_quality TEXT;")
         }
+        try exec(
+            "UPDATE performance_facts SET source_id = 'legacy-performance' WHERE source_id IS NULL OR source_id = '';"
+        )
         let expected = ["coding_agent_raw", "stable_request_id", "measurement_granularity"]
         guard primaryKeyColumns.sorted(by: { $0.0 < $1.0 }).map(\.1) != expected else { return }
 

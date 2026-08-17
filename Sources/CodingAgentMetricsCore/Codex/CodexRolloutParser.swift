@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public enum CodexRolloutParser {
-    public static let semanticVersion = "1.1.1"
+    public static let semanticVersion = "1.2.0"
     public static let schemaVersion = "codex-rollout-v1"
     public static let sourceID = "codex"
     public static let authority = "codex-rollout-token-count"

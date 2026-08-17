@@ -13,7 +13,14 @@ public struct SnapshotBuilder: Sendable {
         performanceRange: PerformanceRange = .oneHour
     ) -> LightSnapshot {
         let filteredFacts = allFacts.filter(filter.includes)
-        let selection = AuthorityCoalescing.select(filteredFacts)
+        let usageWindowStart = now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds))
+        let currentFacts = filteredFacts.filter {
+            $0.observedAt >= usageWindowStart && $0.observedAt <= now
+        }
+        let currentSelection = AuthorityCoalescing.select(currentFacts)
+        let selection = currentFacts.count == filteredFacts.count
+            ? currentSelection
+            : AuthorityCoalescing.select(filteredFacts)
         let selectedFacts = selection.facts
         let selectedSample = LiveSampler(windowSeconds: sample.windowSeconds).sample(facts: selectedFacts, now: now)
         let usageHealth = Self.relevantHealth(from: sourceHealth, impact: .usage, filter: filter, facts: filteredFacts)
@@ -40,6 +47,8 @@ public struct SnapshotBuilder: Sendable {
             ),
             tokenBurn: tokenBurn(
                 facts: filteredFacts,
+                currentFacts: currentFacts,
+                currentSelection: currentSelection,
                 now: now,
                 sourceHealth: usageHealth,
                 scope: scope,
@@ -47,6 +56,8 @@ public struct SnapshotBuilder: Sendable {
             ),
             calls: calls(
                 facts: filteredFacts,
+                currentFacts: currentFacts,
+                currentSelection: currentSelection,
                 now: now,
                 sourceHealth: usageHealth,
                 scope: scope,
@@ -140,21 +151,21 @@ public struct SnapshotBuilder: Sendable {
 
     private func tokenBurn(
         facts: [UsageFact],
+        currentFacts: [UsageFact],
+        currentSelection: AuthoritySelection,
         now: Date,
         sourceHealth: [SourceHealth],
         scope: OutputThroughputScope,
         emptyReason: UnavailableReasonCode
     ) -> TokenBurnMetric {
-        var current = facts.filter {
-            $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now
-        }
+        var current = currentFacts
         let retainedSources = retainMissingUnhealthySources(
             in: &current,
             from: facts,
             sourceHealth: sourceHealth,
             windowSeconds: TokenBurnDefinition.windowSeconds
         )
-        var selection = AuthorityCoalescing.select(current)
+        var selection = retainedSources ? AuthorityCoalescing.select(current) : currentSelection
         var authorityScoped = selection.facts
         var retained = retainedSources
         if current.isEmpty && !facts.isEmpty {
@@ -226,14 +237,14 @@ public struct SnapshotBuilder: Sendable {
 
     private func calls(
         facts: [UsageFact],
+        currentFacts: [UsageFact],
+        currentSelection: AuthoritySelection,
         now: Date,
         sourceHealth: [SourceHealth],
         scope: OutputThroughputScope,
         emptyReason: UnavailableReasonCode
     ) -> CallsMetric {
-        var current = facts.filter {
-            $0.observedAt >= now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) && $0.observedAt <= now
-        }
+        var current = currentFacts
         let retainedSources = retainMissingUnhealthySources(
             in: &current,
             from: facts,
@@ -246,7 +257,9 @@ public struct SnapshotBuilder: Sendable {
             working = lastGoodFacts(in: facts, windowSeconds: CallsDefinition.windowSeconds)
             retained = !working.isEmpty
         }
-        let selection = AuthorityCoalescing.select(working)
+        let selection = retainedSources || current.isEmpty
+            ? AuthorityCoalescing.select(working)
+            : currentSelection
         let capabilityAvailable = working.contains { $0.modelCallCapability == .available }
         let supported = working.filter {
             $0.modelCallCapability == .available && $0.measurementQuality != .unavailable

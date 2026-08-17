@@ -20,7 +20,7 @@ public enum TrendSeriesIdentity: Sendable, Equatable, Hashable {
     }
 }
 
-public enum TrendTokenPart: CaseIterable, Sendable, Equatable {
+public enum TrendTokenPart: CaseIterable, Sendable, Equatable, Hashable {
     case inputUncached
     case cacheRead
     case cacheWrite

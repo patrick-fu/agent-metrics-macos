@@ -1,5 +1,41 @@
 import Foundation
 
+public struct SourceParserContext: Sendable, Equatable, Codable {
+    public var sessionID: String
+    public var turnID: String
+    public var model: ModelIdentity
+
+    public init(sessionID: String, turnID: String, model: ModelIdentity) {
+        self.sessionID = sessionID
+        self.turnID = turnID
+        self.model = model
+    }
+}
+
+/// Fixed-size replay metadata. It never contains source records or content.
+public struct SourceReplayState: Sendable, Equatable, Codable {
+    public var acceptedCount: Int
+    public var lastAcceptedIdentity: String?
+    public var acceptedPrefixDigest: String?
+    public var deletionScopesApplied: Bool
+    /// Nil decodes as true for legacy checkpoints, which always overlaid a state.
+    public var hadCommittedSourceState: Bool?
+
+    public init(
+        acceptedCount: Int,
+        lastAcceptedIdentity: String?,
+        acceptedPrefixDigest: String?,
+        deletionScopesApplied: Bool,
+        hadCommittedSourceState: Bool? = nil
+    ) {
+        self.acceptedCount = acceptedCount
+        self.lastAcceptedIdentity = lastAcceptedIdentity
+        self.acceptedPrefixDigest = acceptedPrefixDigest
+        self.deletionScopesApplied = deletionScopesApplied
+        self.hadCommittedSourceState = hadCommittedSourceState
+    }
+}
+
 public struct SourceFileCursor: Sendable, Equatable, Codable {
     public var fileIdentity: String
     public var locator: String
@@ -7,6 +43,11 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
     public var prefixFingerprint: String
     public var offset: Int64
     public var parserVersion: String
+    public var lastObservedSize: Int64?
+    public var lastModifiedAt: Date?
+    public var parserContext: SourceParserContext?
+    /// True only while bounded scans are skipping one oversized JSONL record.
+    public var discardingOversizedLine: Bool?
 
     public init(
         fileIdentity: String,
@@ -14,7 +55,11 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
         generation: String,
         prefixFingerprint: String,
         offset: Int64,
-        parserVersion: String
+        parserVersion: String,
+        lastObservedSize: Int64? = nil,
+        lastModifiedAt: Date? = nil,
+        parserContext: SourceParserContext? = nil,
+        discardingOversizedLine: Bool? = nil
     ) {
         self.fileIdentity = fileIdentity
         self.locator = locator
@@ -22,6 +67,10 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
         self.prefixFingerprint = prefixFingerprint
         self.offset = offset
         self.parserVersion = parserVersion
+        self.lastObservedSize = lastObservedSize
+        self.lastModifiedAt = lastModifiedAt
+        self.parserContext = parserContext
+        self.discardingOversizedLine = discardingOversizedLine
     }
 }
 
@@ -71,6 +120,8 @@ public struct SourceState: Sendable, Equatable, Codable {
     public var messageTotalSessions: [String]
     /// Session totals were used only while message totals were absent.
     public var sessionFallbackSessions: [String]
+    /// Present only while a bounded accepted prefix still needs replay.
+    public var replayState: SourceReplayState?
 
     public init(
         sourceID: String,
@@ -79,7 +130,8 @@ public struct SourceState: Sendable, Equatable, Codable {
         watermarks: [String: Int] = [:],
         diagnosticCodes: [String] = [],
         messageTotalSessions: [String] = [],
-        sessionFallbackSessions: [String] = []
+        sessionFallbackSessions: [String] = [],
+        replayState: SourceReplayState? = nil
     ) {
         self.sourceID = sourceID
         self.parserVersion = parserVersion
@@ -88,10 +140,11 @@ public struct SourceState: Sendable, Equatable, Codable {
         self.diagnosticCodes = diagnosticCodes
         self.messageTotalSessions = messageTotalSessions
         self.sessionFallbackSessions = sessionFallbackSessions
+        self.replayState = replayState
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sourceID, parserVersion, files, watermarks, diagnosticCodes, messageTotalSessions, sessionFallbackSessions
+        case sourceID, parserVersion, files, watermarks, diagnosticCodes, messageTotalSessions, sessionFallbackSessions, replayState
     }
 
     public init(from decoder: any Decoder) throws {
@@ -103,6 +156,7 @@ public struct SourceState: Sendable, Equatable, Codable {
         diagnosticCodes = try container.decodeIfPresent([String].self, forKey: .diagnosticCodes) ?? []
         messageTotalSessions = try container.decodeIfPresent([String].self, forKey: .messageTotalSessions) ?? []
         sessionFallbackSessions = try container.decodeIfPresent([String].self, forKey: .sessionFallbackSessions) ?? []
+        replayState = try container.decodeIfPresent(SourceReplayState.self, forKey: .replayState)
     }
 }
 

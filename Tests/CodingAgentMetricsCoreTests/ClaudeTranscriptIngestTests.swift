@@ -3,6 +3,92 @@ import Testing
 @testable import CodingAgentMetricsCore
 
 struct ClaudeTranscriptIngestTests {
+    @Test func oversizedContentLineIsSkippedBoundedlyAndFollowingUsageRemainsReachable() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let oversizedContent = userLine(content: String(repeating: "CONTENT_DO_NOT_PERSIST_", count: 30_000))
+        #expect(oversizedContent.utf8.count > ClaudeTranscriptSourceAdapter.maximumAppendBytesPerFile)
+        try home.writeTranscript(lines: [
+            oversizedContent,
+            assistantLine(outputTokens: 1800),
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        let firstState = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code"))
+        #expect(firstState.files.values.first?.offset == Int64(ClaudeTranscriptSourceAdapter.maximumAppendBytesPerFile))
+        #expect(firstState.files.values.first?.discardingOversizedLine == true)
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        #expect(runtime.sourceHealth.contains { $0.diagnosticCode == "SOURCE_LINE_TOO_LONG" })
+        let encodedState = try String(decoding: JSONEncoder().encode(
+            #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code"))
+        ), as: UTF8.self)
+        #expect(!encodedState.contains("CONTENT_DO_NOT_PERSIST"))
+    }
+
+    @Test func sameLengthConsumedMiddleRewriteRebuildsInsteadOfSilentlyContinuing() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let padding = Array(repeating: userLine(), count: 300)
+        let original = padding + [assistantLine(outputTokens: 1800)] + padding
+        try home.writeTranscript(lines: original, terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+
+        let replacement = padding + [assistantLine(outputTokens: 2700)] + padding
+        try rewriteClaudeTranscriptInPlace(
+            home.transcriptURL,
+            body: replacement.joined(separator: "\n") + "\n"
+        )
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 2700)
+        let facts = try SQLiteFactStore(url: storeURL).allFacts()
+        #expect(facts.count == 1)
+        #expect(facts.first?.outputTokens == 2700)
+    }
+
+    @Test func productionScanReadsAtMostOneBoundedAppendBatchPerFile() throws {
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        try home.writeTranscript(
+            lines: Array(repeating: userLine(), count: 10_000),
+            terminated: true
+        )
+
+        let adapter = ClaudeTranscriptSourceAdapter(home: home.root)
+        var scan = try adapter.scan(
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:20Z")),
+            state: nil
+        )
+        let cursor = try #require(scan.state.files.values.first)
+
+        #expect(cursor.offset <= Int64(ClaudeTranscriptSourceAdapter.maximumAppendBytesPerFile))
+        #expect(scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+
+        for _ in 0..<16 where scan.diagnostics.contains(where: { $0.code == "SOURCE_OVERLOADED" }) {
+            scan = try adapter.scan(
+                clock: FixedClock(now: isoDate("2026-04-15T12:00:20Z")),
+                state: scan.state
+            )
+        }
+        #expect(!scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+    }
+
     @Test func versionedClaudeTranscriptFixtureReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()
@@ -622,6 +708,26 @@ private func assistantLine(
     """
     {"type":"assistant","uuid":"\(uuid)","sessionId":"\(sessionID)","timestamp":"\(timestamp)","cwd":"/tmp/synthetic-claude-workspace","version":"2.1.214","message":{"role":"assistant","model":"\(model)","usage":{"input_tokens":2000,"cache_creation_input_tokens":800,"cache_read_input_tokens":3000,"output_tokens":\(outputTokens)}}}
     """
+}
+
+private func rewriteClaudeTranscriptInPlace(_ url: URL, body: String) throws {
+    let before = try FileManager.default.attributesOfItem(atPath: url.path)
+    let beforeSize = (before[.size] as? NSNumber)?.int64Value
+    let beforeInode = (before[.systemFileNumber] as? NSNumber)?.uint64Value
+    #expect(beforeSize == Int64(body.utf8.count))
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seek(toOffset: 0)
+    try handle.write(contentsOf: Data(body.utf8))
+    try handle.synchronize()
+    let previousModified = before[.modificationDate] as? Date ?? Date()
+    try FileManager.default.setAttributes(
+        [.modificationDate: previousModified.addingTimeInterval(5)],
+        ofItemAtPath: url.path
+    )
+    let after = try FileManager.default.attributesOfItem(atPath: url.path)
+    #expect((after[.systemFileNumber] as? NSNumber)?.uint64Value == beforeInode)
+    #expect((after[.size] as? NSNumber)?.int64Value == beforeSize)
 }
 
 private func sessionUsageLine(

@@ -1,6 +1,65 @@
 import Foundation
 
 public struct TrendBuilder: Sendable {
+    public static let maximumPointsPerSeries = 180
+
+    private struct PartTotal {
+        var count = 0
+        var value = 0
+    }
+
+    private struct PartAggregate {
+        var factCount = 0
+        var totals: [TrendTokenPart: PartTotal] = [:]
+
+        mutating func add(_ parts: TokenParts?) {
+            factCount += 1
+            for part in TrendTokenPart.allCases {
+                guard let value = partValue(part, in: parts) else { continue }
+                totals[part, default: PartTotal()].count += 1
+                totals[part, default: PartTotal()].value += value
+            }
+        }
+
+        mutating func merge(_ other: PartAggregate) {
+            factCount += other.factCount
+            for (part, total) in other.totals {
+                totals[part, default: PartTotal()].count += total.count
+                totals[part, default: PartTotal()].value += total.value
+            }
+        }
+
+        func value(for part: TrendTokenPart, requireComplete: Bool) -> Int? {
+            guard let total = totals[part], total.count > 0 else { return nil }
+            return !requireComplete || total.count == factCount ? total.value : nil
+        }
+
+        private func partValue(_ part: TrendTokenPart, in parts: TokenParts?) -> Int? {
+            switch part {
+            case .inputUncached: parts?.inputUncached
+            case .cacheRead: parts?.cacheRead
+            case .cacheWrite: parts?.cacheWrite
+            case .outputVisible: parts?.outputVisible
+            case .reasoning: parts?.reasoning
+            }
+        }
+    }
+
+    private struct BucketAggregate {
+        var amount = 0
+        var parts = PartAggregate()
+
+        mutating func add(amount: Int, parts: TokenParts?) {
+            self.amount += amount
+            self.parts.add(parts)
+        }
+
+        mutating func merge(_ other: BucketAggregate) {
+            amount += other.amount
+            parts.merge(other.parts)
+        }
+    }
+
     public init() {}
 
     public func build(
@@ -33,7 +92,11 @@ public struct TrendBuilder: Sendable {
         let start = closedEnd - TimeInterval(windowSeconds)
         let hasOpenBucket = now.timeIntervalSince1970 > closedEnd
         let completeStarts = stride(from: start, to: closedEnd, by: duration).map { Date(timeIntervalSince1970: $0) }
-        let starts = completeStarts + (hasOpenBucket ? [Date(timeIntervalSince1970: closedEnd)] : [])
+        let starts = Array(
+            (completeStarts + (hasOpenBucket ? [Date(timeIntervalSince1970: closedEnd)] : []))
+                .suffix(Self.maximumPointsPerSeries)
+        )
+        let completeCount = starts.count - (hasOpenBucket ? 1 : 0)
         // Open buckets are placeholders only; no rank or metric metadata uses them.
         let degraded = sourceHealth.filter { !$0.isHealthy }
         let completeFacts = facts.filter {
@@ -68,6 +131,7 @@ public struct TrendBuilder: Sendable {
                 return (.model(raw), title, .model, Set([raw]))
             } + (hidden.isEmpty ? [] : [(.other, "Other", .other, hidden)])
         }
+        let aggregates = bucketAggregates(facts: capable, duration: duration, kind: kind)
 
         let qualities = capable.map(\.measurementQuality)
         let anyEstimated = qualities.contains(.estimated)
@@ -90,9 +154,9 @@ public struct TrendBuilder: Sendable {
         let quality = MeasurementQuality.combined(qualities, derivedResult: true)
         let series = groups.map { identity, title, role, group in
             let emphasis: TrendSeriesEmphasis = role == .other ? .other : (anyEstimated ? .estimated : (coverage == .partial ? .partial : .normal))
-            return TrendSeries(identity: identity, title: title, colorSlot: role == .other ? "other" : (group.first ?? "calls"), role: role, emphasis: emphasis, buckets: buckets(starts: starts, completeCount: completeStarts.count, duration: duration, facts: capable.filter { group.contains($0.model.raw) }, kind: kind, bucketSeconds: bucketSeconds))
+            return TrendSeries(identity: identity, title: title, colorSlot: role == .other ? "other" : (group.first ?? "calls"), role: role, emphasis: emphasis, buckets: buckets(starts: starts, completeCount: completeCount, duration: duration, aggregates: aggregates, models: group, kind: kind, bucketSeconds: bucketSeconds))
         }
-        let partSeries = kind == .burn ? tokenPartSeries(starts: starts, completeCount: completeStarts.count, duration: duration, facts: capable, bucketSeconds: bucketSeconds) : []
+        let partSeries = kind == .burn ? tokenPartSeries(starts: starts, completeCount: completeCount, duration: duration, aggregates: aggregates, bucketSeconds: bucketSeconds) : []
         let degradation = degraded.first.flatMap { health -> (UnavailableReasonCode, MetricAction?)? in
             guard let reason = health.reasonCode else { return nil }
             return (reason, health.recommendedAction ?? MetricAction.recommended(for: reason))
@@ -121,28 +185,64 @@ public struct TrendBuilder: Sendable {
         )
     }
 
-    private func buckets(starts: [Date], completeCount: Int, duration: TimeInterval, facts: [UsageFact], kind: Kind, bucketSeconds: Int) -> [TrendBucket] {
+    private func bucketAggregates(
+        facts: [UsageFact],
+        duration: TimeInterval,
+        kind: Kind
+    ) -> [Int64: [String: BucketAggregate]] {
+        var result: [Int64: [String: BucketAggregate]] = [:]
+        for fact in facts {
+            let key = bucketKey(fact.observedAt, duration: duration)
+            var modelBuckets = result[key, default: [:]]
+            var aggregate = modelBuckets[fact.model.raw, default: BucketAggregate()]
+            aggregate.add(amount: amount(fact, kind: kind), parts: fact.tokenParts)
+            modelBuckets[fact.model.raw] = aggregate
+            result[key] = modelBuckets
+        }
+        return result
+    }
+
+    private func buckets(starts: [Date], completeCount: Int, duration: TimeInterval, aggregates: [Int64: [String: BucketAggregate]], models: Set<String>, kind: Kind, bucketSeconds: Int) -> [TrendBucket] {
         starts.enumerated().map { index, bucketStart in
             let end = bucketStart.addingTimeInterval(duration)
             guard index < completeCount else { return TrendBucket(start: bucketStart, end: end, isComplete: false, value: nil, absoluteCount: nil) }
-            let members = facts.filter { $0.observedAt >= bucketStart && $0.observedAt < end }
-            guard !members.isEmpty else { return TrendBucket(start: bucketStart, end: end, isComplete: true, value: nil, absoluteCount: nil) }
-            let total = members.reduce(0) { $0 + amount($1, kind: kind) }
-            return TrendBucket(start: bucketStart, end: end, isComplete: true, value: normalized(total, kind: kind, bucketSeconds: bucketSeconds), absoluteCount: total, parts: kind == .burn ? merge(parts: members.compactMap(\.tokenParts)) : nil)
+            let modelBuckets = aggregates[bucketKey(bucketStart, duration: duration), default: [:]]
+            let merged = models.compactMap { modelBuckets[$0] }.reduce(nil) { current, next -> BucketAggregate? in
+                guard var current else { return next }
+                current.merge(next)
+                return current
+            }
+            guard let merged else { return TrendBucket(start: bucketStart, end: end, isComplete: true, value: nil, absoluteCount: nil) }
+            return TrendBucket(start: bucketStart, end: end, isComplete: true, value: normalized(merged.amount, kind: kind, bucketSeconds: bucketSeconds), absoluteCount: merged.amount, parts: kind == .burn ? tokenParts(from: merged.parts, requireComplete: true) : nil)
         }
     }
 
-    private func tokenPartSeries(starts: [Date], completeCount: Int, duration: TimeInterval, facts: [UsageFact], bucketSeconds: Int) -> [TrendPartSeries] {
+    private func tokenPartSeries(starts: [Date], completeCount: Int, duration: TimeInterval, aggregates: [Int64: [String: BucketAggregate]], bucketSeconds: Int) -> [TrendPartSeries] {
         TrendTokenPart.allCases.map { part in
             TrendPartSeries(part: part, buckets: starts.enumerated().map { index, bucketStart in
                 let end = bucketStart.addingTimeInterval(duration)
                 guard index < completeCount else { return TrendBucket(start: bucketStart, end: end, isComplete: false, value: nil, absoluteCount: nil) }
-                let values = facts.filter { $0.observedAt >= bucketStart && $0.observedAt < end }.compactMap { partValue(part, in: $0.tokenParts) }
-                guard !values.isEmpty else { return TrendBucket(start: bucketStart, end: end, isComplete: true, value: nil, absoluteCount: nil) }
-                let total = values.reduce(0, +)
+                let modelBuckets = aggregates[bucketKey(bucketStart, duration: duration), default: [:]]
+                var merged = PartAggregate()
+                for aggregate in modelBuckets.values { merged.merge(aggregate.parts) }
+                guard let total = merged.value(for: part, requireComplete: false) else { return TrendBucket(start: bucketStart, end: end, isComplete: true, value: nil, absoluteCount: nil) }
                 return TrendBucket(start: bucketStart, end: end, isComplete: true, value: Double(total) / Double(bucketSeconds) * 60, absoluteCount: total)
             })
         }
+    }
+
+    private func bucketKey(_ date: Date, duration: TimeInterval) -> Int64 {
+        Int64(floor(date.timeIntervalSince1970 / duration))
+    }
+
+    private func tokenParts(from aggregate: PartAggregate, requireComplete: Bool) -> TokenParts {
+        TokenParts(
+            inputUncached: aggregate.value(for: .inputUncached, requireComplete: requireComplete),
+            cacheRead: aggregate.value(for: .cacheRead, requireComplete: requireComplete),
+            cacheWrite: aggregate.value(for: .cacheWrite, requireComplete: requireComplete),
+            outputVisible: aggregate.value(for: .outputVisible, requireComplete: requireComplete),
+            reasoning: aggregate.value(for: .reasoning, requireComplete: requireComplete)
+        )
     }
 
     private func accessibleTable(starts: [Date], duration: TimeInterval, series: [TrendSeries], partSeries: [TrendPartSeries]) -> AccessibleTrendTable {
@@ -197,10 +297,5 @@ public struct TrendBuilder: Sendable {
     }
     private func partValue(_ part: TrendTokenPart, in parts: TokenParts?) -> Int? {
         switch part { case .inputUncached: parts?.inputUncached; case .cacheRead: parts?.cacheRead; case .cacheWrite: parts?.cacheWrite; case .outputVisible: parts?.outputVisible; case .reasoning: parts?.reasoning }
-    }
-    private func merge(parts: [TokenParts]) -> TokenParts? {
-        guard !parts.isEmpty else { return nil }
-        func sum(_ values: [Int?]) -> Int? { values.allSatisfy { $0 != nil } ? values.compactMap { $0 }.reduce(0, +) : nil }
-        return TokenParts(inputUncached: sum(parts.map(\.inputUncached)), cacheRead: sum(parts.map(\.cacheRead)), cacheWrite: sum(parts.map(\.cacheWrite)), outputVisible: sum(parts.map(\.outputVisible)), reasoning: sum(parts.map(\.reasoning)))
     }
 }

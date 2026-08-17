@@ -4,11 +4,27 @@ import SwiftUI
 
 @MainActor
 final class StatusItemController: NSObject, NSWindowDelegate {
+    private enum LightLoad: Sendable, Equatable {
+        case ingest(MetricFilter, PerformanceRange)
+        case stored(MetricFilter, PerformanceRange)
+    }
+
     private let statusItem: NSStatusItem
     private let panel: NSPanel
     private let runtime: TelemetryRuntime?
     private let telemetry: EnhancedTelemetryController
+    private let snapshots: RuntimeSnapshots
+    private let lightGate = DetailQueryGate()
+    private let detailGate = DetailQueryGate()
+    private let lightQueue = DispatchQueue(label: "dev.codingagentmetrics.light-snapshot", qos: .utility)
+    private let detailQueue = DispatchQueue(label: "dev.codingagentmetrics.detail-snapshot", qos: .userInitiated)
+    private var lightLoader: LatestBackgroundLoader<LightLoad, LightSnapshot>!
+    private var detailLoader: LatestBackgroundLoader<MetricFilter, TrendSnapshot>!
     private var filter = MetricFilter.all
+    private var performanceRange = PerformanceRange.oneHour
+    private var detailFilter: MetricFilter?
+    private var scheduler = SnapshotScheduler()
+    private var refreshTimer: Timer?
     private var eventMonitor: Any?
 
     override init() {
@@ -21,6 +37,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         )
         runtime = createdRuntime
         telemetry = EnhancedTelemetryController(runtime: createdRuntime)
+        snapshots = RuntimeSnapshots()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: AppIdentity.popoverWidth, height: 292),
@@ -29,9 +46,22 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             defer: false
         )
         super.init()
+        lightLoader = LatestBackgroundLoader(queue: lightQueue, gate: lightGate) { request in
+            switch request {
+            case let .ingest(filter, range):
+                try? createdRuntime?.lightSnapshot(filter: filter, performanceRange: range)
+            case let .stored(filter, range):
+                try? createdRuntime?.lightSnapshotFromStore(filter: filter, performanceRange: range)
+            }
+        }
+        detailLoader = LatestBackgroundLoader(queue: detailQueue, gate: detailGate) { filter in
+            try? createdRuntime?.trendSnapshot(filter: filter)
+        }
         configureStatusItem()
         configurePanel()
-        renderSnapshot()
+        refreshSnapshots()
+        configureContent()
+        startRefreshTimer()
     }
 
     @objc func togglePanel() {
@@ -71,21 +101,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         panel.delegate = self
     }
 
-    private func renderSnapshot() {
-        let snapshot = try? runtime?.lightSnapshot(filter: filter)
-        let root = SummaryPopoverView(snapshot: snapshot, telemetry: telemetry, loadSnapshot: { [weak self] newFilter, performanceRange in
-            guard let self else { return nil }
-            guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter, performanceRange: performanceRange) else {
-                return nil
-            }
-            self.filter = newFilter
-            return next
+    private func configureContent() {
+        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, loadSnapshot: { [weak self] newFilter, performanceRange in
+            self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange)
         }, loadTrends: { [weak self] newFilter in
-            guard let self else { return nil }
-            return try? self.runtime?.trendSnapshot(filter: newFilter)
+            self?.requestDetailSnapshot(filter: newFilter)
         })
         .frame(width: AppIdentity.popoverWidth)
         panel.contentView = NSHostingView(rootView: root)
+        resizePanel()
+    }
+
+    private func resizePanel() {
         if let content = panel.contentView {
             let fitting = content.fittingSize
             var frame = panel.frame
@@ -94,8 +121,62 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func startRefreshTimer() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: SnapshotScheduler.detailInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshSnapshots() }
+        }
+    }
+
+    private func refreshSnapshots() {
+        let schedule = scheduler.tick(at: Date())
+        if schedule.publishLight { requestLightSnapshot() }
+        if schedule.publishDetail { requestDetailSnapshot() }
+    }
+
+    private func requestLightSnapshot() {
+        let requestedFilter = filter
+        let requestedRange = performanceRange
+        lightLoader.submit(.ingest(requestedFilter, requestedRange)) { [weak self] light in
+            guard let self, self.filter == requestedFilter, self.performanceRange == requestedRange else { return }
+            self.snapshots.light = light
+            self.resizePanelSoon()
+        }
+    }
+
+    private func requestStoredLightSnapshot(filter newFilter: MetricFilter, performanceRange: PerformanceRange) {
+        filter = newFilter
+        self.performanceRange = performanceRange
+        detailFilter = nil
+        snapshots.detail = nil
+        detailLoader.invalidate()
+        lightLoader.submit(.stored(newFilter, performanceRange)) { [weak self] light in
+            guard let self, self.filter == newFilter, self.performanceRange == performanceRange else { return }
+            self.snapshots.light = light
+            self.resizePanelSoon()
+        }
+    }
+
+    private func requestDetailSnapshot(filter requestedFilter: MetricFilter? = nil) {
+        guard panel.isVisible else { return }
+        let isUserRequest = requestedFilter != nil
+        let requestedFilter = requestedFilter ?? filter
+        guard requestedFilter == filter else { return }
+        if isUserRequest, detailFilter == requestedFilter, snapshots.detail != nil { return }
+        detailLoader.submit(requestedFilter) { [weak self] detail in
+            guard let self, self.panel.isVisible, self.filter == requestedFilter else { return }
+            self.detailFilter = requestedFilter
+            self.snapshots.detail = detail
+            self.resizePanelSoon()
+        }
+    }
+
+    private func resizePanelSoon() {
+        DispatchQueue.main.async { [weak self] in self?.resizePanel() }
+    }
+
     private func showPanel() {
-        renderSnapshot()
+        scheduler.setPopoverVisible(true)
+        refreshSnapshots()
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
         let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         let panelSize = panel.frame.size
@@ -109,6 +190,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func dismissPanel() {
+        scheduler.setPopoverVisible(false)
+        detailLoader.invalidate()
         panel.orderOut(nil)
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
