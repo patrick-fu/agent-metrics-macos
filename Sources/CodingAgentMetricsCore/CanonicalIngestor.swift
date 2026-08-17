@@ -19,9 +19,20 @@ public struct CanonicalIngestor: Sendable {
                 observedAt: observation.observedAt,
                 outputTokens: observation.outputTokens,
                 measurementQuality: .measured,
-                authority: "synthetic-codex-token-count",
+                authority: Self.authority(for: observation.schemaVersion),
                 definitionVersion: OutputThroughputDefinition.version
             )
+        }
+    }
+
+    public static func authority(for schemaVersion: String) -> String {
+        switch schemaVersion {
+        case "synthetic-codex-token-count-v1":
+            return "synthetic-codex-token-count"
+        case "codex-rollout-v1":
+            return CodexRolloutParser.authority
+        default:
+            return schemaVersion
         }
     }
 }

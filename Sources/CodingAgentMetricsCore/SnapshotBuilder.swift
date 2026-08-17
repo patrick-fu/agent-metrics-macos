@@ -28,7 +28,7 @@ public struct SnapshotBuilder: Sendable {
                 dataState: state,
                 coverage: .complete,
                 definitionVersion: OutputThroughputDefinition.version,
-                sourceAuthority: "synthetic-codex-token-count",
+                sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
                 scope: .all
             )
         }
@@ -43,7 +43,7 @@ public struct SnapshotBuilder: Sendable {
                 dataState: .zero,
                 coverage: .complete,
                 definitionVersion: OutputThroughputDefinition.version,
-                sourceAuthority: "synthetic-codex-token-count",
+                sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
                 scope: .all
             )
         }
@@ -56,12 +56,17 @@ public struct SnapshotBuilder: Sendable {
             dataState: nil,
             coverage: .complete,
             definitionVersion: OutputThroughputDefinition.version,
-            sourceAuthority: "synthetic-codex-token-count",
+            sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
             scope: .all
         )
     }
 
+    private func authority(in facts: [UsageFact]) -> String? {
+        facts.last?.authority
+    }
+
     private func uniqueAgents(in facts: [UsageFact]) -> [CodingAgent] {
+
         var seen = Set<String>()
         return facts.compactMap { fact in
             guard seen.insert(fact.codingAgent.rawValue).inserted else { return nil }

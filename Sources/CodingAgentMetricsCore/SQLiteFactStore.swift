@@ -31,6 +31,14 @@ public final class SQLiteFactStore: @unchecked Sendable {
             );
             """
         )
+        try exec(
+            """
+            CREATE TABLE IF NOT EXISTS source_states (
+                source_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL
+            );
+            """
+        )
     }
 
     deinit {
@@ -43,6 +51,86 @@ public final class SQLiteFactStore: @unchecked Sendable {
             try exec("DELETE FROM usage_facts;")
             for fact in facts {
                 try insert(fact)
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func upsert(_ facts: [UsageFact]) throws {
+        guard !facts.isEmpty else { return }
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            for fact in facts {
+                try insert(fact, replace: true)
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func deleteFacts(schemaVersion: String) throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try exec(
+                "DELETE FROM usage_facts WHERE schema_version = '\(escapeSQL(schemaVersion))';"
+            )
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func deleteFacts(idPrefix: String) throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try exec(
+                "DELETE FROM usage_facts WHERE id LIKE '\(escapeSQL(idPrefix))%';"
+            )
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func sourceState(sourceID: String) throws -> SourceState? {
+        var statement: OpaquePointer?
+        let sql = "SELECT payload FROM source_states WHERE source_id = ? LIMIT 1;"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sourceID)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        let payload = text(statement, 0)
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(SourceState.self, from: data)
+    }
+
+    public func saveSourceState(_ state: SourceState) throws {
+        let data = try JSONEncoder().encode(state)
+        guard let payload = String(data: data, encoding: .utf8) else {
+            throw StoreError.insertFailed
+        }
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try exec("DELETE FROM source_states WHERE source_id = '\(escapeSQL(state.sourceID))';")
+            let sql = "INSERT INTO source_states (source_id, payload) VALUES (?, ?);"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+                throw StoreError.prepareFailed
+            }
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, state.sourceID)
+            bind(statement, 2, payload)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw StoreError.insertFailed
             }
             try exec("COMMIT;")
         } catch {
@@ -66,9 +154,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
         )
     }
 
-    private func insert(_ fact: UsageFact) throws {
+    private func insert(_ fact: UsageFact, replace: Bool = false) throws {
         let sql = """
-        INSERT INTO usage_facts (
+        INSERT \(replace ? "OR REPLACE " : "")INTO usage_facts (
             id, schema_version, coding_agent_raw, coding_agent_display,
             model_raw, model_display, session_id, turn_id, observed_at,
             output_tokens, measurement_quality, authority, definition_version
@@ -156,6 +244,10 @@ public enum StoreError: Error, Equatable {
     case insertFailed
     case invalidRow
     case execFailed(String)
+}
+
+private func escapeSQL(_ value: String) -> String {
+    value.replacingOccurrences(of: "'", with: "''")
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

@@ -12,7 +12,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     override init() {
         runtime = try? TelemetryRuntime(
             storeURL: Self.storeURL(),
-            fixtureURL: FixtureLocator.syntheticCodexTokenCountV1
+            sourceAdapter: CodexRolloutSourceAdapter()
         )
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panel = NSPanel(
