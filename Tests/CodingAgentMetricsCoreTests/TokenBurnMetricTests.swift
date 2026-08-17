@@ -135,6 +135,21 @@ struct TokenBurnMetricTests {
         #expect(snapshot.calls.coverage == .complete)
     }
 
+    @Test func staleAuthorityConflictDoesNotMakeCurrentCallsZeroPartial() {
+        let now = Date(timeIntervalSince1970: 1_771_200)
+        let parts = TokenParts(inputUncached: 100, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
+        var first = fact(id: "first", agent: .claudeCode, model: "claude-a", observedAt: now.addingTimeInterval(-601), parts: parts, call: "request-1")
+        first.authority = "claude-code-transcript-usage"
+        var second = fact(id: "second", agent: .claudeCode, model: "claude-a", observedAt: now.addingTimeInterval(-602), parts: parts, call: "request-1")
+        second.authority = "third-party-otel-mirror"
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [first, second], now: now), allFacts: [first, second], now: now
+        )
+        #expect(snapshot.calls.selectedCallCount == 0)
+        #expect(snapshot.calls.dataState == .zero)
+        #expect(snapshot.calls.coverage == .complete)
+    }
+
     @Test func unsupportedCallsDoNotTurnAHealthyScopePartial() {
         let now = Date(timeIntervalSince1970: 1_771_200)
         let unsupported = fact(id: "unsupported", agent: .codex, model: "gpt-a", observedAt: now, parts: nil, call: nil)
@@ -233,7 +248,7 @@ struct TokenBurnMetricTests {
         #expect(snapshot.tokenBurn.coverage == .complete)
     }
 
-    @Test func unknownAuthorityTextDoesNotPromoteOrReplaceAFallback() {
+    @Test func conflictingFallbackAuthoritiesFailClosedInsteadOfAddingTheirTokenBurn() {
         let now = Date(timeIntervalSince1970: 1_771_200)
         let parts = TokenParts(inputUncached: 100, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
         var fallback = fact(id: "fallback", agent: .claudeCode, model: "claude-a", observedAt: now, parts: parts, call: "request-1")
@@ -245,7 +260,42 @@ struct TokenBurnMetricTests {
         let snapshot = SnapshotBuilder().buildLightSnapshot(
             sample: LiveSampler().sample(facts: [fallback, unknown], now: now), allFacts: [fallback, unknown], now: now
         )
-        #expect(snapshot.tokenBurn.selectedBurnTokens == 200)
+        #expect(snapshot.tokenBurn.selectedBurnTokens == nil)
+        #expect(snapshot.tokenBurn.dataState == .unavailable)
+        #expect(snapshot.tokenBurn.sourceAuthority == "mixed")
+        #expect(snapshot.tokenBurn.coverage == .partial)
+        #expect(snapshot.calls.selectedCallCount == 1)
+        #expect(snapshot.calls.coverage == .partial)
+    }
+
+    @Test func conflictingEnhancedAuthoritiesFailClosedInsteadOfAddingTheirTokenBurn() {
+        let now = Date(timeIntervalSince1970: 1_771_200)
+        let parts = TokenParts(inputUncached: 100, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
+        var one = fact(id: "enhanced-one", agent: .claudeCode, model: "claude-a", observedAt: now, parts: parts, call: "request-1")
+        one.authority = "claude-otel-request"
+        one.authorityTier = .enhanced
+        var two = fact(id: "enhanced-two", agent: .claudeCode, model: "claude-a", observedAt: now, parts: parts, call: "request-1")
+        two.authority = "third-party-otel-request"
+        two.authorityTier = .enhanced
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [one, two], now: now), allFacts: [one, two], now: now
+        )
+        #expect(snapshot.tokenBurn.selectedBurnTokens == nil)
+        #expect(snapshot.tokenBurn.dataState == .unavailable)
+        #expect(snapshot.tokenBurn.sourceAuthority == "mixed")
+        #expect(snapshot.tokenBurn.coverage == .partial)
+    }
+
+    @Test func duplicateObservationsFromTheSameAuthorityUseAStableRepresentative() {
+        let now = Date(timeIntervalSince1970: 1_771_200)
+        let smaller = TokenParts(inputUncached: 100, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
+        let larger = TokenParts(inputUncached: 200, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
+        let first = fact(id: "a", agent: .claudeCode, model: "claude-a", observedAt: now, parts: smaller, call: "request-1")
+        let duplicate = fact(id: "b", agent: .claudeCode, model: "claude-a", observedAt: now, parts: larger, call: "request-1")
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [duplicate, first], now: now), allFacts: [duplicate, first], now: now
+        )
+        #expect(snapshot.tokenBurn.selectedBurnTokens == 100)
         #expect(snapshot.tokenBurn.coverage == .complete)
     }
 
@@ -304,16 +354,16 @@ struct TokenBurnMetricTests {
             sample: LiveSampler().sample(facts: [fallback, enhanced], now: now), allFacts: [fallback, enhanced], now: now
         )
         #expect(snapshot.tokenBurn.selectedBurnTokens == 200)
-        #expect(snapshot.calls.selectedCallCount == 2)
+        #expect(snapshot.calls.selectedCallCount == 1)
         #expect(snapshot.tokenBurn.sourceAuthority == "mixed")
     }
 
-    @Test func sameIdentityWithDifferentMeasurementRangeIsNotReplaced() {
+    @Test func callsDeduplicateStableIdentityAcrossChannelsAndMeasurementRanges() {
         let now = Date(timeIntervalSince1970: 1_771_200)
         let parts = TokenParts(inputUncached: 100, cacheRead: 0, cacheWrite: 0, outputVisible: 0, reasoning: 0)
         let first = fact(
             id: "first", agent: .codex, model: "gpt-a", observedAt: now, parts: parts, call: "request-1",
-            channel: .claudeTelemetry,
+            channel: .claudeTranscript,
             range: DateInterval(start: now.addingTimeInterval(-10), end: now)
         )
         let second = fact(

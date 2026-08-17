@@ -45,17 +45,23 @@ public struct SnapshotBuilder: Sendable {
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> TokenBurnMetric {
         let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
-        let authorityScoped = selectedAuthorities(in: contributing)
+        let selection = selectedAuthorities(in: contributing)
+        let authorityScoped = selection.facts
         let capable = authorityScoped.filter { $0.tokenParts?.normalizedBurnTotal != nil }
         guard !capable.isEmpty else {
             let state: DataState = (!sourceHealth.isEmpty && sourceHealth.allSatisfy { !$0.isHealthy }) ? .unavailable : (contributing.isEmpty ? (facts.isEmpty ? .absent : .stale) : .unavailable)
-            return unavailableBurn(state: state, coverage: coverage, authority: authority(in: facts) ?? "unavailable", scope: scope)
+            return unavailableBurn(
+                state: state,
+                coverage: selection.hasConflict ? .partial : coverage,
+                authority: selection.hasConflict ? "mixed" : (authority(in: authorityScoped) ?? authority(in: contributing) ?? authority(in: facts) ?? "unavailable"),
+                scope: scope
+            )
         }
         let parts = merge(parts: capable.compactMap(\.tokenParts))
         let total = capable.compactMap { $0.tokenParts?.normalizedBurnTotal }.reduce(0, +)
         let hasSupportedSource = authorityScoped.contains { $0.tokenParts != nil }
         let hasUnsupportedSource = authorityScoped.contains { $0.tokenParts == nil }
-        let isPartial = coverage == .partial || (hasSupportedSource && hasUnsupportedSource)
+        let isPartial = coverage == .partial || selection.hasConflict || (hasSupportedSource && hasUnsupportedSource)
         var metric = TokenBurnMetric(
             parts: TokenParts(
                 inputUncached: parts.inputUncached,
@@ -67,7 +73,7 @@ public struct SnapshotBuilder: Sendable {
             ),
             windowSeconds: TokenBurnDefinition.windowSeconds,
             coverage: isPartial ? .partial : .complete,
-            sourceAuthority: authority(in: capable) ?? "unavailable"
+            sourceAuthority: selection.hasConflict ? "mixed" : (authority(in: capable) ?? "unavailable")
         )
         metric.scope = scope
         return metric
@@ -77,12 +83,16 @@ public struct SnapshotBuilder: Sendable {
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> CallsMetric {
         let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) && $0.observedAt <= now }
-        let authorityScopedFacts = selectedAuthorities(in: facts)
-        let capabilityAvailable = authorityScopedFacts.contains { $0.modelCallCapability == .available }
-        let hasUnavailableSource = authorityScopedFacts.contains { $0.modelCallCapability == .unavailable }
-        let metricCoverage: Coverage = coverage == .partial || (capabilityAvailable && hasUnavailableSource) ? .partial : .complete
+        let contributingSelection = selectedAuthorities(in: contributing)
+        let capabilityAvailable = facts.contains { $0.modelCallCapability == .available }
+        let hasUnavailableSource = facts.contains { $0.modelCallCapability == .unavailable }
+        let metricCoverage: Coverage = coverage == .partial || contributingSelection.hasConflict || (capabilityAvailable && hasUnavailableSource) ? .partial : .complete
         guard capabilityAvailable else {
-            var metric = CallsMetric(modelCallIDs: [], capabilityAvailable: false, sourceAuthority: authority(in: facts) ?? "unavailable")
+            var metric = CallsMetric(
+                modelCallIDs: [],
+                capabilityAvailable: false,
+                sourceAuthority: contributingSelection.hasConflict ? "mixed" : (authority(in: facts) ?? "unavailable")
+            )
             metric.coverage = metricCoverage
             metric.scope = scope
             if !facts.isEmpty && facts.allSatisfy({ $0.observedAt < now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) }) {
@@ -90,12 +100,16 @@ public struct SnapshotBuilder: Sendable {
             }
             return metric
         }
-        let supported = selectedAuthorities(in: contributing.filter { $0.modelCallCapability == .available })
+        let supported = contributing.filter { $0.modelCallCapability == .available }
         let identities = supported.compactMap { fact -> String? in
             guard let id = fact.modelCallID, !id.isEmpty else { return nil }
-            return "\(fact.sourceChannel.rawValue):\(fact.codingAgent.rawValue):\(id)"
+            return "\(fact.codingAgent.rawValue):\(id)"
         }
-        var metric = CallsMetric(modelCallIDs: identities, capabilityAvailable: true, sourceAuthority: authority(in: supported) ?? "unavailable")
+        var metric = CallsMetric(
+            modelCallIDs: identities,
+            capabilityAvailable: true,
+            sourceAuthority: contributingSelection.hasConflict ? "mixed" : (authority(in: supported) ?? "unavailable")
+        )
         metric.coverage = metricCoverage
         metric.scope = scope
         return metric
@@ -132,7 +146,7 @@ public struct SnapshotBuilder: Sendable {
     /// not stitched or guessed at this seam.  The source channel does not
     /// isolate a cohort because fallback transcripts and enhanced telemetry
     /// necessarily arrive from different channels.
-    private func selectedAuthorities(in facts: [UsageFact]) -> [UsageFact] {
+    private func selectedAuthorities(in facts: [UsageFact]) -> AuthoritySelection {
         let grouped = Dictionary(grouping: facts) { fact -> String in
             guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else { return fact.id }
             return [
@@ -144,12 +158,20 @@ public struct SnapshotBuilder: Sendable {
                 String(fact.measurementRange.end.timeIntervalSince1970),
             ].joined(separator: ":")
         }
-        return grouped.values.flatMap { candidates -> [UsageFact] in
-            guard let enhanced = candidates.first(where: { $0.authorityTier == .enhanced }) else {
-                return Set(candidates.map(\.authority)).count == 1 ? [candidates[0]] : candidates
+        var selected: [UsageFact] = []
+        var hasConflict = false
+        for candidates in grouped.values {
+            let enhanced = candidates.filter { $0.authorityTier == .enhanced }
+            let tierCandidates = enhanced.isEmpty ? candidates : enhanced
+            guard Set(tierCandidates.map(\.authority)).count == 1 else {
+                hasConflict = true
+                continue
             }
-            return [enhanced]
+            if let representative = tierCandidates.min(by: { $0.id < $1.id }) {
+                selected.append(representative)
+            }
         }
+        return AuthoritySelection(facts: selected, hasConflict: hasConflict)
     }
 
     private func outputThroughput(
@@ -249,4 +271,9 @@ public struct SnapshotBuilder: Sendable {
         guard !filter.agents.isAll else { return sourceHealth }
         return sourceHealth.filter { filter.agents.selected.contains($0.sourceID) }
     }
+}
+
+private struct AuthoritySelection {
+    var facts: [UsageFact]
+    var hasConflict: Bool
 }

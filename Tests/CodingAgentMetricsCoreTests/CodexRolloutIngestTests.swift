@@ -335,7 +335,7 @@ struct CodexRolloutIngestTests {
         #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
     }
 
-    @Test func invalidCumulativeSubsetRelationshipsAreUnavailable() throws {
+    @Test func invalidCumulativeSubsetDoesNotAdvancePartWatermarksBeforeALegalRecovery() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempCodexHome()
         defer { home.tearDown() }
@@ -347,14 +347,22 @@ struct CodexRolloutIngestTests {
                 inputTotal: 5_000, cachedInput: 6_000, reasoningOutput: 40
             ),
             tokenCountLine(
-                totalOutput: 200, lastOutput: 100, timestamp: "2026-04-15T12:00:11.000Z", ordinal: 4,
-                inputTotal: 5_000, cachedInput: 3_000, reasoningOutput: 400
+                totalOutput: 500, lastOutput: 400, timestamp: "2026-04-15T12:00:11.000Z", ordinal: 4,
+                inputTotal: 6_000, cachedInput: 3_000, reasoningOutput: 100
             ),
         ], terminated: true)
 
         let observations = try CodexRolloutSourceAdapter(sessionRoot: home.root).loadObservations(clock: clock)
         #expect(observations.count == 2)
-        #expect(observations.allSatisfy { $0.tokenParts == nil })
+        #expect(observations[0].tokenParts == nil)
+        #expect(observations[1].tokenParts == TokenParts(
+            inputUncached: 3_000,
+            cacheRead: 3_000,
+            cacheWrite: nil,
+            outputVisible: 400,
+            reasoning: 100,
+            normalizedBurnTotal: 6_500
+        ))
     }
 
     @Test func unknownEventMessageWithoutUsageFailsClosed() throws {

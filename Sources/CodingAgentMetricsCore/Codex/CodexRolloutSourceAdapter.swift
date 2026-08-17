@@ -285,17 +285,27 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
     private func deltaParts(total: CodexRawTokenUsage, fileIdentity: String, state: inout SourceState, reset: Bool = false) -> TokenParts? {
         guard let input = total.inputTotal, let cached = total.cachedInput,
               let output = total.outputTotal, let reasoning = total.reasoningOutput else { return nil }
-        func delta(_ value: Int, _ key: String) -> Int {
-            let watermark = reset ? 0 : (state.watermarks["\(fileIdentity):\(key)"] ?? 0)
-            state.watermarks["\(fileIdentity):\(key)"] = value
-            return max(0, value - watermark)
-        }
-        let inputDelta = delta(input, "input")
-        let cacheDelta = delta(cached, "cached")
-        let outputDelta = delta(output, "output")
-        let reasoningDelta = delta(reasoning, "reasoning")
+        let values = [
+            "input": input,
+            "cached": cached,
+            "output": output,
+            "reasoning": reasoning,
+        ]
+        let watermarks = Dictionary(uniqueKeysWithValues: values.keys.map { key in
+            (key, reset ? 0 : (state.watermarks["\(fileIdentity):\(key)"] ?? 0))
+        })
+        let deltas = Dictionary(uniqueKeysWithValues: values.map { key, value in
+            (key, value - (watermarks[key] ?? 0))
+        })
         guard cached <= input, reasoning <= output,
+              deltas.values.allSatisfy({ $0 >= 0 }),
+              let inputDelta = deltas["input"], let cacheDelta = deltas["cached"],
+              let outputDelta = deltas["output"], let reasoningDelta = deltas["reasoning"],
               cacheDelta <= inputDelta, reasoningDelta <= outputDelta else { return nil }
+
+        for (key, value) in values {
+            state.watermarks["\(fileIdentity):\(key)"] = value
+        }
         return TokenParts(
             inputUncached: max(0, inputDelta - cacheDelta),
             cacheRead: cacheDelta,
