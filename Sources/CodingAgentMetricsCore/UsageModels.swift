@@ -1,6 +1,7 @@
 import Foundation
 
 public struct UsageObservation: Sendable, Equatable {
+    public var observationIdentity: String
     public var schemaVersion: String
     public var codingAgent: CodingAgent
     public var model: ModelIdentity
@@ -10,6 +11,7 @@ public struct UsageObservation: Sendable, Equatable {
     public var outputTokens: Int
 
     public init(
+        observationIdentity: String,
         schemaVersion: String,
         codingAgent: CodingAgent,
         model: ModelIdentity,
@@ -18,6 +20,7 @@ public struct UsageObservation: Sendable, Equatable {
         observedAt: Date,
         outputTokens: Int
     ) {
+        self.observationIdentity = observationIdentity
         self.schemaVersion = schemaVersion
         self.codingAgent = codingAgent
         self.model = model
@@ -26,6 +29,10 @@ public struct UsageObservation: Sendable, Equatable {
         self.observedAt = observedAt
         self.outputTokens = outputTokens
     }
+}
+
+public enum OutputThroughputScope: String, Sendable, Equatable, Codable {
+    case all
 }
 
 public struct UsageFact: Sendable, Equatable, Identifiable {
@@ -83,7 +90,7 @@ public struct OutputThroughputMetric: Sendable, Equatable {
     public var coverage: Coverage
     public var definitionVersion: String
     public var sourceAuthority: String
-    public var scope: String
+    public var scope: OutputThroughputScope
 }
 
 public struct LightSnapshot: Sendable, Equatable {

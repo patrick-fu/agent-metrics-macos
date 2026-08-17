@@ -4,15 +4,13 @@ public struct CanonicalIngestor: Sendable {
     public init() {}
 
     public func ingest(_ observations: [UsageObservation]) -> [UsageFact] {
-        observations.map { observation in
-            UsageFact(
-                id: [
-                    observation.schemaVersion,
-                    observation.codingAgent.rawValue,
-                    observation.sessionID,
-                    observation.turnID,
-                    String(Int(observation.observedAt.timeIntervalSince1970)),
-                ].joined(separator: ":"),
+        var seenObservationIdentities = Set<String>()
+        return observations.compactMap { observation in
+            guard seenObservationIdentities.insert(observation.observationIdentity).inserted else {
+                return nil
+            }
+            return UsageFact(
+                id: observation.observationIdentity,
                 schemaVersion: observation.schemaVersion,
                 codingAgent: observation.codingAgent,
                 model: observation.model,

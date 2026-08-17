@@ -39,6 +39,7 @@ public struct SyntheticCodexSourceAdapter: SourceAdapter {
             throw AdapterError.unsupportedAgent(payload.codingAgent)
         }
         return UsageObservation(
+            observationIdentity: payload.observationIdentity,
             schemaVersion: payload.schemaVersion,
             codingAgent: .codex,
             model: ModelIdentity(raw: payload.modelRaw, display: payload.modelDisplay),
@@ -56,6 +57,7 @@ public enum AdapterError: Error, Equatable {
 }
 
 private struct SyntheticCodexLine: Decodable {
+    var observationIdentity: String
     var schemaVersion: String
     var codingAgent: String
     var modelRaw: String
@@ -74,6 +76,7 @@ private struct SyntheticCodexLine: Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case observationIdentity = "observation_identity"
         case schemaVersion = "schema_version"
         case codingAgent = "coding_agent"
         case modelRaw = "model_raw"

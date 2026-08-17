@@ -35,25 +35,8 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         qualityText = snapshot.outputThroughput.measurementQuality.displayLabel
         dataStateText = snapshot.outputThroughput.dataState?.displayLabel ?? "-"
         coverageText = snapshot.outputThroughput.coverage.displayLabel
-        agentChips = Self.chips(
-            axis: "agent",
-            allTitle: "All",
-            values: snapshot.codingAgents.map { ($0.rawValue, $0.displayName) }
-        )
-        modelChips = Self.chips(
-            axis: "model",
-            allTitle: "All",
-            values: snapshot.modelIdentities.map { ($0.raw, $0.display) }
-        )
-    }
-
-    private static func chips(
-        axis: String,
-        allTitle: String,
-        values: [(String, String)]
-    ) -> [FilterChip] {
-        [FilterChip(id: "all", title: allTitle, isSelected: true)]
-            + values.map { FilterChip(id: "\(axis):\($0.0)", title: $0.1, isSelected: false) }
+        agentChips = [FilterChip(id: "all", title: "All", isSelected: true)]
+        modelChips = [FilterChip(id: "all", title: "All", isSelected: true)]
     }
 
     private static func format(_ value: Double) -> String {

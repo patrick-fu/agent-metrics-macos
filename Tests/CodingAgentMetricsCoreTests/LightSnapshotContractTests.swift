@@ -62,6 +62,7 @@ struct LightSnapshotContractTests {
         #expect(metric.measurementQuality == .derived)
         #expect(metric.dataState == nil)
         #expect(metric.coverage == .complete)
+        #expect(metric.scope == .all)
         #expect(metric.tokensPerSecond == 1)
         #expect(metric.windowSeconds == 180)
     }
@@ -83,8 +84,8 @@ struct LightSnapshotContractTests {
         #expect(presentation.qualityText == "Derived")
         #expect(presentation.dataStateText == "-")
         #expect(presentation.coverageText == "Complete")
-        #expect(presentation.agentChips.contains(where: { $0.id == "all" && $0.isSelected }))
-        #expect(presentation.modelChips.contains(where: { $0.id == "all" && $0.isSelected }))
+        #expect(presentation.agentChips == [FilterChip(id: "all", title: "All", isSelected: true)])
+        #expect(presentation.modelChips == [FilterChip(id: "all", title: "All", isSelected: true)])
         #expect(!presentation.title.localizedCaseInsensitiveContains("TPS"))
         #expect(!presentation.unitText.localizedCaseInsensitiveContains("TPS"))
         #expect(!presentation.valueText.localizedCaseInsensitiveContains("Decode"))
@@ -114,6 +115,7 @@ struct LightSnapshotContractTests {
             .appendingPathComponent("cam-adapter-seam-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: storeURL) }
         let observation = UsageObservation(
+            observationIdentity: "test-observation-001",
             schemaVersion: "test-adapter-v1",
             codingAgent: .codex,
             model: ModelIdentity(raw: "gpt-synthetic-orion", display: "Synthetic Orion"),

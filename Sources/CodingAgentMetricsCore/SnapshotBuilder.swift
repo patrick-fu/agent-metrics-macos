@@ -29,7 +29,7 @@ public struct SnapshotBuilder: Sendable {
                 coverage: .complete,
                 definitionVersion: OutputThroughputDefinition.version,
                 sourceAuthority: "synthetic-codex-token-count",
-                scope: "selected"
+                scope: .all
             )
         }
 
@@ -44,7 +44,7 @@ public struct SnapshotBuilder: Sendable {
                 coverage: .complete,
                 definitionVersion: OutputThroughputDefinition.version,
                 sourceAuthority: "synthetic-codex-token-count",
-                scope: "selected"
+                scope: .all
             )
         }
 
@@ -57,7 +57,7 @@ public struct SnapshotBuilder: Sendable {
             coverage: .complete,
             definitionVersion: OutputThroughputDefinition.version,
             sourceAuthority: "synthetic-codex-token-count",
-            scope: "selected"
+            scope: .all
         )
     }
 

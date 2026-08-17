@@ -1,1 +1,1 @@
-{"schema_version":"synthetic-codex-token-count-v1","coding_agent":"codex","model_raw":"gpt-synthetic-orion","model_display":"Synthetic Orion","session_id":"syn-session-001","turn_id":"syn-turn-001","observed_offset_seconds":-10,"usage":{"output_tokens":1800}}
+{"schema_version":"synthetic-codex-token-count-v1","observation_identity":"syn-observation-001","coding_agent":"codex","model_raw":"gpt-synthetic-orion","model_display":"Synthetic Orion","session_id":"syn-session-001","turn_id":"syn-turn-001","observed_offset_seconds":-10,"usage":{"output_tokens":1800}}
