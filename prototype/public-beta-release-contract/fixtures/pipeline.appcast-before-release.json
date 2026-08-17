@@ -1,0 +1,40 @@
+{
+  "stages": [
+    {
+      "name": "local-tests",
+      "status": "pass"
+    },
+    {
+      "name": "sign",
+      "status": "pass"
+    },
+    {
+      "name": "verify-signature",
+      "status": "pass"
+    },
+    {
+      "name": "notarize",
+      "status": "Accepted"
+    },
+    {
+      "name": "staple",
+      "status": "pass"
+    },
+    {
+      "name": "gatekeeper",
+      "status": "pass"
+    },
+    {
+      "name": "sparkle-sign",
+      "status": "pass"
+    },
+    {
+      "name": "github-release",
+      "status": "draft"
+    },
+    {
+      "name": "appcast-public",
+      "status": "published"
+    }
+  ]
+}

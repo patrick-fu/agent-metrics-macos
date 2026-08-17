@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Coding Agent Metrics</title>
+    <language>en</language>
+    <item>
+      <title>Version 0.1.1</title>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.1+2/CodingAgentMetrics-0.1.1-2.dmg" sparkle:edSignature="7cLALFUHSwvEJWSkV8aMreoBe4fhRa4FncC5NoThKxwThL6FDR7hTiPJh1fo2uagnPogisnQsgFgq6mGkt2RBw==" length="1623481" type="application/octet-stream" />
+    </item>
+    <item>
+      <title>Version 0.1.1-retry</title>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.1.1-retry</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.1+2/CodingAgentMetrics-0.1.1-2.dmg" sparkle:edSignature="7cLALFUHSwvEJWSkV8aMreoBe4fhRa4FncC5NoThKxwThL6FDR7hTiPJh1fo2uagnPogisnQsgFgq6mGkt2RBw==" length="1623481" type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>
