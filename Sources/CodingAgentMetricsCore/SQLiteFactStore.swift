@@ -45,6 +45,7 @@ public final class SQLiteFactStore: @unchecked Sendable {
             """
         )
         try migrateUsageFacts()
+        try exec("CREATE INDEX IF NOT EXISTS usage_facts_observed_at ON usage_facts(observed_at);")
         try createPerformanceFactsTable()
         try migratePerformanceFactsIfNeeded()
         try exec(
@@ -221,13 +222,21 @@ public final class SQLiteFactStore: @unchecked Sendable {
         return names
     }
 
-    public func facts(in interval: DateInterval) throws -> [UsageFact] {
-        try query(
-            """
+    public func facts(in interval: DateInterval, limit: Int? = nil) throws -> [UsageFact] {
+        var sql = """
             SELECT * FROM usage_facts
             WHERE observed_at >= ? AND observed_at <= ?
-            ORDER BY observed_at ASC, id ASC;
-            """,
+            ORDER BY observed_at ASC, id ASC
+            """
+        if let limit {
+            // The caller opts into bounded reads; cap is deterministic and avoids
+            // turning an untrusted UI query into a whole-store allocation.
+            sql += " LIMIT \(max(1, limit));"
+        } else {
+            sql += ";"
+        }
+        return try query(
+            sql,
             binds: [interval.start.timeIntervalSince1970, interval.end.timeIntervalSince1970]
         )
     }

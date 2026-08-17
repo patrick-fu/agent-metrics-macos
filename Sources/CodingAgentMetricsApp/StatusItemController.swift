@@ -73,14 +73,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func renderSnapshot() {
         let snapshot = try? runtime?.lightSnapshot(filter: filter)
-        let root = SummaryPopoverView(snapshot: snapshot, telemetry: telemetry) { [weak self] newFilter, performanceRange in
+        let root = SummaryPopoverView(snapshot: snapshot, telemetry: telemetry, loadSnapshot: { [weak self] newFilter, performanceRange in
             guard let self else { return nil }
             guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter, performanceRange: performanceRange) else {
                 return nil
             }
             self.filter = newFilter
             return next
-        }
+        }, loadTrends: { [weak self] newFilter in
+            guard let self else { return nil }
+            return try? self.runtime?.trendSnapshot(filter: newFilter)
+        })
         .frame(width: AppIdentity.popoverWidth)
         panel.contentView = NSHostingView(rootView: root)
         if let content = panel.contentView {

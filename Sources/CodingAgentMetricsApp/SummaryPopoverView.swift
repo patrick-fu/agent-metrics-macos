@@ -10,25 +10,38 @@ struct SummaryPopoverView: View {
     }
 
     @State private var snapshot: LightSnapshot?
+    @State private var trends: TrendSnapshot?
+    @State private var showsTrends = false
     @State private var activity: Activity = .burn
     @State private var performanceRange: PerformanceRange = .oneHour
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
     var loadSnapshot: (MetricFilter, PerformanceRange) -> LightSnapshot?
+    var loadTrends: (MetricFilter) -> TrendSnapshot?
 
     init(
         snapshot: LightSnapshot?,
         lifecycleServices: AppLifecycleServices = .live,
         telemetry: EnhancedTelemetryController? = nil,
-        loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> LightSnapshot? = { _, _ in nil }
+        loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> LightSnapshot? = { _, _ in nil },
+        loadTrends: @escaping (MetricFilter) -> TrendSnapshot? = { _ in nil }
     ) {
         _snapshot = State(initialValue: snapshot)
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
         self.loadSnapshot = loadSnapshot
+        self.loadTrends = loadTrends
     }
 
     var body: some View {
+        if showsTrends {
+            trendsDetail
+        } else {
+            summary
+        }
+    }
+
+    @ViewBuilder private var summary: some View {
         let presentation = snapshot.map(LightSnapshotPresentation.init)
         VStack(alignment: .leading, spacing: 12) {
             Text("Coding Agent Metrics")
@@ -84,11 +97,62 @@ struct SummaryPopoverView: View {
                 meta(title: "State", value: presentation?.dataStateText ?? "Absent")
                 meta(title: "Coverage", value: presentation?.coverageText ?? "Complete")
             }
+            Button("View Trends") {
+                guard let filter = snapshot?.filter, let loaded = loadTrends(filter) else { return }
+                trends = loaded
+                showsTrends = true
+            }
+            .accessibilityHint("Opens trend charts and exact values")
             SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry)
         }
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
         .background(.regularMaterial)
+    }
+
+    private var trendsDetail: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button("Back") { showsTrends = false }
+                Spacer()
+                Text("Trends").font(.headline)
+            }
+            if let trends, let presentation = snapshot.map(LightSnapshotPresentation.init) {
+                trendSection(
+                    title: "Output Throughput",
+                    aggregate: "\(presentation.valueText) \(presentation.unitText)",
+                    chart: trends.outputThroughput,
+                    style: .line
+                )
+                Picker("Activity", selection: $activity) {
+                    ForEach(Activity.allCases) { activity in Text(activity.rawValue).tag(activity) }
+                }
+                .pickerStyle(.segmented)
+                trendSection(
+                    title: activity == .burn ? "Token Burn" : "Calls",
+                    aggregate: activity == .burn ? "\(presentation.burnValueText) \(presentation.burnUnitText)" : "\(presentation.callsValueText) \(presentation.callsUnitText)",
+                    chart: activity == .burn ? trends.tokenBurn : trends.calls,
+                    style: activity == .burn ? .burnParts : .calls
+                )
+            } else {
+                Text("Trends unavailable").foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .background(.regularMaterial)
+        .onExitCommand { showsTrends = false }
+    }
+
+    private func trendSection(title: String, aggregate: String, chart: TrendChart, style: TrendChartView.Style) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.subheadline)
+                Spacer()
+                Text(aggregate).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            TrendChartView(chart: chart, style: style)
+        }
     }
 
     @ViewBuilder

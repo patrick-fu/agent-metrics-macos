@@ -13,23 +13,27 @@ public struct SnapshotBuilder: Sendable {
         performanceRange: PerformanceRange = .oneHour
     ) -> LightSnapshot {
         let relevantHealth = Self.relevantHealth(from: sourceHealth, filter: filter, allFacts: allFacts)
+        let filteredFacts = allFacts.filter(filter.includes)
+        let authoritySelection = AuthorityCoalescing.select(filteredFacts)
+        let selectedFacts = authoritySelection.facts
+        let selectedSample = LiveSampler(windowSeconds: sample.windowSeconds).sample(facts: selectedFacts, now: now)
         return LightSnapshot(
             outputThroughput: outputThroughput(
-                sample: sample,
-                allFacts: allFacts.filter(filter.includes),
+                sample: selectedSample,
+                allFacts: selectedFacts,
                 coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
                 sourceHealth: relevantHealth,
                 scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
             ),
             tokenBurn: tokenBurn(
-                facts: allFacts.filter(filter.includes),
+                facts: filteredFacts,
                 now: now,
                 coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
                 sourceHealth: relevantHealth,
                 scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
             ),
             calls: calls(
-                facts: allFacts.filter(filter.includes),
+                facts: filteredFacts,
                 now: now,
                 coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
                 sourceHealth: relevantHealth,
@@ -53,7 +57,7 @@ public struct SnapshotBuilder: Sendable {
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> TokenBurnMetric {
         let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
-        let selection = selectedAuthorities(in: contributing)
+        let selection = AuthorityCoalescing.select(contributing)
         let authorityScoped = selection.facts
         let capable = authorityScoped.filter { $0.tokenParts?.normalizedBurnTotal != nil }
         guard !capable.isEmpty else {
@@ -91,7 +95,7 @@ public struct SnapshotBuilder: Sendable {
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> CallsMetric {
         let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) && $0.observedAt <= now }
-        let contributingSelection = selectedAuthorities(in: contributing)
+        let contributingSelection = AuthorityCoalescing.select(contributing)
         let capabilityAvailable = facts.contains { $0.modelCallCapability == .available }
         let hasUnavailableSource = facts.contains { $0.modelCallCapability == .unavailable }
         let metricCoverage: Coverage = coverage == .partial || contributingSelection.hasConflict || (capabilityAvailable && hasUnavailableSource) ? .partial : .complete
@@ -149,38 +153,6 @@ public struct SnapshotBuilder: Sendable {
         )
     }
 
-    /// Enhanced request observations replace a matching fallback observation as
-    /// one whole fact.  Facts without a durable call identity are intentionally
-    /// not stitched or guessed at this seam.  The source channel does not
-    /// isolate a cohort because fallback transcripts and enhanced telemetry
-    /// necessarily arrive from different channels.
-    private func selectedAuthorities(in facts: [UsageFact]) -> AuthoritySelection {
-        let grouped = Dictionary(grouping: facts) { fact -> String in
-            guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else { return fact.id }
-            return [
-                fact.modelCallCapability.rawValue,
-                fact.codingAgent.rawValue,
-                modelCallID,
-                fact.measurementGranularity.rawValue,
-                String(fact.measurementRange.start.timeIntervalSince1970),
-                String(fact.measurementRange.end.timeIntervalSince1970),
-            ].joined(separator: ":")
-        }
-        var selected: [UsageFact] = []
-        var hasConflict = false
-        for candidates in grouped.values {
-            let enhanced = candidates.filter { $0.authorityTier == .enhanced }
-            let tierCandidates = enhanced.isEmpty ? candidates : enhanced
-            guard Set(tierCandidates.map(\.authority)).count == 1 else {
-                hasConflict = true
-                continue
-            }
-            if let representative = tierCandidates.min(by: { $0.id < $1.id }) {
-                selected.append(representative)
-            }
-        }
-        return AuthoritySelection(facts: selected, hasConflict: hasConflict)
-    }
 
     private func outputThroughput(
         sample: LiveSample,
@@ -279,9 +251,4 @@ public struct SnapshotBuilder: Sendable {
         guard !filter.agents.isAll else { return sourceHealth }
         return sourceHealth.filter { filter.agents.selected.contains($0.sourceID) }
     }
-}
-
-private struct AuthoritySelection {
-    var facts: [UsageFact]
-    var hasConflict: Bool
 }

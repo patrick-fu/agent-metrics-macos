@@ -97,6 +97,21 @@ public final class TelemetryRuntime: @unchecked Sendable {
         }
     }
 
+    /// Detail is intentionally separate from the compact LightSnapshot path.
+    /// It reads a bounded, bucket-aligned history only after the user opens Trends.
+    public func trendSnapshot(filter: MetricFilter = .all) throws -> TrendSnapshot {
+        try storeQueue.sync {
+            let bucketSeconds = 30.0
+            let closedEnd = floor(clock.now.timeIntervalSince1970 / bucketSeconds) * bucketSeconds
+            let interval = DateInterval(
+                start: Date(timeIntervalSince1970: closedEnd - TimeInterval(TokenBurnDefinition.windowSeconds)),
+                end: clock.now
+            )
+            let facts = try store.facts(in: interval, limit: Self.maximumTrendFacts)
+            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter)
+        }
+    }
+
     public func ingestPerformance(_ facts: [PerformanceFact]) throws {
         try storeQueue.sync { try store.upsertPerformanceFacts(facts) }
     }
@@ -173,7 +188,10 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     private func snapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
-        let facts = try store.allFacts()
+        let facts = try store.facts(in: DateInterval(
+            start: clock.now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
+            end: clock.now
+        ))
         let performanceFacts = try store.allPerformanceFacts()
         let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
@@ -186,6 +204,8 @@ public final class TelemetryRuntime: @unchecked Sendable {
             performanceRange: performanceRange
         )
     }
+
+    private static let maximumTrendFacts = 20_000
 
     private func refresh(
         sourceAdapter: any SourceAdapter,
