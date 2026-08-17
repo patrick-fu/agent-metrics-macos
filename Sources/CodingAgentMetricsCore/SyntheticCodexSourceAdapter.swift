@@ -13,6 +13,20 @@ public enum FixtureLocator {
     }
 }
 
+extension FixtureLocator {
+    public static var claudeCodeHomeV1: URL {
+        Bundle.module.resourceURL!
+            .appendingPathComponent("Fixtures/claude-code-home-v1", isDirectory: true)
+    }
+
+    public static var claudeCodeHomeV1Transcript: URL {
+        claudeCodeHomeV1
+            .appendingPathComponent("projects/", isDirectory: true)
+            .appendingPathComponent("synthetic-workspace/", isDirectory: true)
+            .appendingPathComponent("01900000-0000-7000-8000-000000000021.jsonl")
+    }
+}
+
 public struct SyntheticCodexSourceAdapter: SourceAdapter {
     public var fixtureURL: URL
 

@@ -2,20 +2,28 @@ import Foundation
 
 public final class TelemetryRuntime: @unchecked Sendable {
     private let store: SQLiteFactStore
-    private let sourceAdapter: any SourceAdapter
+    private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
     private var lastGoodSnapshot: LightSnapshot?
 
     public private(set) var sourceHealth: [SourceHealth] = []
 
-    public init(
+    public convenience init(
         storeURL: URL,
         sourceAdapter: any SourceAdapter,
         clock: any Clock = SystemClock()
     ) throws {
+        try self.init(storeURL: storeURL, sourceAdapters: [sourceAdapter], clock: clock)
+    }
+
+    public init(
+        storeURL: URL,
+        sourceAdapters: [any SourceAdapter],
+        clock: any Clock = SystemClock()
+    ) throws {
         self.clock = clock
         self.store = try SQLiteFactStore(url: storeURL)
-        self.sourceAdapter = sourceAdapter
+        self.sourceAdapters = sourceAdapters
     }
 
     public convenience init(
@@ -31,26 +39,40 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     public func lightSnapshot() throws -> LightSnapshot {
-        do {
-            let snapshot = try refresh()
-            lastGoodSnapshot = snapshot
-            return snapshot
-        } catch {
-            if let lastGoodSnapshot {
-                sourceHealth = [
-                    SourceHealth(
-                        sourceID: incrementalSourceID ?? "unknown",
-                        isHealthy: false,
-                        diagnosticCode: "SOURCE_FAILURE"
-                    ),
-                ]
-                return lastGoodSnapshot
-            }
-            throw error
-        }
+        let snapshot = try refresh()
+        lastGoodSnapshot = snapshot
+        return snapshot
     }
 
     private func refresh() throws -> LightSnapshot {
+        var health: [SourceHealth] = []
+        for sourceAdapter in sourceAdapters {
+            do {
+                try refresh(sourceAdapter: sourceAdapter, health: &health)
+            } catch {
+                health.append(SourceHealth(
+                    sourceID: sourceID(for: sourceAdapter),
+                    isHealthy: false,
+                    diagnosticCode: "SOURCE_FAILURE"
+                ))
+            }
+        }
+        sourceHealth = health
+
+        let facts = try store.allFacts()
+        let sample = LiveSampler().sample(facts: facts, now: clock.now)
+        return SnapshotBuilder().buildLightSnapshot(
+            sample: sample,
+            allFacts: facts,
+            now: clock.now,
+            sourceHealth: health
+        )
+    }
+
+    private func refresh(
+        sourceAdapter: any SourceAdapter,
+        health: inout [SourceHealth]
+    ) throws {
         if let incremental = sourceAdapter as? any IncrementalSourceAdapter {
             let prior = try store.sourceState(sourceID: incremental.sourceID)
             let scan = try incremental.scan(clock: clock, state: prior)
@@ -65,18 +87,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 deleting: scopes,
                 state: scan.state
             )
-            sourceHealth = [scan.health]
+            health.append(scan.health)
         } else {
             let observations = try sourceAdapter.loadObservations(clock: clock)
             try store.replaceAll(CanonicalIngestor().ingest(observations))
+            health.append(SourceHealth(sourceID: "unknown", isHealthy: true))
         }
-
-        let facts = try store.allFacts()
-        let sample = LiveSampler().sample(facts: facts, now: clock.now)
-        return SnapshotBuilder().buildLightSnapshot(sample: sample, allFacts: facts, now: clock.now)
     }
 
-    private var incrementalSourceID: String? {
-        (sourceAdapter as? any IncrementalSourceAdapter)?.sourceID
+    private func sourceID(for sourceAdapter: any SourceAdapter) -> String {
+        (sourceAdapter as? any IncrementalSourceAdapter)?.sourceID ?? "unknown"
     }
 }

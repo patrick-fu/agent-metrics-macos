@@ -29,6 +29,7 @@ public struct CodingAgent: Sendable, Equatable, Hashable, Codable {
     }
 
     public static let codex = CodingAgent(rawValue: "codex", displayName: "Codex")
+    public static let claudeCode = CodingAgent(rawValue: "claude-code", displayName: "Claude Code")
 }
 
 public struct ModelIdentity: Sendable, Equatable, Hashable, Codable {

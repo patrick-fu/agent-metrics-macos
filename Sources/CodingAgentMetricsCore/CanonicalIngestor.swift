@@ -31,6 +31,8 @@ public struct CanonicalIngestor: Sendable {
             return "synthetic-codex-token-count"
         case "codex-rollout-v1":
             return CodexRolloutParser.authority
+        case "claude-code-transcript-v1":
+            return ClaudeTranscriptParser.authority
         default:
             return schemaVersion
         }

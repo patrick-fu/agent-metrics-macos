@@ -12,7 +12,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     override init() {
         runtime = try? TelemetryRuntime(
             storeURL: Self.storeURL(),
-            sourceAdapter: CodexRolloutSourceAdapter()
+            sourceAdapters: [
+                CodexRolloutSourceAdapter(),
+                ClaudeTranscriptSourceAdapter(),
+            ]
         )
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panel = NSPanel(

@@ -6,17 +6,26 @@ public struct SnapshotBuilder: Sendable {
     public func buildLightSnapshot(
         sample: LiveSample,
         allFacts: [UsageFact],
-        now: Date
+        now: Date,
+        sourceHealth: [SourceHealth] = []
     ) -> LightSnapshot {
         LightSnapshot(
-            outputThroughput: outputThroughput(sample: sample, allFacts: allFacts),
+            outputThroughput: outputThroughput(
+                sample: sample,
+                allFacts: allFacts,
+                coverage: sourceHealth.contains { !$0.isHealthy } ? .partial : .complete
+            ),
             codingAgents: uniqueAgents(in: allFacts),
             modelIdentities: uniqueModels(in: allFacts),
             generatedAt: now
         )
     }
 
-    private func outputThroughput(sample: LiveSample, allFacts: [UsageFact]) -> OutputThroughputMetric {
+    private func outputThroughput(
+        sample: LiveSample,
+        allFacts: [UsageFact],
+        coverage: Coverage
+    ) -> OutputThroughputMetric {
         let window = sample.windowSeconds
         if sample.contributingFacts.isEmpty {
             let state: DataState = allFacts.isEmpty ? .absent : .stale
@@ -26,7 +35,7 @@ public struct SnapshotBuilder: Sendable {
                 windowSeconds: window,
                 measurementQuality: .unavailable,
                 dataState: state,
-                coverage: .complete,
+                coverage: coverage,
                 definitionVersion: OutputThroughputDefinition.version,
                 sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
                 scope: .all
@@ -41,7 +50,7 @@ public struct SnapshotBuilder: Sendable {
                 windowSeconds: window,
                 measurementQuality: .derived,
                 dataState: .zero,
-                coverage: .complete,
+                coverage: coverage,
                 definitionVersion: OutputThroughputDefinition.version,
                 sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
                 scope: .all
@@ -54,7 +63,7 @@ public struct SnapshotBuilder: Sendable {
             windowSeconds: window,
             measurementQuality: .derived,
             dataState: nil,
-            coverage: .complete,
+            coverage: coverage,
             definitionVersion: OutputThroughputDefinition.version,
             sourceAuthority: authority(in: sample.contributingFacts) ?? authority(in: allFacts) ?? "synthetic-codex-token-count",
             scope: .all
