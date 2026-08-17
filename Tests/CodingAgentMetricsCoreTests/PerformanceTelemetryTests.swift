@@ -265,7 +265,7 @@ struct PerformanceTelemetryTests {
         let configuration = try OTLPReceiverConfiguration(enabled: true)
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
         defer { receiver.stop() }
-        for _ in 0..<4 {
+        for _ in 0..<20 {
             try receiver.start()
             DispatchQueue.concurrentPerform(iterations: 64) { _ in
                 _ = receiver.state
@@ -278,29 +278,224 @@ struct PerformanceTelemetryTests {
             #expect(receiver.state == .stopped)
             #expect(receiver.boundPort == nil)
         }
+        for _ in 0..<20 {
+            let next = OTLPHTTPReceiver(configuration: configuration) { _ in }
+            try next.start()
+            #expect(next.state == .running)
+            #expect(next.boundPort == 4318)
+            next.stop()
+            #expect(next.state == .stopped)
+            #expect(next.boundPort == nil)
+        }
     }
 
-    @Test func receiverStopCancelsAnInFlightRequestWithoutWaitingForConsume() async throws {
+    @Test func runtimeDisableDuringInFlightConsumeDoesNotDeadlockOrPersist() async throws {
+        let enteredConsume = LockedFlag()
+        let releaseConsume = DispatchSemaphore(value: 0)
+        let runtime = try TelemetryRuntime(
+            storeURL: temporaryURL(),
+            sourceAdapters: [],
+            beforePersistingPerformance: {
+                enteredConsume.set()
+                _ = releaseConsume.wait(timeout: .now() + 1)
+            }
+        )
+        try runtime.setEnhancedTelemetryEnabled(true)
+        let runningDeadline = Date().addingTimeInterval(1)
+        while runtime.receiverState == .starting && Date() < runningDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(runtime.receiverState == .running)
+        async let response: Int? = try? postTrace(to: runtime.receiverEndpoint, body: officialTraceJSON())
+        let enteredDeadline = Date().addingTimeInterval(1)
+        while !enteredConsume.isSet && Date() < enteredDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(enteredConsume.isSet)
+
+        let disableDone = LockedFlag()
+        DispatchQueue.global().async {
+            try? runtime.setEnhancedTelemetryEnabled(false)
+            disableDone.set()
+        }
+        let detachedDeadline = Date().addingTimeInterval(1)
+        while runtime.receiverState != .stopped && Date() < detachedDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(runtime.receiverState == .stopped)
+        releaseConsume.signal()
+        let disableDeadline = Date().addingTimeInterval(1)
+        while !disableDone.isSet && Date() < disableDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(disableDone.isSet)
+        #expect(try runtime.lightSnapshot().performance.endToEnd.sampleCount == 0)
+        _ = await response
+    }
+
+    @Test func runtimePersistsTheFirstPostAfterEnable() async throws {
+        let runtime = try TelemetryRuntime(storeURL: temporaryURL(), sourceAdapters: [])
+        for index in 0..<20 {
+            try runtime.setEnhancedTelemetryEnabled(true)
+            #expect(runtime.receiverState == .running)
+            let body = officialTraceJSON().replacingOccurrences(of: "request-1", with: "request-\(index)")
+            let status = try await postTrace(to: runtime.receiverEndpoint, body: body)
+            #expect(status == 200)
+            #expect(try runtime.storedPerformanceFactCountForTesting() == index + 1)
+            try runtime.setEnhancedTelemetryEnabled(false)
+            #expect(runtime.receiverState == .stopped)
+        }
+    }
+
+    @Test func runtimeEnableDuringInFlightDisableDoesNotBindUntilStopReleases() throws {
+        let runtime = try TelemetryRuntime(storeURL: temporaryURL(), sourceAdapters: [])
+        for _ in 0..<20 {
+            try runtime.setEnhancedTelemetryEnabled(true)
+            #expect(runtime.receiverState == .running)
+            let disableDone = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                try? runtime.setEnhancedTelemetryEnabled(false)
+                disableDone.signal()
+            }
+            try runtime.setEnhancedTelemetryEnabled(true)
+            #expect(disableDone.wait(timeout: .now() + 1) == .success)
+            if runtime.receiverState == .stopped {
+                try runtime.setEnhancedTelemetryEnabled(true)
+            }
+            #expect(runtime.receiverState == .running)
+        }
+        try runtime.setEnhancedTelemetryEnabled(false)
+    }
+
+    @Test func receiverStopReleasesPortWhileConsumeBlocksLongerThanOneSecond() async throws {
         let enteredConsume = LockedFlag()
         let releaseConsume = DispatchSemaphore(value: 0)
         let configuration = try OTLPReceiverConfiguration(enabled: true)
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in
             enteredConsume.set()
-            _ = releaseConsume.wait(timeout: .now() + 1)
+            _ = releaseConsume.wait(timeout: .now() + 2)
         }
         try receiver.start()
-        defer { receiver.stop() }
+        defer {
+            releaseConsume.signal()
+            receiver.stop()
+        }
         async let response: Int? = try? postTrace(to: configuration.endpoint, body: officialTraceJSON())
-        let deadline = Date().addingTimeInterval(1)
-        while !enteredConsume.isSet && Date() < deadline {
+        let enteredDeadline = Date().addingTimeInterval(1)
+        while !enteredConsume.isSet && Date() < enteredDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(enteredConsume.isSet)
+        let started = Date()
         receiver.stop()
+        #expect(Date().timeIntervalSince(started) < 1)
         #expect(receiver.state == .stopped)
-        #expect(receiver.boundPort == nil)
+        try receiver.start()
+        #expect(receiver.state == .running)
+        #expect(receiver.boundPort == 4318)
         releaseConsume.signal()
         _ = await response
+    }
+
+    @Test func receiverStopDoesNotTimeoutWhileNextStartIsParkedBeforeListenerStart() throws {
+        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
+        try receiver.start()
+        defer {
+            receiver.setStartAdoptionBarrierForTesting(nil)
+            receiver.stop()
+        }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        receiver.setStartAdoptionBarrierForTesting {
+            entered.signal()
+            _ = release.wait(timeout: .now() + 1)
+        }
+        DispatchQueue.global().async {
+            try? receiver.start()
+            finished.signal()
+        }
+        #expect(entered.wait(timeout: .now() + 1) == .success)
+        let started = Date()
+        receiver.stop()
+        #expect(Date().timeIntervalSince(started) < 1)
+        #expect(receiver.state == .stopped)
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test func receiverStartDoesNotAdoptWhileStopInstallsPendingRelease() throws {
+        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
+        try receiver.start()
+        defer {
+            receiver.setStartAdoptionBarrierForTesting(nil)
+            receiver.setReleaseWaitBarrierForTesting(nil)
+            receiver.stop()
+        }
+
+        let startEntered = DispatchSemaphore(value: 0)
+        let startMayAdopt = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let stopEnteredReleaseWait = DispatchSemaphore(value: 0)
+        let stopMayFinishRelease = DispatchSemaphore(value: 0)
+        let stopFinished = DispatchSemaphore(value: 0)
+        let startError = LockedError()
+
+        receiver.setStartAdoptionBarrierForTesting {
+            startEntered.signal()
+            _ = startMayAdopt.wait(timeout: .now() + 1)
+        }
+        receiver.setReleaseWaitBarrierForTesting {
+            stopEnteredReleaseWait.signal()
+            _ = stopMayFinishRelease.wait(timeout: .now() + 1)
+        }
+
+        DispatchQueue.global().async {
+            do {
+                try receiver.start()
+            } catch {
+                startError.set(error)
+            }
+            startFinished.signal()
+        }
+        #expect(startEntered.wait(timeout: .now() + 1) == .success)
+
+        DispatchQueue.global().async {
+            receiver.stop()
+            stopFinished.signal()
+        }
+        #expect(stopEnteredReleaseWait.wait(timeout: .now() + 1) == .success)
+
+        startMayAdopt.signal()
+        #expect(startFinished.wait(timeout: .now() + 1) == .success)
+        #expect(startError.value as? OTLPHTTPReceiverError == .portReleasePending)
+        if case .starting = receiver.state { Issue.record("start adopted a listener over pending release") }
+        if case .running = receiver.state { Issue.record("start overwrote a pending release") }
+        #expect(!receiver.isRunning)
+        receiver.setStartAdoptionBarrierForTesting(nil)
+        if receiver.hasPendingReleaseForTesting() {
+            #expect(throws: OTLPHTTPReceiverError.portReleasePending) {
+                try receiver.start()
+            }
+        }
+
+        stopMayFinishRelease.signal()
+        #expect(stopFinished.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test func receiverStartFailsClosedWhileReleaseIsPending() throws {
+        let receiver = OTLPHTTPReceiver(configuration: try OTLPReceiverConfiguration(enabled: true)) { _ in }
+        receiver.simulateUnsignaledReleaseTimeoutForTesting()
+        guard case let .failed(message) = receiver.state else {
+            Issue.record("expected failed release state")
+            return
+        }
+        #expect(message == "Timed out releasing the local receiver.")
+        #expect(throws: OTLPHTTPReceiverError.portReleasePending) {
+            try receiver.start()
+        }
     }
 
     @Test func runtimeCanEnableAndDisableOnlyItsOwnStableReceiver() async throws {
@@ -449,6 +644,23 @@ struct PerformanceTelemetryTests {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await URLSession.shared.upload(for: request, from: Data(body.utf8))
         return (response as? HTTPURLResponse)?.statusCode ?? -1
+    }
+}
+
+private final class LockedError: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    var value: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ error: Error) {
+        lock.lock()
+        stored = error
+        lock.unlock()
     }
 }
 

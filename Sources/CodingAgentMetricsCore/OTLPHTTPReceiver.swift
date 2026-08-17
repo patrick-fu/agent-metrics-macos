@@ -10,13 +10,20 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
     public var boundPort: UInt16? { isRunning ? configuration.port : nil }
     public var endpoint: URL { configuration.endpoint }
 
-    private let queue = DispatchQueue(label: "dev.codingagentmetrics.otlp-receiver")
+    private let listenerQueueKey = DispatchSpecificKey<UInt8>()
+    private let listenerQueue: DispatchQueue
+    private let connectionQueue: DispatchQueue
     private let consume: @Sendable ([PerformanceFact]) throws -> Void
     private let stateLock = NSLock()
     private var stateStorage: OTLPReceiverState = .stopped
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
-    private var pendingStartup: PendingStartup?
+    private var pendingStartup: PendingLifecycle?
+    private var pendingRelease: PendingLifecycle?
+    private var startedListener: NWListener?
+    private var skippedReleaseWaitOnListenerQueue = false
+    private var startAdoptionBarrierForTesting: (@Sendable () -> Void)?
+    private var releaseWaitBarrierForTesting: (@Sendable () -> Void)?
 
     public init(
         configuration: OTLPReceiverConfiguration,
@@ -24,6 +31,10 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
     ) {
         self.configuration = configuration
         self.consume = consume
+        let listenerQueue = DispatchQueue(label: "dev.codingagentmetrics.otlp-receiver.listener")
+        listenerQueue.setSpecific(key: listenerQueueKey, value: 1)
+        self.listenerQueue = listenerQueue
+        self.connectionQueue = DispatchQueue(label: "dev.codingagentmetrics.otlp-receiver.connection")
     }
 
     deinit { stop() }
@@ -36,34 +47,54 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
             port: NWEndpoint.Port(rawValue: configuration.port) ?? .any
         )
         let listener = try NWListener(using: parameters)
-        let startup = StartupSignal()
+        let startup = LifecycleSignal()
         listener.newConnectionHandler = { [weak self, weak listener] connection in
-            guard let listener else { connection.cancel(); return }
-            self?.receive(connection, from: listener, buffered: Data())
+            guard let self, let listener else { connection.cancel(); return }
+            self.connectionQueue.async {
+                self.receive(connection, from: listener, buffered: Data())
+            }
         }
         listener.stateUpdateHandler = { [weak self, weak listener] state in
             guard let self, let listener else { return }
             self.handle(listener: listener, stateUpdate: state, startup: startup)
         }
-        let shouldStart = withStateLock { () -> Bool in
-            guard self.listener == nil else { return false }
+        startAdoptionBarrierForTesting?()
+        enum Adoption {
+            case adopted
+            case alreadyRunning
+            case blocked(OTLPHTTPReceiverError)
+        }
+        let adoption = withStateLock { () -> Adoption in
+            if let blocked = startBlockedReasonLocked() { return .blocked(blocked) }
+            guard self.listener == nil else { return .alreadyRunning }
             self.listener = listener
             stateStorage = .starting
-            pendingStartup = PendingStartup(listener: listener, signal: startup)
-            return true
+            pendingStartup = PendingLifecycle(listener: listener, signal: startup)
+            startedListener = listener
+            listener.start(queue: listenerQueue)
+            return .adopted
         }
-        guard shouldStart else { return }
-        guard withStateLock({ self.listener === listener }) else { throw OTLPHTTPReceiverError.startupCancelled }
-        listener.start(queue: queue)
+        switch adoption {
+        case .alreadyRunning:
+            listener.cancel()
+            return
+        case let .blocked(error):
+            listener.cancel()
+            throw error
+        case .adopted:
+            break
+        }
         guard startup.wait(timeout: .now() + 1) == .success else {
-            let shouldCancel = withStateLock { () -> Bool in
-                guard self.listener === listener else { return false }
+            let release = withStateLock { () -> LifecycleSignal? in
+                guard self.listener === listener else { return nil }
                 self.listener = nil
+                startedListener = nil
                 stateStorage = .failed("Timed out starting the local receiver.")
                 clearPendingStartup(for: listener)
-                return true
+                return installReleaseLocked(for: listener)
             }
-            if shouldCancel { listener.cancel() }
+            if release != nil { listener.cancel() }
+            waitForRelease(release)
             throw OTLPHTTPReceiverError.startupTimedOut
         }
         let finalState = withStateLock { () -> OTLPReceiverState in
@@ -77,19 +108,49 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
     }
 
     public func stop() {
-        let resources = withStateLock { () -> (NWListener?, [NWConnection], StartupSignal?) in
+        let resources = withStateLock { () -> (NWListener?, [NWConnection], LifecycleSignal?, LifecycleSignal?) in
             let activeListener = listener
             let activeConnections = Array(connections.values)
             let startup = pendingStartup?.signal
+            let release: LifecycleSignal?
+            if let activeListener, startedListener === activeListener {
+                release = installReleaseLocked(for: activeListener)
+            } else {
+                release = nil
+            }
             listener = nil
             connections.removeAll()
             pendingStartup = nil
+            startedListener = nil
             stateStorage = .stopped
-            return (activeListener, activeConnections, startup)
+            return (activeListener, activeConnections, startup, release)
         }
+        if resources.3 != nil { releaseWaitBarrierForTesting?() }
         resources.0?.cancel()
         resources.1.forEach { $0.cancel() }
         resources.2?.signal()
+        waitForRelease(resources.3)
+    }
+
+    func setStartAdoptionBarrierForTesting(_ barrier: (@Sendable () -> Void)?) {
+        startAdoptionBarrierForTesting = barrier
+    }
+
+    func setReleaseWaitBarrierForTesting(_ barrier: (@Sendable () -> Void)?) {
+        releaseWaitBarrierForTesting = barrier
+    }
+
+    func hasPendingReleaseForTesting() -> Bool {
+        withStateLock { pendingRelease != nil }
+    }
+
+    /// Test seam: force the release-timeout fail-closed path without a live bind.
+    func simulateUnsignaledReleaseTimeoutForTesting() {
+        let signal = LifecycleSignal()
+        withStateLock {
+            pendingRelease = PendingLifecycle(listenerID: ObjectIdentifier(self), signal: signal)
+        }
+        waitForRelease(signal, timeout: .now())
     }
 
     private func receive(_ connection: NWConnection, from owner: NWListener, buffered: Data) {
@@ -99,7 +160,7 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
             return true
         }
         guard accepted else { connection.cancel(); return }
-        connection.start(queue: queue)
+        connection.start(queue: connectionQueue)
         receiveNext(connection, buffered: buffered)
     }
 
@@ -146,7 +207,7 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
         })
     }
 
-    private func handle(listener candidate: NWListener, stateUpdate: NWListener.State, startup: StartupSignal) {
+    private func handle(listener candidate: NWListener, stateUpdate: NWListener.State, startup: LifecycleSignal) {
         switch stateUpdate {
         case .ready:
             let isCurrent = withStateLock { () -> Bool in
@@ -161,20 +222,24 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
             let isCurrent = withStateLock { () -> Bool in
                 guard listener === candidate else { return false }
                 listener = nil
+                if startedListener === candidate { startedListener = nil }
                 stateStorage = .failed(String(describing: error))
                 clearPendingStartup(for: candidate)
                 return true
             }
             if isCurrent { candidate.cancel() }
+            signalRelease(for: candidate)
             startup.signal()
         case .cancelled:
             _ = withStateLock {
                 guard listener === candidate else { return false }
                 listener = nil
+                if startedListener === candidate { startedListener = nil }
                 stateStorage = .stopped
                 clearPendingStartup(for: candidate)
                 return true
             }
+            signalRelease(for: candidate)
             startup.signal()
         default:
             break
@@ -191,19 +256,73 @@ public final class OTLPHTTPReceiver: @unchecked Sendable {
         guard pendingStartup?.listenerID == ObjectIdentifier(listener) else { return }
         pendingStartup = nil
     }
+
+    private func installReleaseLocked(for listener: NWListener) -> LifecycleSignal {
+        if let pending = pendingRelease, pending.listenerID == ObjectIdentifier(listener) {
+            return pending.signal
+        }
+        let signal = LifecycleSignal()
+        pendingRelease = PendingLifecycle(listener: listener, signal: signal)
+        return signal
+    }
+
+    private func signalRelease(for candidate: NWListener) {
+        let signal = withStateLock { () -> LifecycleSignal? in
+            guard pendingRelease?.listenerID == ObjectIdentifier(candidate) else { return nil }
+            let signal = pendingRelease?.signal
+            pendingRelease = nil
+            if case .failed = stateStorage, listener == nil {
+                stateStorage = .stopped
+            }
+            return signal
+        }
+        signal?.signal()
+    }
+
+    private func startBlockedReasonLocked() -> OTLPHTTPReceiverError? {
+        if pendingRelease != nil || skippedReleaseWaitOnListenerQueue {
+            return .portReleasePending
+        }
+        return nil
+    }
+
+    private func waitForRelease(_ signal: LifecycleSignal?, timeout: DispatchTime = .now() + 1) {
+        guard let signal else { return }
+        // Public stop() waits for listener terminal off this queue so release is observable.
+        // deinit/re-entrant stop on the listener queue must not wait on itself; the instance
+        // is then invalid and start() fail-closes instead of rebinding.
+        if DispatchQueue.getSpecific(key: listenerQueueKey) != nil {
+            withStateLock { skippedReleaseWaitOnListenerQueue = true }
+            return
+        }
+        switch signal.wait(timeout: timeout) {
+        case .success:
+            withStateLock {
+                if pendingRelease?.signal === signal { pendingRelease = nil }
+            }
+        case .timedOut:
+            withStateLock {
+                stateStorage = .failed("Timed out releasing the local receiver.")
+            }
+        }
+    }
 }
 
-private struct PendingStartup {
+private struct PendingLifecycle {
     let listenerID: ObjectIdentifier
-    let signal: StartupSignal
+    let signal: LifecycleSignal
 
-    init(listener: NWListener, signal: StartupSignal) {
-        listenerID = ObjectIdentifier(listener)
+    init(listener: NWListener, signal: LifecycleSignal) {
+        self.init(listenerID: ObjectIdentifier(listener), signal: signal)
+    }
+
+    init(listenerID: ObjectIdentifier, signal: LifecycleSignal) {
+        self.listenerID = listenerID
         self.signal = signal
     }
 }
 
-private final class StartupSignal: @unchecked Sendable {
+private final class LifecycleSignal: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
     private var didSignal = false
@@ -260,4 +379,5 @@ public enum OTLPHTTPReceiverError: Error, Sendable, Equatable {
     case startupTimedOut
     case startupCancelled
     case listenerFailed(String)
+    case portReleasePending
 }

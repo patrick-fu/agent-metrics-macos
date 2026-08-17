@@ -5,8 +5,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
     private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
     private let storeQueue = DispatchQueue(label: "dev.codingagentmetrics.runtime-store")
+    private let lifecycleGate = NSLock()
     private var receiver: OTLPHTTPReceiver?
     private var lastGoodSnapshot: LightSnapshot?
+    private var activeReceiverToken: UUID?
+    private let beforePersistingPerformance: (@Sendable () -> Void)?
 
     public private(set) var sourceHealth: [SourceHealth] = []
     public let receiverConfiguration: OTLPReceiverConfiguration
@@ -33,17 +36,34 @@ public final class TelemetryRuntime: @unchecked Sendable {
         try self.init(storeURL: storeURL, sourceAdapters: [sourceAdapter], clock: clock)
     }
 
-    public init(
+    public convenience init(
         storeURL: URL,
         sourceAdapters: [any SourceAdapter],
         clock: any Clock = SystemClock(),
         receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration()
+    ) throws {
+        try self.init(
+            storeURL: storeURL,
+            sourceAdapters: sourceAdapters,
+            clock: clock,
+            receiverConfiguration: receiverConfiguration,
+            beforePersistingPerformance: nil
+        )
+    }
+
+    init(
+        storeURL: URL,
+        sourceAdapters: [any SourceAdapter],
+        clock: any Clock = SystemClock(),
+        receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration(),
+        beforePersistingPerformance: (@Sendable () -> Void)?
     ) throws {
         self.clock = clock
         let store = try SQLiteFactStore(url: storeURL)
         self.store = store
         self.sourceAdapters = sourceAdapters
         self.receiverConfiguration = receiverConfiguration
+        self.beforePersistingPerformance = beforePersistingPerformance
         if receiverConfiguration.isEnabled {
             try setEnhancedTelemetryEnabled(true)
         }
@@ -81,32 +101,57 @@ public final class TelemetryRuntime: @unchecked Sendable {
         try storeQueue.sync { try store.upsertPerformanceFacts(facts) }
     }
 
+    func storedPerformanceFactCountForTesting() throws -> Int {
+        try storeQueue.sync { try store.allPerformanceFacts().count }
+    }
+
     /// Starts or stops only this app-owned loopback listener.  It never alters
     /// a shell, environment variable, or Claude Code configuration.
     public func setEnhancedTelemetryEnabled(_ enabled: Bool) throws {
-        try storeQueue.sync {
-            if !enabled {
-                receiver?.stop()
+        lifecycleGate.lock()
+        defer { lifecycleGate.unlock() }
+        if !enabled {
+            let toStop = storeQueue.sync { () -> OTLPHTTPReceiver? in
+                let existing = receiver
                 receiver = nil
+                activeReceiverToken = nil
                 startupFailureMessage = nil
-                return
+                return existing
             }
-            if receiver != nil { return }
-            do {
-                let configuration = try OTLPReceiverConfiguration(enabled: true)
-                let next = OTLPHTTPReceiver(configuration: configuration) { [weak self] facts in
-                    guard let self else { return }
-                    try self.storeQueue.sync { try self.store.upsertPerformanceFacts(facts) }
+            toStop?.stop()
+            return
+        }
+        if storeQueue.sync(execute: { receiver != nil }) { return }
+
+        var created: OTLPHTTPReceiver?
+        do {
+            let configuration = try OTLPReceiverConfiguration(enabled: true)
+            let token = UUID()
+            let next = OTLPHTTPReceiver(configuration: configuration) { [weak self] facts in
+                guard let self else { return }
+                self.beforePersistingPerformance?()
+                try self.storeQueue.sync {
+                    guard self.activeReceiverToken == token else { return }
+                    try self.store.upsertPerformanceFacts(facts)
                 }
-                try next.start()
-                receiver = next
-                startupFailureMessage = nil
-            } catch {
-                receiver?.stop()
-                receiver = nil
-                startupFailureMessage = String(describing: error)
-                throw error
             }
+            created = next
+            storeQueue.sync {
+                receiver = next
+                activeReceiverToken = token
+                startupFailureMessage = nil
+            }
+            try next.start()
+        } catch {
+            storeQueue.sync {
+                if let created, receiver === created {
+                    receiver = nil
+                    activeReceiverToken = nil
+                }
+                startupFailureMessage = String(describing: error)
+            }
+            created?.stop()
+            throw error
         }
     }
 
