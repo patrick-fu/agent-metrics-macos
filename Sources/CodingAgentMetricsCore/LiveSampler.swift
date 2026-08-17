@@ -7,10 +7,10 @@ public struct LiveSampler: Sendable {
         self.windowSeconds = windowSeconds
     }
 
-    public func sample(facts: [UsageFact], now: Date) -> LiveSample {
+    public func sample(facts: [UsageFact], filter: MetricFilter = .all, now: Date) -> LiveSample {
         let start = now.addingTimeInterval(TimeInterval(-windowSeconds))
         let contributing = facts.filter { fact in
-            fact.observedAt >= start && fact.observedAt <= now
+            filter.includes(fact) && fact.observedAt >= start && fact.observedAt <= now
         }
         let tokens = contributing.reduce(0) { $0 + $1.outputTokens }
         return LiveSample(

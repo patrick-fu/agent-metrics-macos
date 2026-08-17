@@ -4,11 +4,13 @@ public struct FilterChip: Sendable, Equatable, Identifiable {
     public var id: String
     public var title: String
     public var isSelected: Bool
+    public var action: FilterChipAction
 
-    public init(id: String, title: String, isSelected: Bool) {
+    public init(id: String, title: String, isSelected: Bool, action: FilterChipAction) {
         self.id = id
         self.title = title
         self.isSelected = isSelected
+        self.action = action
     }
 }
 
@@ -20,6 +22,8 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var qualityText: String
     public var dataStateText: String
     public var coverageText: String
+    public var agentActiveCount: Int
+    public var modelActiveCount: Int
     public var agentChips: [FilterChip]
     public var modelChips: [FilterChip]
 
@@ -35,8 +39,31 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         qualityText = snapshot.outputThroughput.measurementQuality.displayLabel
         dataStateText = snapshot.outputThroughput.dataState?.displayLabel ?? "-"
         coverageText = snapshot.outputThroughput.coverage.displayLabel
-        agentChips = [FilterChip(id: "all", title: "All", isSelected: true)]
-        modelChips = [FilterChip(id: "all", title: "All", isSelected: true)]
+        agentActiveCount = snapshot.filter.agents.activeCount
+        modelActiveCount = snapshot.filter.models.activeCount
+        agentChips = Self.chips(
+            options: snapshot.codingAgents.map { ($0.rawValue, $0.displayName) },
+            axis: snapshot.filter.agents
+        )
+        modelChips = Self.chips(
+            options: snapshot.modelIdentities.map { ($0.raw, $0.display) },
+            axis: snapshot.filter.models
+        )
+    }
+
+    private static func chips(
+        options: [(id: String, title: String)],
+        axis: SelectionAxis<String>
+    ) -> [FilterChip] {
+        [FilterChip(id: "all", title: "All", isSelected: axis.isAll, action: .selectAll)]
+            + options.map { option in
+                FilterChip(
+                    id: "value:\(option.id)",
+                    title: option.title,
+                    isSelected: !axis.isAll && axis.selected.contains(option.id),
+                    action: .toggle(option.id)
+                )
+            }
     }
 
     private static func format(_ value: Double) -> String {

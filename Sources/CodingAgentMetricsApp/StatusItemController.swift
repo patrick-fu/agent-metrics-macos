@@ -7,6 +7,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let statusItem: NSStatusItem
     private let panel: NSPanel
     private let runtime: TelemetryRuntime?
+    private var filter = MetricFilter.all
     private var eventMonitor: Any?
 
     override init() {
@@ -68,9 +69,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func renderSnapshot() {
-        let snapshot = try? runtime?.lightSnapshot()
-        let root = SummaryPopoverView(snapshot: snapshot)
-            .frame(width: AppIdentity.popoverWidth)
+        let snapshot = try? runtime?.lightSnapshot(filter: filter)
+        let root = SummaryPopoverView(snapshot: snapshot) { [weak self] newFilter in
+            guard let self else { return nil }
+            self.filter = newFilter
+            return try? self.runtime?.lightSnapshot(filter: newFilter)
+        }
+        .frame(width: AppIdentity.popoverWidth)
         panel.contentView = NSHostingView(rootView: root)
         if let content = panel.contentView {
             let fitting = content.fittingSize

@@ -149,8 +149,16 @@ struct LightSnapshotContractTests {
         #expect(presentation.qualityText == "Derived")
         #expect(presentation.dataStateText == "-")
         #expect(presentation.coverageText == "Complete")
-        #expect(presentation.agentChips == [FilterChip(id: "all", title: "All", isSelected: true)])
-        #expect(presentation.modelChips == [FilterChip(id: "all", title: "All", isSelected: true)])
+        #expect(presentation.agentActiveCount == 0)
+        #expect(presentation.modelActiveCount == 0)
+        #expect(presentation.agentChips == [
+            FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll),
+            FilterChip(id: "value:codex", title: "Codex", isSelected: false, action: .toggle("codex")),
+        ])
+        #expect(presentation.modelChips == [
+            FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll),
+            FilterChip(id: "value:gpt-synthetic-orion", title: "Synthetic Orion", isSelected: false, action: .toggle("gpt-synthetic-orion")),
+        ])
         #expect(!presentation.title.localizedCaseInsensitiveContains("TPS"))
         #expect(!presentation.unitText.localizedCaseInsensitiveContains("TPS"))
         #expect(!presentation.valueText.localizedCaseInsensitiveContains("Decode"))

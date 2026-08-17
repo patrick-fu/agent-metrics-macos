@@ -3,15 +3,18 @@ import CodingAgentMetricsLifecycle
 import SwiftUI
 
 struct SummaryPopoverView: View {
-    let snapshot: LightSnapshot?
+    @State private var snapshot: LightSnapshot?
     let lifecycleServices: AppLifecycleServices
+    var loadSnapshot: (MetricFilter) -> LightSnapshot?
 
     init(
         snapshot: LightSnapshot?,
-        lifecycleServices: AppLifecycleServices = .live
+        lifecycleServices: AppLifecycleServices = .live,
+        loadSnapshot: @escaping (MetricFilter) -> LightSnapshot? = { _ in nil }
     ) {
-        self.snapshot = snapshot
+        _snapshot = State(initialValue: snapshot)
         self.lifecycleServices = lifecycleServices
+        self.loadSnapshot = loadSnapshot
     }
 
     var body: some View {
@@ -21,11 +24,19 @@ struct SummaryPopoverView: View {
                 .font(.headline)
             filterRow(
                 title: "Agent",
-                chips: presentation?.agentChips ?? [FilterChip(id: "all", title: "All", isSelected: true)]
+                chips: presentation?.agentChips ?? [
+                    FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
+                ],
+                count: presentation?.agentActiveCount ?? 0,
+                axis: .agent
             )
             filterRow(
                 title: "Model",
-                chips: presentation?.modelChips ?? [FilterChip(id: "all", title: "All", isSelected: true)]
+                chips: presentation?.modelChips ?? [
+                    FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
+                ],
+                count: presentation?.modelActiveCount ?? 0,
+                axis: .model
             )
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -57,30 +68,59 @@ struct SummaryPopoverView: View {
         .background(.regularMaterial)
     }
 
-    private func filterRow(title: String, chips: [FilterChip]) -> some View {
+    private func filterRow(title: String, chips: [FilterChip], count: Int, axis: FilterAxis) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
+            Text(count == 0 ? title : "\(title) \(count)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
+                .frame(width: 52, alignment: .leading)
+                .accessibilityLabel(count == 0 ? "\(title) filter" : "\(title) filter, \(count) selected")
+            Menu {
+                ForEach(chips) { chip in
+                    Button {
+                        apply(chip.action, on: axis)
+                    } label: {
+                        if chip.isSelected {
+                            Label(chip.title, systemImage: "checkmark")
+                        } else {
+                            Text(chip.title)
+                        }
+                    }
+                    .accessibilityAddTraits(chip.isSelected ? .isSelected : [])
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+            }
+            .menuIndicator(.hidden)
+            .accessibilityLabel("\(title) filter menu")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(chips) { chip in
-                        Text(chip.title)
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(chip.isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
-                            .overlay(
-                                Capsule().stroke(chip.isSelected ? Color.accentColor : Color.secondary.opacity(0.35))
-                            )
-                            .clipShape(Capsule())
+                        Button(chip.title) {
+                            apply(chip.action, on: axis)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(chip.isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                        .overlay(
+                            Capsule().stroke(chip.isSelected ? Color.accentColor : Color.secondary.opacity(0.35))
+                        )
+                        .clipShape(Capsule())
+                        .accessibilityLabel(chip.title)
+                        .accessibilityAddTraits(chip.isSelected ? .isSelected : [])
                     }
                 }
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title) filter")
+        .accessibilityElement(children: .contain)
+    }
+
+    private func apply(_ action: FilterChipAction, on axis: FilterAxis) {
+        var filter = snapshot?.filter ?? .all
+        filter.apply(action, on: axis)
+        snapshot = loadSnapshot(filter)
     }
 
     private func meta(title: String, value: String) -> some View {

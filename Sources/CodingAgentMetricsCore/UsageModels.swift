@@ -33,6 +33,7 @@ public struct UsageObservation: Sendable, Equatable {
 
 public enum OutputThroughputScope: String, Sendable, Equatable, Codable {
     case all
+    case selected
 }
 
 public struct UsageFact: Sendable, Equatable, Identifiable {
@@ -97,6 +98,7 @@ public struct LightSnapshot: Sendable, Equatable {
     public var outputThroughput: OutputThroughputMetric
     public var codingAgents: [CodingAgent]
     public var modelIdentities: [ModelIdentity]
+    public var filter: MetricFilter
     public var generatedAt: Date
     public var sourceHealth: [SourceHealth]
 }
