@@ -6,7 +6,6 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
     public var generation: String
     public var prefixFingerprint: String
     public var offset: Int64
-    public var incompleteTail: String
     public var parserVersion: String
 
     public init(
@@ -15,7 +14,6 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
         generation: String,
         prefixFingerprint: String,
         offset: Int64,
-        incompleteTail: String,
         parserVersion: String
     ) {
         self.fileIdentity = fileIdentity
@@ -23,9 +21,13 @@ public struct SourceFileCursor: Sendable, Equatable, Codable {
         self.generation = generation
         self.prefixFingerprint = prefixFingerprint
         self.offset = offset
-        self.incompleteTail = incompleteTail
         self.parserVersion = parserVersion
     }
+}
+
+public enum SourceFactScope: Sendable, Equatable {
+    case schemaVersion(String)
+    case idPrefix(String)
 }
 
 public struct SourceState: Sendable, Equatable, Codable {
@@ -96,5 +98,7 @@ public struct SourceScan: Sendable, Equatable {
 
 public protocol IncrementalSourceAdapter: SourceAdapter {
     var sourceID: String { get }
+    var sourceRebuildScope: SourceFactScope { get }
+    func rebuiltFileScope(for identity: String) -> SourceFactScope
     func scan(clock: any Clock, state: SourceState?) throws -> SourceScan
 }

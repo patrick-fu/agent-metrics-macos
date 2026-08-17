@@ -3,7 +3,7 @@ import Testing
 @testable import CodingAgentMetricsCore
 
 struct CodexRolloutIngestTests {
-    @Test func versionedCodexRolloutFixtureReachesSQLiteAndLightSnapshot() throws {
+    @Test func versionedCodexRolloutWithoutCallIdentityReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()
         defer { try? FileManager.default.removeItem(at: storeURL) }
@@ -68,6 +68,83 @@ struct CodexRolloutIngestTests {
             tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
         ], terminated: true)
         #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+    }
+
+    @Test func incompleteContentTailIsNeverPersistedAndIsReReadWhenCompleted() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let content = "INCOMPLETE_PROMPT_CODE_TOOL_LEAK_DO_NOT_STORE"
+        let contentLine = """
+        {"timestamp":"2026-04-15T12:00:03.000Z","ordinal":3,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\(content)"}]}}
+        """
+        let incomplete = String(contentLine.dropLast(2))
+        let completePrefix = "\(sessionMetaLine())\n\(turnContextLine())\n"
+
+        try home.writeActiveRollout(lines: [sessionMetaLine(), turnContextLine(), incomplete], terminated: false)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        let state = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        let encodedState = try String(decoding: JSONEncoder().encode(state), as: UTF8.self)
+        #expect(!encodedState.contains(content))
+        #expect(state.files.values.allSatisfy { $0.offset == Int64(Data(completePrefix.utf8).count) })
+
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            contentLine,
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 4),
+        ], terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        let completedState = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        #expect(!(try String(decoding: JSONEncoder().encode(completedState), as: UTF8.self)).contains(content))
+    }
+
+    @Test func incrementalFactAndStateMutationRollsBackTogetherOnFailure() throws {
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let store = try SQLiteFactStore(url: storeURL)
+        let original = directFact(id: "atomic-original", outputTokens: 100)
+        let originalState = SourceState(sourceID: "atomic", parserVersion: "1")
+        try store.applyIncremental(facts: [original], deleting: [], state: originalState)
+
+        let replacement = directFact(id: "atomic-replacement", outputTokens: 200)
+        let replacementState = SourceState(sourceID: "atomic", parserVersion: "2")
+        #expect(throws: InjectedStoreFailure.self) {
+            try store.applyIncremental(
+                facts: [replacement],
+                deleting: [.schemaVersion("atomic-v1")],
+                state: replacementState,
+                failureInjection: { throw InjectedStoreFailure.planned }
+            )
+        }
+        #expect(try store.allFacts() == [original])
+        #expect(try store.sourceState(sourceID: "atomic") == originalState)
+    }
+
+    @Test func genericIncrementalAdapterOwnsFactDeletionScopeAndFailureHealthSource() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let adapter = GenericIncrementalAdapter(clock: clock)
+        let runtime = try TelemetryRuntime(storeURL: storeURL, sourceAdapter: adapter, clock: clock)
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 100)
+        adapter.shouldRebuild = true
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 240)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.id) == ["other-source-observation-2"])
+
+        adapter.shouldFail = true
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 240)
+        #expect(runtime.sourceHealth == [
+            SourceHealth(sourceID: "other-source", isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
+        ])
     }
 
     @Test func coldScanMatchesIncrementalAppend() throws {
@@ -258,6 +335,70 @@ struct CodexRolloutIngestTests {
         #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
     }
 
+    @Test func unknownEventMessageWithoutUsageFailsClosed() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            """
+            {"timestamp":"2026-04-15T12:00:10.000Z","ordinal":2,"type":"event_msg","payload":{"type":"future_event_without_usage","message":"not an allowlisted event"}}
+            """,
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+
+        let snapshot = try runtime.lightSnapshot()
+        #expect(snapshot.outputThroughput.measurementQuality == .unavailable)
+        #expect(runtime.sourceHealth == [
+            SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
+        ])
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+    }
+
+    @Test func parserVersionChangeRebuildsSourceAndClearsWatermarks() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ], terminated: true)
+        let identity = try #require(CodexRolloutParser.fileIdentity(fromFileName: home.activeURL.lastPathComponent))
+        let store = try SQLiteFactStore(url: storeURL)
+        var staleFact = directFact(id: "codex-rollout:\(identity):stale", outputTokens: 9_999)
+        staleFact.schemaVersion = CodexRolloutParser.schemaVersion
+        staleFact.authority = CodexRolloutParser.authority
+        try store.upsert([staleFact])
+        try store.saveSourceState(SourceState(
+            sourceID: "codex",
+            parserVersion: "previous-semantic-version",
+            watermarks: [identity: 0]
+        ))
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1800)
+        #expect(runtime.sourceHealth == [
+            SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "PARSER_VERSION_CHANGED"),
+        ])
+        let state = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+        #expect(state.parserVersion == CodexRolloutParser.semanticVersion)
+        #expect(state.watermarks[identity] == 1800)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1800])
+    }
+
     @Test func persistedCursorSurvivesRestartWithoutDoubleCounting() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempCodexHome()
@@ -373,6 +514,26 @@ private func uniqueStoreURL() -> URL {
     FileManager.default.temporaryDirectory.appendingPathComponent("cam-codex-\(UUID().uuidString).sqlite")
 }
 
+private enum InjectedStoreFailure: Error {
+    case planned
+}
+
+private func directFact(id: String, outputTokens: Int) -> UsageFact {
+    UsageFact(
+        id: id,
+        schemaVersion: "atomic-v1",
+        codingAgent: .codex,
+        model: ModelIdentity(raw: "atomic-model", display: "Atomic Model"),
+        sessionID: "atomic-session",
+        turnID: "atomic-turn",
+        observedAt: Date(timeIntervalSince1970: 1_771_200),
+        outputTokens: outputTokens,
+        measurementQuality: .measured,
+        authority: "atomic",
+        definitionVersion: OutputThroughputDefinition.version
+    )
+}
+
 private func isoDate(_ value: String) -> Date {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
@@ -459,6 +620,12 @@ private final class FlakyCodexAdapter: IncrementalSourceAdapter, @unchecked Send
 
     var sourceID: String { inner.sourceID }
 
+    var sourceRebuildScope: SourceFactScope { inner.sourceRebuildScope }
+
+    func rebuiltFileScope(for identity: String) -> SourceFactScope {
+        inner.rebuiltFileScope(for: identity)
+    }
+
     func loadObservations(clock: any Clock) throws -> [UsageObservation] {
         try scan(clock: clock, state: nil).observations
     }
@@ -468,5 +635,49 @@ private final class FlakyCodexAdapter: IncrementalSourceAdapter, @unchecked Send
             throw AdapterError.unsupportedSchema("codex-isolated-failure")
         }
         return try inner.scan(clock: clock, state: state)
+    }
+}
+
+private final class GenericIncrementalAdapter: IncrementalSourceAdapter, @unchecked Sendable {
+    let clock: any Clock
+    var shouldRebuild = false
+    var shouldFail = false
+
+    init(clock: any Clock) {
+        self.clock = clock
+    }
+
+    var sourceID: String { "other-source" }
+
+    var sourceRebuildScope: SourceFactScope { .schemaVersion("other-source-v1") }
+
+    func rebuiltFileScope(for identity: String) -> SourceFactScope {
+        .idPrefix("other-source:\(identity):")
+    }
+
+    func loadObservations(clock: any Clock) throws -> [UsageObservation] {
+        try scan(clock: clock, state: nil).observations
+    }
+
+    func scan(clock: any Clock, state: SourceState?) throws -> SourceScan {
+        if shouldFail {
+            throw AdapterError.unsupportedSchema("other-source-failure")
+        }
+        let observation = UsageObservation(
+            observationIdentity: shouldRebuild ? "other-source-observation-2" : "other-source-observation-1",
+            schemaVersion: "other-source-v1",
+            codingAgent: .codex,
+            model: ModelIdentity(raw: "other-model", display: "Other Model"),
+            sessionID: "other-session",
+            turnID: "other-turn",
+            observedAt: clock.now.addingTimeInterval(-1),
+            outputTokens: shouldRebuild ? 240 : 100
+        )
+        return SourceScan(
+            observations: [observation],
+            state: SourceState(sourceID: sourceID, parserVersion: "1"),
+            rebuildSource: shouldRebuild,
+            health: SourceHealth(sourceID: sourceID, isHealthy: true)
+        )
     }
 }

@@ -116,10 +116,7 @@ public enum CodexRolloutParser {
             guard let turnID = payload["turn_id"] as? String else { return .ignored }
             return .turnLifecycle(turnID: turnID, timestamp: timestamp, ordinal: ordinal)
         default:
-            if payload["output_tokens"] != nil || (payload["info"] as? [String: Any])?["total_token_usage"] != nil {
-                return .unknownSchema
-            }
-            return ignoredEventTypes.contains(eventType) || eventType.isEmpty ? .ignored : .ignored
+            return ignoredEventTypes.contains(eventType) ? .ignored : .unknownSchema
         }
     }
 

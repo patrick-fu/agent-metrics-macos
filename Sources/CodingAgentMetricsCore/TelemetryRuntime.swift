@@ -38,7 +38,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
         } catch {
             if let lastGoodSnapshot {
                 sourceHealth = [
-                    SourceHealth(sourceID: "codex", isHealthy: false, diagnosticCode: "SOURCE_FAILURE"),
+                    SourceHealth(
+                        sourceID: incrementalSourceID ?? "unknown",
+                        isHealthy: false,
+                        diagnosticCode: "SOURCE_FAILURE"
+                    ),
                 ]
                 return lastGoodSnapshot
             }
@@ -50,15 +54,17 @@ public final class TelemetryRuntime: @unchecked Sendable {
         if let incremental = sourceAdapter as? any IncrementalSourceAdapter {
             let prior = try store.sourceState(sourceID: incremental.sourceID)
             let scan = try incremental.scan(clock: clock, state: prior)
+            let scopes: [SourceFactScope]
             if scan.rebuildSource {
-                try store.deleteFacts(schemaVersion: CodexRolloutParser.schemaVersion)
+                scopes = [incremental.sourceRebuildScope]
             } else {
-                for identity in scan.rebuiltFileIdentities {
-                    try store.deleteFacts(idPrefix: "codex-rollout:\(identity):")
-                }
+                scopes = scan.rebuiltFileIdentities.map { incremental.rebuiltFileScope(for: $0) }
             }
-            try store.upsert(CanonicalIngestor().ingest(scan.observations))
-            try store.saveSourceState(scan.state)
+            try store.applyIncremental(
+                facts: CanonicalIngestor().ingest(scan.observations),
+                deleting: scopes,
+                state: scan.state
+            )
             sourceHealth = [scan.health]
         } else {
             let observations = try sourceAdapter.loadObservations(clock: clock)
@@ -68,5 +74,9 @@ public final class TelemetryRuntime: @unchecked Sendable {
         let facts = try store.allFacts()
         let sample = LiveSampler().sample(facts: facts, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(sample: sample, allFacts: facts, now: clock.now)
+    }
+
+    private var incrementalSourceID: String? {
+        (sourceAdapter as? any IncrementalSourceAdapter)?.sourceID
     }
 }

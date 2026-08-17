@@ -13,11 +13,38 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
 
     public var sourceID: String { CodexRolloutParser.sourceID }
 
+    public var sourceRebuildScope: SourceFactScope {
+        .schemaVersion(CodexRolloutParser.schemaVersion)
+    }
+
+    public func rebuiltFileScope(for identity: String) -> SourceFactScope {
+        .idPrefix("codex-rollout:\(identity):")
+    }
+
     public func loadObservations(clock: any Clock) throws -> [UsageObservation] {
         try scan(clock: clock, state: nil).observations
     }
 
     public func scan(clock: any Clock, state: SourceState?) throws -> SourceScan {
+        if let state, state.parserVersion != CodexRolloutParser.semanticVersion {
+            let rebuilt = try scanPass(clock: clock, state: nil, forceRebuild: true)
+            let parserVersionChanged = SourceDiagnostic(
+                code: "PARSER_VERSION_CHANGED",
+                sourceID: sourceID
+            )
+            return SourceScan(
+                observations: rebuilt.observations,
+                state: rebuilt.state,
+                rebuildSource: true,
+                rebuiltFileIdentities: rebuilt.rebuiltFileIdentities,
+                diagnostics: [parserVersionChanged] + rebuilt.diagnostics,
+                health: SourceHealth(
+                    sourceID: sourceID,
+                    isHealthy: false,
+                    diagnosticCode: parserVersionChanged.code
+                )
+            )
+        }
         let first = try scanPass(clock: clock, state: state, forceRebuild: false)
         if first.rebuildSource {
             let rebuilt = try scanPass(clock: clock, state: nil, forceRebuild: true)
@@ -135,7 +162,6 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let appended = try handle.readToEnd() ?? Data()
         let completeLines = completeLines(in: appended)
         let consumed = completeLines.consumed
-        let tail = completeLines.tail
         let newOffset = startOffset + consumed
 
         var context = FileParseContext(
@@ -212,7 +238,6 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             generation: generation,
             prefixFingerprint: CodexRolloutParser.fingerprint(prefix),
             offset: newOffset,
-            incompleteTail: tail,
             parserVersion: CodexRolloutParser.semanticVersion
         )
 
@@ -244,7 +269,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         )
     }
 
-    private func completeLines(in data: Data) -> (lines: [String], ordinals: [Int], consumed: Int64, tail: String) {
+    private func completeLines(in data: Data) -> (lines: [String], ordinals: [Int], consumed: Int64) {
         var lines: [String] = []
         var ordinals: [Int] = []
         var start = data.startIndex
@@ -264,9 +289,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             start = next
             index += 1
         }
-        let tailData = Data(data[start...])
-        let tail = String(data: tailData, encoding: .utf8) ?? ""
-        return (lines, ordinals, Int64(consumed), tail)
+        return (lines, ordinals, Int64(consumed))
     }
 
     private func discoverRollouts() throws -> [DiscoveredRollout] {

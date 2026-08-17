@@ -114,28 +114,55 @@ public final class SQLiteFactStore: @unchecked Sendable {
     }
 
     public func saveSourceState(_ state: SourceState) throws {
-        let data = try JSONEncoder().encode(state)
-        guard let payload = String(data: data, encoding: .utf8) else {
-            throw StoreError.insertFailed
-        }
         try exec("BEGIN IMMEDIATE;")
         do {
-            try exec("DELETE FROM source_states WHERE source_id = '\(escapeSQL(state.sourceID))';")
-            let sql = "INSERT INTO source_states (source_id, payload) VALUES (?, ?);"
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-                throw StoreError.prepareFailed
-            }
-            defer { sqlite3_finalize(statement) }
-            bind(statement, 1, state.sourceID)
-            bind(statement, 2, payload)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
-                throw StoreError.insertFailed
-            }
+            try writeSourceState(state)
             try exec("COMMIT;")
         } catch {
             try? exec("ROLLBACK;")
             throw error
+        }
+    }
+
+    func applyIncremental(
+        facts: [UsageFact],
+        deleting scopes: [SourceFactScope],
+        state: SourceState,
+        failureInjection: (() throws -> Void)? = nil
+    ) throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            for scope in scopes {
+                try deleteFacts(in: scope)
+            }
+            for fact in facts {
+                try insert(fact, replace: true)
+            }
+            try failureInjection?()
+            try writeSourceState(state)
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func writeSourceState(_ state: SourceState) throws {
+        let data = try JSONEncoder().encode(state)
+        guard let payload = String(data: data, encoding: .utf8) else {
+            throw StoreError.insertFailed
+        }
+        try exec("DELETE FROM source_states WHERE source_id = '\(escapeSQL(state.sourceID))';")
+        let sql = "INSERT INTO source_states (source_id, payload) VALUES (?, ?);"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, state.sourceID)
+        bind(statement, 2, payload)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw StoreError.insertFailed
         }
     }
 
@@ -182,6 +209,19 @@ public final class SQLiteFactStore: @unchecked Sendable {
         bind(statement, 13, fact.definitionVersion)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw StoreError.insertFailed
+        }
+    }
+
+    private func deleteFacts(in scope: SourceFactScope) throws {
+        switch scope {
+        case let .schemaVersion(schemaVersion):
+            try exec(
+                "DELETE FROM usage_facts WHERE schema_version = '\(escapeSQL(schemaVersion))';"
+            )
+        case let .idPrefix(idPrefix):
+            try exec(
+                "DELETE FROM usage_facts WHERE id LIKE '\(escapeSQL(idPrefix))%';"
+            )
         }
     }
 
