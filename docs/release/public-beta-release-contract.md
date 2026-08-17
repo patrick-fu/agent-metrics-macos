@@ -164,8 +164,10 @@ automatic checks.
 
 ## 5. Deterministic local release stages
 
-Every public beta walks this sequence on one operator Mac. No stage is skipped. No stage is
-performed by GitHub Actions or any cloud notarization/appcast service.
+Every public beta walks this sequence on one operator Mac. No stage is skipped. The
+pipeline is initiated and controlled by the local operator. Stage 7 must call Apple's official
+Notary Service through `xcrun notarytool`. GitHub Actions, third-party hosted notarization or
+appcast services, and any other cloud release automation are forbidden.
 
 Human-only stages are marked **HUMAN**. Scriptable stages are marked **SCRIPT**.
 
@@ -198,8 +200,9 @@ A release is **illegal** if any of the following is true:
 3. The DMG is not Developer ID-signed, not notarized (`Accepted`), or not stapled.
 4. The DMG has no Sparkle `edSignature`, or `length` ≠ byte size.
 5. `CFBundleVersion` / `sparkle:version` is ≤ any previously advertised public build.
-6. A GitHub Actions workflow, Pages deploy bot, or cloud notary runner performed any of stages
-   3–16.
+6. A GitHub Actions workflow, Pages deploy bot, third-party hosted notary/appcast service, or
+   other cloud release automation performed any of stages 3–16. Apple's official Notary Service,
+   invoked locally via `xcrun notarytool`, is required and is not this prohibition.
 7. Any private identity value entered git, the Release body, the appcast, or a public issue.
 
 The throwaway checker in `prototype/public-beta-release-contract/` encodes 1–5 and 7 against
@@ -340,7 +343,7 @@ Release-day provisioning (not this ticket):
 
 ## 12. Explicitly out of this contract
 
-- Creating or running GitHub Actions, cloud notarization, or bot-published appcasts.
+- Creating or running GitHub Actions, third-party hosted notarization/appcast services, or other cloud release automation. Apple's official Notary Service via `xcrun notarytool` is required at release time and is not excluded.
 - Publishing a real GitHub Release or modifying Pages as part of this ticket.
 - Generating a real Sparkle keypair or calling `notarytool submit`.
 - Mac App Store, Intel, sandbox-required Sparkle XPC, analytics, remote crash reporting.
