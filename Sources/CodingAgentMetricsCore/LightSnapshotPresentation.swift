@@ -22,6 +22,18 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var qualityText: String
     public var dataStateText: String
     public var coverageText: String
+    public var burnValueText: String
+    public var burnUnitText: String
+    public var burnQualityText: String
+    public var burnStateText: String
+    public var burnCoverageText: String
+    public var burnCompositionText: String
+    public var callsValueText: String
+    public var callsUnitText: String
+    public var callsQualityText: String
+    public var callsStateText: String
+    public var callsCoverageText: String
+    public var callsUnavailableReason: String?
     public var agentActiveCount: Int
     public var modelActiveCount: Int
     public var agentChips: [FilterChip]
@@ -39,6 +51,18 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         qualityText = snapshot.outputThroughput.measurementQuality.displayLabel
         dataStateText = snapshot.outputThroughput.dataState?.displayLabel ?? "-"
         coverageText = snapshot.outputThroughput.coverage.displayLabel
+        burnValueText = snapshot.tokenBurn.tokensPerMinute.map(Self.format) ?? "Unavailable"
+        burnUnitText = "tokens/min"
+        burnQualityText = snapshot.tokenBurn.measurementQuality.displayLabel
+        burnStateText = snapshot.tokenBurn.dataState?.displayLabel ?? "-"
+        burnCoverageText = snapshot.tokenBurn.coverage.displayLabel
+        burnCompositionText = Self.composition(snapshot.tokenBurn.parts)
+        callsValueText = snapshot.calls.callsPerMinute.map(Self.format) ?? "Unavailable"
+        callsUnitText = "calls/min"
+        callsQualityText = snapshot.calls.measurementQuality.displayLabel
+        callsStateText = snapshot.calls.dataState?.displayLabel ?? "-"
+        callsCoverageText = snapshot.calls.coverage.displayLabel
+        callsUnavailableReason = snapshot.calls.dataState == .unavailable ? "Stable Model Call ID unavailable for this source" : nil
         agentActiveCount = snapshot.filter.agents.activeCount
         modelActiveCount = snapshot.filter.models.activeCount
         agentChips = Self.chips(
@@ -71,6 +95,21 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
             return String(Int(value))
         }
         return String(format: "%.1f", value)
+    }
+
+    private static func composition(_ parts: TokenParts?) -> String {
+        guard let parts else { return "Unavailable" }
+        func item(_ title: String, _ value: Int?) -> String {
+            let label = value.map(String.init) ?? "Unavailable"
+            return "\(title) \(label)"
+        }
+        return [
+            item("Input uncached", parts.inputUncached),
+            item("Cache read", parts.cacheRead),
+            item("Cache write", parts.cacheWrite),
+            item("Output visible", parts.outputVisible),
+            item("Reasoning", parts.reasoning),
+        ].joined(separator: " · ")
     }
 }
 

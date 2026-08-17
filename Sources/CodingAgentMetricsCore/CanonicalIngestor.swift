@@ -20,7 +20,9 @@ public struct CanonicalIngestor: Sendable {
                 outputTokens: observation.outputTokens,
                 measurementQuality: .measured,
                 authority: Self.authority(for: observation.schemaVersion),
-                definitionVersion: OutputThroughputDefinition.version
+                definitionVersion: OutputThroughputDefinition.version,
+                tokenParts: observation.tokenParts,
+                modelCallID: observation.modelCallID
             )
         }
     }

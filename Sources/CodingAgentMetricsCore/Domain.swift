@@ -67,3 +67,12 @@ public enum OutputThroughputDefinition {
     public static let windowSeconds = 180
     public static let version = "output-throughput-v1"
 }
+
+public enum TokenBurnDefinition {
+    public static let windowSeconds = 600
+    public static let version = "token-burn-v1"
+}
+
+public enum CallsDefinition {
+    public static let version = "calls-per-minute-v1"
+}

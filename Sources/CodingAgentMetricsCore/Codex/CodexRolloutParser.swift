@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public enum CodexRolloutParser {
-    public static let semanticVersion = "1.0.0"
+    public static let semanticVersion = "1.1.0"
     public static let schemaVersion = "codex-rollout-v1"
     public static let sourceID = "codex"
     public static let authority = "codex-rollout-token-count"
@@ -100,8 +100,10 @@ public enum CodexRolloutParser {
         switch eventType {
         case "token_count":
             let info = payload["info"] as? [String: Any] ?? [:]
-            let total = intValue((info["total_token_usage"] as? [String: Any])?["output_tokens"])
-            let last = intValue((info["last_token_usage"] as? [String: Any])?["output_tokens"])
+            let totalUsage = CodexRawTokenUsage((info["total_token_usage"] as? [String: Any]) ?? [:])
+            let lastUsage = CodexRawTokenUsage((info["last_token_usage"] as? [String: Any]) ?? [:])
+            let total = totalUsage.outputTotal
+            let last = lastUsage.outputTotal
             guard
                 let timestamp,
                 parseTimestamp(timestamp) != nil,
@@ -110,8 +112,8 @@ public enum CodexRolloutParser {
                 last.map({ $0 >= 0 }) ?? true
             else { return .unknownSchema }
             return .tokenCount(
-                totalOutput: total,
-                lastOutput: last,
+                total: totalUsage,
+                last: lastUsage,
                 timestamp: timestamp,
                 ordinal: ordinal
             )
@@ -145,7 +147,23 @@ public enum ParsedRolloutLine: Equatable {
     case sessionMeta(id: String, timestamp: String?, ordinal: UInt64?)
     case turnContext(turnID: String?, model: String?, timestamp: String?, ordinal: UInt64?)
     case turnLifecycle(turnID: String, timestamp: String?, ordinal: UInt64?)
-    case tokenCount(totalOutput: Int, lastOutput: Int?, timestamp: String?, ordinal: UInt64?)
+    case tokenCount(total: CodexRawTokenUsage, last: CodexRawTokenUsage, timestamp: String?, ordinal: UInt64?)
     case ignored
     case unknownSchema
+}
+
+public struct CodexRawTokenUsage: Equatable, Sendable {
+    public var inputTotal: Int?
+    public var cachedInput: Int?
+    public var cacheWrite: Int?
+    public var outputTotal: Int?
+    public var reasoningOutput: Int?
+
+    init(_ values: [String: Any]) {
+        inputTotal = CodexRolloutParser.intValue(values["input_tokens"])
+        cachedInput = CodexRolloutParser.intValue(values["cached_input_tokens"])
+        cacheWrite = CodexRolloutParser.intValue(values["cache_write_input_tokens"])
+        outputTotal = CodexRolloutParser.intValue(values["output_tokens"])
+        reasoningOutput = CodexRolloutParser.intValue(values["reasoning_output_tokens"])
+    }
 }

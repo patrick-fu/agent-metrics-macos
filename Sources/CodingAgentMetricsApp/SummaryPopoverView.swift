@@ -3,7 +3,14 @@ import CodingAgentMetricsLifecycle
 import SwiftUI
 
 struct SummaryPopoverView: View {
+    private enum Activity: String, CaseIterable, Identifiable {
+        case burn = "Burn"
+        case calls = "Calls"
+        var id: String { rawValue }
+    }
+
     @State private var snapshot: LightSnapshot?
+    @State private var activity: Activity = .burn
     let lifecycleServices: AppLifecycleServices
     var loadSnapshot: (MetricFilter) -> LightSnapshot?
 
@@ -38,6 +45,17 @@ struct SummaryPopoverView: View {
                 count: presentation?.modelActiveCount ?? 0,
                 axis: .model
             )
+            HStack(spacing: 8) {
+                kpi(title: "Token Burn/min", value: presentation?.burnValueText ?? "Unavailable", unit: presentation?.burnUnitText ?? "tokens/min")
+                kpi(title: "Calls/min", value: presentation?.callsValueText ?? "Unavailable", unit: presentation?.callsUnitText ?? "calls/min")
+            }
+            Picker("Activity", selection: $activity) {
+                ForEach(Activity.allCases) { activity in
+                    Text(activity.rawValue).tag(activity)
+                }
+            }
+            .pickerStyle(.segmented)
+            activityDetail(presentation)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(presentation?.title ?? "Output Throughput")
@@ -66,6 +84,45 @@ struct SummaryPopoverView: View {
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private func activityDetail(_ presentation: LightSnapshotPresentation?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if activity == .burn {
+                Text("Burn composition")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(presentation?.burnCompositionText ?? "Unavailable")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    meta(title: "Quality", value: presentation?.burnQualityText ?? "Unavailable")
+                    meta(title: "State", value: presentation?.burnStateText ?? "Absent")
+                    meta(title: "Coverage", value: presentation?.burnCoverageText ?? "Partial")
+                }
+            } else {
+                Text(presentation?.callsUnavailableReason ?? "Distinct stable Model Call IDs in the selected 10m window")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    meta(title: "Quality", value: presentation?.callsQualityText ?? "Unavailable")
+                    meta(title: "State", value: presentation?.callsStateText ?? "Unavailable")
+                    meta(title: "Coverage", value: presentation?.callsCoverageText ?? "Partial")
+                }
+            }
+        }
+    }
+
+    private func kpi(title: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
+            Text(unit).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color.primary.opacity(0.04))
     }
 
     private func filterRow(title: String, chips: [FilterChip], count: Int, axis: FilterAxis) -> some View {

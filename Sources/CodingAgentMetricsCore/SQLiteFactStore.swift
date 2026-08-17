@@ -27,10 +27,18 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 output_tokens INTEGER NOT NULL,
                 measurement_quality TEXT NOT NULL,
                 authority TEXT NOT NULL,
-                definition_version TEXT NOT NULL
+                definition_version TEXT NOT NULL,
+                input_uncached INTEGER,
+                cache_read INTEGER,
+                cache_write INTEGER,
+                output_visible INTEGER,
+                reasoning INTEGER,
+                normalized_burn_total INTEGER,
+                model_call_id TEXT
             );
             """
         )
+        try migrateUsageFacts()
         try exec(
             """
             CREATE TABLE IF NOT EXISTS source_states (
@@ -187,7 +195,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
             id, schema_version, coding_agent_raw, coding_agent_display,
             model_raw, model_display, session_id, turn_id, observed_at,
             output_tokens, measurement_quality, authority, definition_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            , input_uncached, cache_read, cache_write, output_visible, reasoning,
+            normalized_burn_total, model_call_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -207,6 +217,13 @@ public final class SQLiteFactStore: @unchecked Sendable {
         bind(statement, 11, fact.measurementQuality.rawValue)
         bind(statement, 12, fact.authority)
         bind(statement, 13, fact.definitionVersion)
+        bind(statement, 14, fact.tokenParts?.inputUncached)
+        bind(statement, 15, fact.tokenParts?.cacheRead)
+        bind(statement, 16, fact.tokenParts?.cacheWrite)
+        bind(statement, 17, fact.tokenParts?.outputVisible)
+        bind(statement, 18, fact.tokenParts?.reasoning)
+        bind(statement, 19, fact.tokenParts?.normalizedBurnTotal)
+        bind(statement, 20, fact.modelCallID)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw StoreError.insertFailed
         }
@@ -258,7 +275,16 @@ public final class SQLiteFactStore: @unchecked Sendable {
             outputTokens: Int(sqlite3_column_int64(statement, 9)),
             measurementQuality: quality,
             authority: text(statement, 11),
-            definitionVersion: text(statement, 12)
+            definitionVersion: text(statement, 12),
+            tokenParts: sqlite3_column_type(statement, 18) == SQLITE_NULL ? nil : TokenParts(
+                inputUncached: integer(statement, 13),
+                cacheRead: integer(statement, 14),
+                cacheWrite: integer(statement, 15),
+                outputVisible: integer(statement, 16),
+                reasoning: integer(statement, 17),
+                normalizedBurnTotal: integer(statement, 18)
+            ),
+            modelCallID: optionalText(statement, 19)
         )
     }
 
@@ -269,6 +295,43 @@ public final class SQLiteFactStore: @unchecked Sendable {
 
     private func bind(_ statement: OpaquePointer, _ index: Int32, _ value: String) {
         sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+    }
+
+    private func bind(_ statement: OpaquePointer, _ index: Int32, _ value: String?) {
+        guard let value else { sqlite3_bind_null(statement, index); return }
+        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+    }
+
+    private func bind(_ statement: OpaquePointer, _ index: Int32, _ value: Int?) {
+        guard let value else { sqlite3_bind_null(statement, index); return }
+        sqlite3_bind_int64(statement, index, Int64(value))
+    }
+
+    private func optionalText(_ statement: OpaquePointer, _ index: Int32) -> String? {
+        sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : text(statement, index)
+    }
+
+    private func integer(_ statement: OpaquePointer, _ index: Int32) -> Int? {
+        sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, index))
+    }
+
+    private func migrateUsageFacts() throws {
+        let additions = [
+            "input_uncached INTEGER", "cache_read INTEGER", "cache_write INTEGER",
+            "output_visible INTEGER", "reasoning INTEGER", "normalized_burn_total INTEGER",
+            "model_call_id TEXT",
+        ]
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(usage_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        var names = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW { names.insert(text(statement, 1)) }
+        for addition in additions {
+            let name = addition.split(separator: " ").first.map(String.init) ?? addition
+            if !names.contains(name) { try exec("ALTER TABLE usage_facts ADD COLUMN \(addition);") }
+        }
     }
 
     private func exec(_ sql: String) throws {

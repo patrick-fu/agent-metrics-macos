@@ -203,7 +203,8 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                 continue
             case .unknownSchema:
                 diagnostics.append(SourceDiagnostic(code: "UNKNOWN_SCHEMA", sourceID: sourceID))
-            case let .messageTotal(identity, sessionID, model, total, timestamp):
+            case let .messageTotal(identity, sessionID, model, usage, timestamp):
+                guard let total = usage.outputTotal else { continue }
                 if !forceRebuild && state.sessionFallbackSessions.contains(sessionID) {
                     requiresSourceRebuild = true
                     break
@@ -222,6 +223,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                             turnID: identity,
                             model: ModelIdentity(raw: model, display: model),
                             outputTokens: total,
+                            tokenParts: deltaParts(usage: usage, keyPrefix: key, state: &state, reset: true),
                             timestamp: timestamp,
                             clock: clock
                         )
@@ -238,6 +240,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                         turnID: identity,
                         model: ModelIdentity(raw: model, display: model),
                         outputTokens: total - watermark,
+                        tokenParts: deltaParts(usage: usage, keyPrefix: key, state: &state),
                         timestamp: timestamp,
                         clock: clock
                     )
@@ -312,6 +315,7 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         turnID: String,
         model: ModelIdentity,
         outputTokens: Int,
+        tokenParts: TokenParts? = nil,
         timestamp: String?,
         clock: any Clock
     ) {
@@ -324,8 +328,35 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             sessionID: sessionID,
             turnID: turnID,
             observedAt: ClaudeTranscriptParser.parseTimestamp(timestamp)!,
-            outputTokens: outputTokens
+            outputTokens: outputTokens,
+            tokenParts: tokenParts
         ))
+    }
+
+    /// Anthropic usage fields are additive/disjoint.  It does not expose a
+    /// visible-vs-reasoning split, but its normalized burn total includes the
+    /// whole output count exactly once.
+    private func deltaParts(usage: ClaudeRawTokenUsage, keyPrefix: String, state: inout SourceState, reset: Bool = false) -> TokenParts? {
+        guard let input = usage.inputUncached, let write = usage.cacheWrite,
+              let read = usage.cacheRead, let output = usage.outputTotal else { return nil }
+        func delta(_ value: Int, _ name: String) -> Int {
+            let key = "\(keyPrefix):\(name)"
+            let watermark = reset ? 0 : (state.watermarks[key] ?? 0)
+            state.watermarks[key] = value
+            return max(0, value - watermark)
+        }
+        let inputDelta = delta(input, "input")
+        let writeDelta = delta(write, "write")
+        let readDelta = delta(read, "read")
+        let outputDelta = delta(output, "output")
+        return TokenParts(
+            inputUncached: inputDelta,
+            cacheRead: readDelta,
+            cacheWrite: writeDelta,
+            outputVisible: nil,
+            reasoning: nil,
+            normalizedBurnTotal: inputDelta + writeDelta + readDelta + outputDelta
+        )
     }
 
     private func clearWatermarks(for identity: String, state: inout SourceState) {

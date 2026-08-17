@@ -153,6 +153,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         }
         if rebuiltFile {
             startOffset = 0
+            state.watermarks = state.watermarks.filter { key, _ in key != file.identity && !key.hasPrefix("\(file.identity):") }
             state.watermarks[file.identity] = 0
         }
 
@@ -192,7 +193,8 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 }
             case let .turnLifecycle(turnID, _, _):
                 context.turnID = turnID
-            case let .tokenCount(totalOutput, _, timestamp, ordinal):
+            case let .tokenCount(total, _, timestamp, ordinal):
+                guard let totalOutput = total.outputTotal else { continue }
                 let watermark = state.watermarks[file.identity] ?? 0
                 if totalOutput < watermark {
                     if forceRebuild {
@@ -204,6 +206,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                                     ordinal: ordinal ?? UInt64(ordinalFallback),
                                     context: context,
                                     outputTokens: totalOutput,
+                                    tokenParts: deltaParts(total: total, fileIdentity: file.identity, state: &state, reset: true),
                                     timestamp: timestamp,
                                     clock: clock
                                 )
@@ -220,6 +223,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                             ordinal: ordinal ?? UInt64(ordinalFallback),
                             context: context,
                             outputTokens: totalOutput - watermark,
+                            tokenParts: deltaParts(total: total, fileIdentity: file.identity, state: &state),
                             timestamp: timestamp,
                             clock: clock
                         )
@@ -255,6 +259,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         ordinal: UInt64,
         context: FileParseContext,
         outputTokens: Int,
+        tokenParts: TokenParts? = nil,
         timestamp: String?,
         clock: any Clock
     ) -> UsageObservation {
@@ -266,7 +271,32 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             sessionID: context.sessionID,
             turnID: context.turnID,
             observedAt: CodexRolloutParser.parseTimestamp(timestamp)!,
-            outputTokens: outputTokens
+            outputTokens: outputTokens,
+            tokenParts: tokenParts
+        )
+    }
+
+    /// Rollout counts are cumulative.  Cache write deliberately stays nil: its
+    /// relationship to input tokens is not documented, so it is never added.
+    private func deltaParts(total: CodexRawTokenUsage, fileIdentity: String, state: inout SourceState, reset: Bool = false) -> TokenParts? {
+        guard let input = total.inputTotal, let cached = total.cachedInput,
+              let output = total.outputTotal, let reasoning = total.reasoningOutput else { return nil }
+        func delta(_ value: Int, _ key: String) -> Int {
+            let watermark = reset ? 0 : (state.watermarks["\(fileIdentity):\(key)"] ?? 0)
+            state.watermarks["\(fileIdentity):\(key)"] = value
+            return max(0, value - watermark)
+        }
+        let inputDelta = delta(input, "input")
+        let cacheDelta = delta(cached, "cached")
+        let outputDelta = delta(output, "output")
+        let reasoningDelta = delta(reasoning, "reasoning")
+        return TokenParts(
+            inputUncached: max(0, inputDelta - cacheDelta),
+            cacheRead: cacheDelta,
+            cacheWrite: nil,
+            outputVisible: max(0, outputDelta - reasoningDelta),
+            reasoning: reasoningDelta,
+            normalizedBurnTotal: max(0, inputDelta - cacheDelta) + cacheDelta + max(0, outputDelta - reasoningDelta) + reasoningDelta
         )
     }
 

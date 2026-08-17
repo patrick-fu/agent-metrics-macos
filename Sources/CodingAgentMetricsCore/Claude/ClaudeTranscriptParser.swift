@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public enum ClaudeTranscriptParser {
-    public static let semanticVersion = "1.0.0"
+    public static let semanticVersion = "1.1.0"
     public static let schemaVersion = "claude-code-transcript-v1"
     public static let sourceID = "claude-code"
     public static let authority = "claude-code-transcript-usage"
@@ -51,7 +51,7 @@ public enum ClaudeTranscriptParser {
                 identity: uuid,
                 sessionID: sessionID,
                 model: model,
-                outputTokens: outputTokens,
+                usage: ClaudeRawTokenUsage(usage),
                 timestamp: timestamp
             )
         case "system":
@@ -83,7 +83,7 @@ public enum ClaudeTranscriptParser {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func intValue(_ value: Any?) -> Int? {
+    static func intValue(_ value: Any?) -> Int? {
         switch value {
         case is Bool:
             return nil
@@ -99,8 +99,22 @@ public enum ClaudeTranscriptParser {
 }
 
 public enum ParsedClaudeTranscriptLine: Equatable {
-    case messageTotal(identity: String, sessionID: String, model: String, outputTokens: Int, timestamp: String?)
+    case messageTotal(identity: String, sessionID: String, model: String, usage: ClaudeRawTokenUsage, timestamp: String?)
     case sessionTotal(sessionID: String, outputTokens: Int, timestamp: String?)
     case ignored
     case unknownSchema
+}
+
+public struct ClaudeRawTokenUsage: Equatable, Sendable {
+    public var inputUncached: Int?
+    public var cacheWrite: Int?
+    public var cacheRead: Int?
+    public var outputTotal: Int?
+
+    init(_ values: [String: Any]) {
+        inputUncached = ClaudeTranscriptParser.intValue(values["input_tokens"])
+        cacheWrite = ClaudeTranscriptParser.intValue(values["cache_creation_input_tokens"])
+        cacheRead = ClaudeTranscriptParser.intValue(values["cache_read_input_tokens"])
+        outputTotal = ClaudeTranscriptParser.intValue(values["output_tokens"])
+    }
 }

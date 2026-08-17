@@ -19,12 +19,124 @@ public struct SnapshotBuilder: Sendable {
                 sourceHealth: relevantHealth,
                 scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
             ),
+            tokenBurn: tokenBurn(
+                facts: allFacts.filter(filter.includes),
+                now: now,
+                coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
+                sourceHealth: relevantHealth,
+                scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
+            ),
+            calls: calls(
+                facts: allFacts.filter(filter.includes),
+                now: now,
+                coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
+                sourceHealth: relevantHealth,
+                scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
+            ),
             codingAgents: uniqueAgents(in: allFacts),
             modelIdentities: uniqueModels(in: allFacts),
             filter: filter,
             generatedAt: now,
             sourceHealth: sourceHealth
         )
+    }
+
+    private func tokenBurn(
+        facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
+    ) -> TokenBurnMetric {
+        let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
+        let capable = selectedAuthorities(in: contributing.filter { $0.tokenParts?.normalizedBurnTotal != nil })
+        guard !capable.isEmpty else {
+            let state: DataState = (!sourceHealth.isEmpty && sourceHealth.allSatisfy { !$0.isHealthy }) ? .unavailable : (contributing.isEmpty ? (facts.isEmpty ? .absent : .stale) : .unavailable)
+            return unavailableBurn(state: state, coverage: coverage, authority: authority(in: facts) ?? "unavailable", scope: scope)
+        }
+        let parts = merge(parts: capable.compactMap(\.tokenParts))
+        let total = capable.compactMap { $0.tokenParts?.normalizedBurnTotal }.reduce(0, +)
+        let isPartial = coverage == .partial || capable.count != contributing.count || !parts.isComplete
+        var metric = TokenBurnMetric(
+            parts: TokenParts(
+                inputUncached: parts.inputUncached,
+                cacheRead: parts.cacheRead,
+                cacheWrite: parts.cacheWrite,
+                outputVisible: parts.outputVisible,
+                reasoning: parts.reasoning,
+                normalizedBurnTotal: total
+            ),
+            windowSeconds: TokenBurnDefinition.windowSeconds,
+            coverage: isPartial ? .partial : .complete,
+            sourceAuthority: authority(in: capable) ?? "unavailable"
+        )
+        metric.scope = scope
+        return metric
+    }
+
+    private func calls(
+        facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
+    ) -> CallsMetric {
+        let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
+        let supported = selectedAuthorities(in: contributing.filter { $0.modelCallID != nil })
+        guard !supported.isEmpty else {
+            var metric = CallsMetric(modelCallIDs: [], capabilityAvailable: false, sourceAuthority: authority(in: facts) ?? "unavailable")
+            metric.coverage = coverage == .partial ? .partial : .partial
+            metric.scope = scope
+            if !facts.isEmpty && facts.allSatisfy({ $0.observedAt < now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) }) {
+                metric.dataState = .stale
+            }
+            return metric
+        }
+        let identities = supported.compactMap { fact -> String? in
+            guard let id = fact.modelCallID, !id.isEmpty else { return nil }
+            return "\(fact.codingAgent.rawValue):\(id)"
+        }
+        var metric = CallsMetric(modelCallIDs: identities, capabilityAvailable: true, sourceAuthority: authority(in: supported) ?? "unavailable")
+        metric.coverage = coverage == .partial ? .partial : .complete
+        metric.scope = scope
+        return metric
+    }
+
+    private func unavailableBurn(state: DataState, coverage: Coverage, authority: String, scope: OutputThroughputScope) -> TokenBurnMetric {
+        TokenBurnMetric(
+            tokensPerMinute: nil,
+            selectedBurnTokens: nil,
+            parts: nil,
+            windowSeconds: TokenBurnDefinition.windowSeconds,
+            measurementQuality: .unavailable,
+            dataState: state,
+            coverage: coverage,
+            definitionVersion: TokenBurnDefinition.version,
+            sourceAuthority: authority,
+            scope: scope
+        )
+    }
+
+    private func merge(parts: [TokenParts]) -> TokenParts {
+        func sum(_ values: [Int?]) -> Int? { values.allSatisfy { $0 != nil } ? values.compactMap { $0 }.reduce(0, +) : nil }
+        return TokenParts(
+            inputUncached: sum(parts.map(\.inputUncached)),
+            cacheRead: sum(parts.map(\.cacheRead)),
+            cacheWrite: sum(parts.map(\.cacheWrite)),
+            outputVisible: sum(parts.map(\.outputVisible)),
+            reasoning: sum(parts.map(\.reasoning))
+        )
+    }
+
+    /// Enhanced request observations replace a matching fallback observation as
+    /// one whole fact.  Facts without a durable call identity are intentionally
+    /// not stitched or guessed at this seam.
+    private func selectedAuthorities(in facts: [UsageFact]) -> [UsageFact] {
+        let grouped = Dictionary(grouping: facts) { fact -> String in
+            guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else { return fact.id }
+            return "\(fact.codingAgent.rawValue):\(modelCallID)"
+        }
+        return grouped.values.compactMap { candidates in
+            candidates.sorted { authorityRank($0.authority) > authorityRank($1.authority) }.first
+        }
+    }
+
+    private func authorityRank(_ authority: String) -> Int {
+        let normalized = authority.lowercased()
+        if normalized.contains("otel") || normalized.contains("live") || normalized.contains("enhanced") { return 2 }
+        return 1
     }
 
     private func outputThroughput(
