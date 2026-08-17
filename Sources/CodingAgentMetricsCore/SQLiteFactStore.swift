@@ -64,18 +64,110 @@ public final class SQLiteFactStore: @unchecked Sendable {
     init(
         url: URL,
         resetCleanupOperations: ResetCleanupOperations,
-        capacityReclaimProbe: (() -> Void)? = nil
+        capacityReclaimProbe: (() -> Void)? = nil,
+        migrationOperations: DatabaseMigrationOperations = .live
     ) throws {
-        databaseURL = url
+        let location = try PinnedDatabaseLocation(databaseURL: url)
+        _ = try DatabaseMigrationPreflight.inspect(at: location)
+        try migrationOperations.checkpoint(.initialPreflightCompleted)
+        let upgradeLock = try DatabaseUpgradeLock.acquire(for: location)
+        defer { upgradeLock.release() }
+        databaseURL = location.databaseURL
         self.resetCleanupOperations = resetCleanupOperations
         self.capacityReclaimProbe = capacityReclaimProbe
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
-        let status = sqlite3_open_v2(url.path, &database, flags, nil)
+            | SQLITE_OPEN_NOFOLLOW
+        let status = sqlite3_open_v2(location.databaseURL.path, &database, flags, nil)
         guard status == SQLITE_OK, database != nil else {
             throw StoreError.openFailed(status)
         }
-        try exec("PRAGMA journal_mode=WAL;")
-        try exec("PRAGMA synchronous=NORMAL;")
+        var migrationBackup: MigrationBackup?
+        var migrationCommitted = false
+        var migrationStep: DatabaseMigrationStep?
+        do {
+            guard let database else { throw StoreError.openFailed(status) }
+            sqlite3_busy_timeout(database, 5_000)
+            try exec("BEGIN IMMEDIATE;")
+            let existingSchema = try DatabaseMigrationPreflight.inspect(database: database)
+            MigrationBackupManager.cleanupOrphanedBackups(databaseURL: location.databaseURL)
+            migrationStep = try DatabaseMigrationPlan.requiredStep(for: existingSchema)
+            if let migrationStep {
+                migrationBackup = try MigrationBackupManager.create(
+                    databaseURL: location.databaseURL,
+                    sourceVersion: migrationStep.sourceVersion,
+                    targetVersion: migrationStep.targetVersion,
+                    checkpoint: migrationOperations.checkpoint,
+                    writeManifest: migrationOperations.writeBackupManifest
+                )
+                try migrationOperations.checkpoint(.backupVerified)
+            }
+
+            switch existingSchema {
+            case .new:
+                try installCanonicalSchema(migrationOperations: nil)
+            case .legacy, .versioned(0):
+                guard migrationStep == .legacyToVersion1 else {
+                    throw StoreError.invalidDatabaseSchemaMetadata
+                }
+                try installCanonicalSchema(migrationOperations: migrationOperations)
+                migrationCommitted = true
+                if let migrationBackup {
+                    try? MigrationBackupManager.mark(migrationBackup, status: .migrationSucceeded)
+                }
+                MigrationBackupManager.reconcileReadyBackups(
+                    databaseURL: location.databaseURL,
+                    currentVersion: DatabaseSchema.currentVersion
+                )
+                MigrationBackupManager.cleanupVerifiedBackups(databaseURL: location.databaseURL)
+            case .versioned(DatabaseSchema.currentVersion):
+                try validateCanonicalSchema()
+                try exec("COMMIT;")
+                MigrationBackupManager.reconcileReadyBackups(
+                    databaseURL: location.databaseURL,
+                    currentVersion: DatabaseSchema.currentVersion
+                )
+                MigrationBackupManager.cleanupVerifiedBackups(databaseURL: location.databaseURL)
+            case .versioned:
+                throw StoreError.invalidDatabaseSchemaMetadata
+            }
+            try exec("PRAGMA journal_mode=WAL;")
+            try exec("PRAGMA synchronous=NORMAL;")
+            _ = try? retryPendingResetCleanup()
+        } catch {
+            try? exec("ROLLBACK;")
+            if let migrationBackup, !migrationCommitted {
+                try? MigrationBackupManager.mark(migrationBackup, status: .migrationFailed)
+            }
+            sqlite3_close(database)
+            database = nil
+            if migrationBackup != nil, !migrationCommitted {
+                let failedStep = migrationStep ?? .legacyToVersion1
+                throw StoreError.databaseMigrationFailed(StoreMigrationFailure(
+                    sourceSchemaVersion: failedStep.sourceVersion,
+                    targetSchemaVersion: failedStep.targetVersion,
+                    backupAvailable: true
+                ))
+            }
+            throw error
+        }
+    }
+
+    private func installCanonicalSchema(migrationOperations: DatabaseMigrationOperations?) throws {
+        do {
+            try createCanonicalSchema()
+            try writeDatabaseSchemaVersion(DatabaseSchema.currentVersion)
+            try migrationOperations?.checkpoint(.schemaChangesApplied)
+            try validateCanonicalSchema()
+            try migrationOperations?.checkpoint(.schemaValidated)
+            try migrationOperations?.checkpoint(.willCommit)
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func createCanonicalSchema() throws {
         try exec(
             """
             CREATE TABLE IF NOT EXISTS usage_facts (
@@ -132,7 +224,6 @@ public final class SQLiteFactStore: @unchecked Sendable {
         try createTelemetryTableRegistry()
         try createResetCleanupJournalTable()
         try createTelemetryResetMetadataTable()
-        _ = try? retryPendingResetCleanup()
     }
 
     deinit {
@@ -1227,9 +1318,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
         guard sqlite3_prepare_v2(database, "PRAGMA table_info(usage_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
             throw StoreError.prepareFailed
         }
-        defer { sqlite3_finalize(statement) }
         var names = Set<String>()
         while sqlite3_step(statement) == SQLITE_ROW { names.insert(text(statement, 1)) }
+        sqlite3_finalize(statement)
         for addition in additions {
             let name = addition.split(separator: " ").first.map(String.init) ?? addition
             if !names.contains(name) { try exec("ALTER TABLE usage_facts ADD COLUMN \(addition);") }
@@ -1332,9 +1423,100 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            INSERT OR IGNORE INTO schema_metadata (key, value) VALUES ('schema_version', 'retention-v1');
             """
         )
+    }
+
+    private func writeDatabaseSchemaVersion(_ version: Int) throws {
+        try exec("DELETE FROM schema_metadata WHERE key = 'schema_version';")
+        var statement: OpaquePointer?
+        let sql = "INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?);"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, DatabaseSchema.metadataKey)
+        bind(statement, 2, String(version))
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.insertFailed }
+    }
+
+    private func validateCanonicalSchema() throws {
+        let requiredColumns: [String: Set<String>] = [
+            "usage_facts": [
+                "id", "schema_version", "observed_at", "output_tokens", "source_id", "superseded_by",
+            ],
+            "performance_facts": [
+                "stable_request_id", "coding_agent_raw", "measurement_granularity", "source_id",
+                "measurement_quality",
+            ],
+            "source_states": ["source_id", "payload"],
+            "daily_usage_rollups": ["id", "bucket_start", "coverage", "sample_count"],
+            "retention_metadata": ["singleton", "ingestion_paused", "diagnostic_code"],
+            "schema_metadata": ["key", "value"],
+            "app_managed_artifacts": ["path", "kind"],
+            "telemetry_table_registry": ["table_name"],
+            "reset_cleanup_journal": ["id", "kind", "path"],
+            "telemetry_reset_metadata": ["singleton", "cutoff"],
+        ]
+        let requiredPrimaryKeys: [String: [String]] = [
+            "usage_facts": ["id"],
+            "performance_facts": ["coding_agent_raw", "stable_request_id", "measurement_granularity"],
+            "daily_usage_rollups": ["id"],
+        ]
+        for (table, required) in requiredColumns {
+            guard try tableExists(table) else { throw StoreError.databaseSchemaValidationFailed }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                throw StoreError.databaseSchemaValidationFailed
+            }
+            var actual = Set<String>()
+            var primaryKeyColumns: [(Int, String)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let column = text(statement, 1)
+                actual.insert(column)
+                let primaryKeyOrder = Int(sqlite3_column_int(statement, 5))
+                if primaryKeyOrder > 0 { primaryKeyColumns.append((primaryKeyOrder, column)) }
+            }
+            sqlite3_finalize(statement)
+            guard required.isSubset(of: actual) else { throw StoreError.databaseSchemaValidationFailed }
+            if let expectedPrimaryKey = requiredPrimaryKeys[table] {
+                let actualPrimaryKey = primaryKeyColumns.sorted { $0.0 < $1.0 }.map(\.1)
+                guard actualPrimaryKey == expectedPrimaryKey else {
+                    throw StoreError.databaseSchemaValidationFailed
+                }
+            }
+        }
+
+        let requiredIndexes = [
+            "usage_facts_observed_at", "usage_facts_source_observed_at",
+            "performance_facts_observed_at", "performance_facts_source_observed_at",
+            "daily_usage_rollups_bucket_start",
+        ]
+        for index in requiredIndexes {
+            var statement: OpaquePointer?
+            let sql = "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1;"
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                throw StoreError.databaseSchemaValidationFailed
+            }
+            bind(statement, 1, index)
+            let exists = sqlite3_step(statement) == SQLITE_ROW
+            sqlite3_finalize(statement)
+            guard exists else { throw StoreError.databaseSchemaValidationFailed }
+        }
+
+        var integrity: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA integrity_check;", -1, &integrity, nil) == SQLITE_OK,
+              let integrity else {
+            throw StoreError.databaseIntegrityCheckFailed
+        }
+        defer { sqlite3_finalize(integrity) }
+        guard sqlite3_step(integrity) == SQLITE_ROW, text(integrity, 0) == "ok",
+              sqlite3_step(integrity) == SQLITE_DONE else {
+            throw StoreError.databaseIntegrityCheckFailed
+        }
     }
 
     private func createManagedArtifactsTable() throws {
@@ -1929,29 +2111,27 @@ public final class SQLiteFactStore: @unchecked Sendable {
         let expected = ["coding_agent_raw", "stable_request_id", "measurement_granularity"]
         guard primaryKeyColumns.sorted(by: { $0.0 < $1.0 }).map(\.1) != expected else { return }
 
-        try exec("BEGIN IMMEDIATE;")
-        do {
-            try exec("ALTER TABLE performance_facts RENAME TO performance_facts_legacy;")
-            try createPerformanceFactsTable()
-            let sql = """
-            SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
-                   observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
-                   authority_tier, measurement_granularity, measurement_range_start, measurement_range_end,
-                   source_id, measurement_quality
-            FROM performance_facts_legacy;
-            """
-            var legacy: OpaquePointer?
-            guard sqlite3_prepare_v2(database, sql, -1, &legacy, nil) == SQLITE_OK, let legacy else {
-                throw StoreError.prepareFailed
-            }
-            defer { sqlite3_finalize(legacy) }
-            while sqlite3_step(legacy) == SQLITE_ROW { try insertPerformance(try performanceRow(legacy)) }
-            try exec("DROP TABLE performance_facts_legacy;")
-            try exec("COMMIT;")
-        } catch {
-            try? exec("ROLLBACK;")
-            throw error
+        try exec("ALTER TABLE performance_facts RENAME TO performance_facts_legacy;")
+        try createPerformanceFactsTable()
+        let sql = """
+        SELECT stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
+               observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
+               authority_tier, measurement_granularity, measurement_range_start, measurement_range_end,
+               source_id, measurement_quality
+        FROM performance_facts_legacy;
+        """
+        var legacyStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &legacyStatement, nil) == SQLITE_OK,
+              let legacyStatement else {
+            throw StoreError.prepareFailed
         }
+        do {
+            defer { sqlite3_finalize(legacyStatement) }
+            while sqlite3_step(legacyStatement) == SQLITE_ROW {
+                try insertPerformance(try performanceRow(legacyStatement))
+            }
+        }
+        try exec("DROP TABLE performance_facts_legacy;")
     }
 
     private func exec(_ sql: String) throws {
@@ -1971,6 +2151,12 @@ public enum StoreError: Error, Equatable {
     case artifactOutsideAppOwnedRoot(String)
     case unclassifiedResetTable(String)
     case invalidResetTableRegistration(String)
+    case invalidDatabaseSchemaMetadata
+    case incompatibleDatabaseSchema(StoreCompatibilityFailure)
+    case migrationBackupFailed(StoreMigrationBackupFailure)
+    case databaseSchemaValidationFailed
+    case databaseIntegrityCheckFailed
+    case databaseMigrationFailed(StoreMigrationFailure)
 }
 
 private func escapeSQL(_ value: String) -> String {

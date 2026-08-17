@@ -84,7 +84,8 @@ public final class TelemetryRuntime: @unchecked Sendable {
         clock: any Clock = SystemClock(),
         receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration(),
         retentionPolicy: RetentionPolicy = RetentionPolicy(),
-        beforePersistingPerformance: (@Sendable () -> Void)?
+        beforePersistingPerformance: (@Sendable () -> Void)?,
+        beforeStartingReceiver: (() -> Void)? = nil
     ) throws {
         self.clock = clock
         let store = try SQLiteFactStore(url: storeURL)
@@ -94,6 +95,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
         self.receiverConfiguration = receiverConfiguration
         self.beforePersistingPerformance = beforePersistingPerformance
         if receiverConfiguration.isEnabled {
+            beforeStartingReceiver?()
             try setEnhancedTelemetryEnabled(true)
         }
     }
