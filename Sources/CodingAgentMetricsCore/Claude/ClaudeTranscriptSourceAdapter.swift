@@ -108,6 +108,14 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                     health: SourceHealth(sourceID: sourceID, isHealthy: true)
                 )
             }
+            if result.rebuiltFile, !forceRebuild, !working.diagnosticCodes.isEmpty {
+                return SourceScan(
+                    observations: [],
+                    state: working,
+                    rebuildSource: true,
+                    health: SourceHealth(sourceID: sourceID, isHealthy: true)
+                )
+            }
             if result.rebuiltFile { rebuiltFileIdentities.append(file.identity) }
             diagnostics.append(contentsOf: result.diagnostics)
             for observation in result.observations where seen.insert(observation.observationIdentity).inserted {

@@ -314,6 +314,35 @@ struct ClaudeTranscriptIngestTests {
         #expect(runtime.sourceHealth.contains { $0.sourceID == "claude-code" && $0.diagnosticCode == "UNKNOWN_SCHEMA" && !$0.isHealthy })
     }
 
+    @Test func replacingAnUnknownTranscriptWithLegalContentClearsTheDurableDiagnostic() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeTranscript(lines: [
+            """
+            {"type":"experimental_usage_v9","sessionId":"01900000-0000-7000-8000-000000000021","timestamp":"2026-04-15T12:00:10.000Z","usage":{"output_tokens":9999}}
+            """,
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.dataState == .unavailable)
+        #expect(runtime.sourceHealth == [
+            SourceHealth(sourceID: "claude-code", isHealthy: false, diagnosticCode: "UNKNOWN_SCHEMA"),
+        ])
+
+        try home.writeTranscript(lines: [userLine(), assistantLine(outputTokens: 1800)], terminated: true)
+        let recovered = try runtime.lightSnapshot()
+        #expect(recovered.outputThroughput.selectedOutputTokens == 1800)
+        #expect(recovered.outputThroughput.coverage == .complete)
+        #expect(runtime.sourceHealth == [SourceHealth(sourceID: "claude-code", isHealthy: true)])
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code")?.diagnosticCodes.isEmpty == true)
+    }
+
     @Test func disappearedTranscriptKeepsFactsAndCursorUntilItReturns() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempClaudeHome()
