@@ -49,8 +49,8 @@
   <div class="wrap">
     <section class="intro">
       <span class="mark">临时原型 · 仅合成数据 · 可丢弃</span>
-      <h1>持久 SQLite 该留多少 Usage Facts？</h1>
-      <p>20k 是热查询工作集，不是数据库保留策略。源日志消失不等于库应删除。容量硬顶按 bytes 或 rows 先到者触发：superseded → &gt;90d 原子 compact → 最旧 rollup（Coverage=partial）→ 7–90d raw。7 天保护窗超限则暂停 ingest，不静默删。Reset Data 清全部 App 遥测，不改源日志，也不保证删掉用户另存的导出。</p>
+      <h1>已接受：保留全部 raw，直到容量硬顶</h1>
+      <p>P0 默认是策略 A：不按 90 天定时 compact，也没有 retention 设置。20k 仍是热查询工作集。源日志消失不删历史。硬顶才走：superseded → &gt;90d 可重复原子 compact → 最旧 rollup（partial）→ 7–90d raw。7 天保护窗超限则暂停 ingest。Reset Data 清全部 App 遥测，不改源日志，也不保证删掉用户另存的导出。</p>
       <p class="note">本页只推动保留策略状态机。字节与查询区间来自本地 Node/SQLite harness，不是 AppKit 数字，也不是 fleet SLO。</p>
     </section>
 

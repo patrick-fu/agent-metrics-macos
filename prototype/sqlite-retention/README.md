@@ -2,7 +2,7 @@
 
 THROW AWAY prototype for [Measure SQLite growth and set retention](https://github.com/patrick-fu/coding-agent-metrics/issues/10).
 
-This is not the production AppKit/SwiftUI app. It measures a synthetic-only SQLite WAL store of canonical Usage Facts and compares mutually exclusive retention strategies. The accepted 20k fact budget from issue 7 is the hot/query working set, not persistent retention.
+This is not the production AppKit/SwiftUI app. It measures a synthetic-only SQLite WAL store of canonical Usage Facts. [Measure SQLite growth and set retention](https://github.com/patrick-fu/coding-agent-metrics/issues/10) accepted candidate A: keep all raw Usage Facts until a bytes-or-rows ceiling. The accepted 20k fact budget from issue 7 is the hot/query working set, not persistent retention.
 
 ## Run
 
@@ -35,7 +35,7 @@ The first command writes `results/benchmark-results.md`, `results/benchmark-resu
 - Capacity ceiling: bytes or rows, superseded then 90d compact, then oldest rollup, then 7-90d raw, then pause rather than delete the 7d window
 - 90d compaction is repeat-safe: upsert/merge only buckets with new raw, never wipe existing rollups
 - Reset Data wipes all App-owned telemetry and never touches source logs or user-saved external exports
-- Three mutually exclusive retention candidates in `CANDIDATES.md`
+- Accepted candidate A is recorded in `CANDIDATES.md`; B and C remain rejected alternatives
 
 ## Privacy
 

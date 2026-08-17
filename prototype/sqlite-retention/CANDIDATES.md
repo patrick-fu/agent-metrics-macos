@@ -2,7 +2,7 @@
 
 THROW AWAY decision aid for [Measure SQLite growth and set retention](https://github.com/patrick-fu/coding-agent-metrics/issues/10).
 
-These three strategies are mutually exclusive. Measured Node/`node:sqlite` ranges in `results/benchmark-results.md` are one Apple silicon developer Mac. They are not AppKit, Swift, fleet, or release-contract facts. 20k facts remains the hot/query working set from issue 7; it is not a retention policy.
+Accepted: **candidate A**. B and C remain recorded alternatives only. Measured Node/`node:sqlite` ranges in `results/benchmark-results.md` are one Apple silicon developer Mac. They are not AppKit, Swift, fleet, or release-contract facts. 20k facts remains the hot/query working set from issue 7; it is not a retention policy.
 
 Local repeats: 10k and 100k five full runs; 1m five load/query runs and three mutation runs.
 
@@ -26,17 +26,17 @@ At 10k, B and C can be slightly larger than A because daily rollup cardinality d
 
 Query path vs retention: the 1m All raw scan (6.1–6.5 s) and even the 7d raw scan (2.26–2.45 s) are too slow for a UI thread. That is already decided by issue 7: live detail must use a 20k hot/query working set or a pre-aggregated path. Those timings are not a reason to delete history. They are a reason to keep historical queries off the UI thread.
 
-## A. Unlimited raw, optional capacity ceiling
+## A. Keep all raw until a capacity ceiling — accepted
 
 Keep every contributing Usage Fact until a byte **or** row ceiling, whichever hits first. Hitting the ceiling does not jump to oldest contributing facts. It runs the shared prune ladder below. All windows can recompute exact Decode TPS until that ladder starts pruning. Disappeared source logs still leave history intact.
 
-Tradeoff: file growth is linear at ~500 B/fact. 1m is already 502 MB on this machine. Backup and VACUUM stay sub-second at 1m; source-scoped rebuild is 3.0–3.1 s and 90-day delete is 4.1–4.6 s. Choose A if All-history exact quantiles must remain possible.
+Tradeoff: file growth is linear at ~500 B/fact. 1m is already 502 MB on this machine. Backup and VACUUM stay sub-second at 1m; source-scoped rebuild is 3.0–3.1 s and 90-day delete is 4.1–4.6 s. Accepted as the P0 default: there is no scheduled 90-day compact, and there is no P0 retention setting.
 
-## B. 90-day raw + long-term rollup — recommended
+## B. 90-day raw + long-term rollup — not selected
 
 Keep raw facts for 90 days. Older contributing facts become daily rollups of mutually exclusive token parts, call counts, and fact counts. Exact Decode TPS stays available inside the 90-day raw window and is **unavailable** for All-history. All / 1y Token Burn and Output Throughput stay answerable only as rollup totals, not as exact quantiles.
 
-Why recommend B as the P0 default:
+Why this was the earlier measurement-backed alternative, not the accepted default:
 
 - The accepted P0 performance windows are 15m / 1h / 24h / 7d. 90 days keeps a buffer beyond that window and beyond Claude Code's default 30-day source-log lifetime.
 - On this recency-biased 1m snapshot, B already saves 132 MB versus A. A uniform long history would save more.
@@ -87,23 +87,19 @@ Reset Data is a privacy wipe of **all App-owned telemetry**, not just facts/roll
 
 Keep schema / migration metadata and non-telemetry preferences. Never modify source Codex or Claude Code logs. Files the user already saved outside the app cannot be deleted by the app; the confirmation copy must say so.
 
-## P0 choices for Patrick
+## Accepted P0 choices
 
-Do not treat these as closed.
-
-1. Default retention: A, **B (recommended)**, or C.
-2. User-visible control in P0: no setting (**recommended**), or expose A/B/C.
-3. Capacity warning / ceiling: accept the bytes-or-rows trigger and the prune ladder above (**recommended**).
-4. Delete order is no longer a free menu. The ladder in this file is the P0 candidate.
+1. Default retention: **A**. Keep all canonical Usage Facts. Do not schedule a 90-day compact. Do not copy source rollout/JSONL. Do not store prompts, code, or tool output.
+2. User-visible retention control in P0: **none**.
+3. Capacity: warn at 750 MiB or 1.5 million logical facts, whichever arrives first. Hard ceiling at 1 GiB or 2 million logical facts, whichever arrives first.
+4. The prune ladder above runs **only after the hard ceiling**. It is not a scheduled retention job.
 5. Can a rollup recompute exact Decode TPS? **No**, unless the raw samples are still stored.
-6. Reset Data: the expanded privacy wipe above (**recommended**).
+6. Reset Data: the expanded privacy wipe above.
 7. Backup / VACUUM:
    - `VACUUM INTO` before any schema change (549–588 ms at 1m)
    - `incremental_vacuum` after every compact (97–114 ms at 1m) — it is not a substitute for reclaiming space
    - full `VACUUM` after a compact or delete that leaves more than about 10% bloat (720–790 ms at 1m; 90d delete then incremental_vacuum left 468 MB / 712 B/fact, and VACUUM brought it back to 330 MB / 502 B/fact)
 
-## Suggested acceptance statement
+## Accepted statement
 
-If B is accepted:
-
-> Accept candidate B as the P0 SQLite retention default: keep raw Usage Facts for 90 days, roll older contributing facts into daily mutually exclusive token totals, and treat exact Decode TPS as available only while raw samples remain. Keep the 20k fact budget as the hot/query working set, not as retention. Do not delete canonical facts when a source log later disappears; mark `log_present=0` and degrade live Coverage / Data State instead. Warn at 750 MiB or 1.5 million facts and enforce a 1 GiB or 2 million fact ceiling on whichever limit arrives first. On the hard ceiling, delete superseded facts, atomically compact raw older than 90 days, then prune oldest rollups (marking historical Coverage partial and recording `retention_pruned_before` / earliest retained timestamp), then prune 7–90 day raw if still over. Never silently delete the 7-day protected raw window; if that window itself exceeds the ceiling, pause ingest and emit `CAPACITY_PROTECTED_WINDOW`. Reset Data wipes all App-owned telemetry (facts, observations, rollups, cursors, watermarks, source state, opaque identities, diagnostics, snapshots, caches, migration backups, and App-managed export copies), keeps schema metadata and non-telemetry preferences, does not modify source Coding Agent logs, and must warn that user-saved external exports cannot be deleted by the app. Backup with `VACUUM INTO` before schema changes, run `incremental_vacuum` after compact, and run a full `VACUUM` after large deletes. Treat the Node timings as local evidence, not a fleet SLO.
+> Accept candidate A as the P0 SQLite retention default: keep all canonical Usage Facts; do not schedule a 90-day compact; do not copy source rollout or JSONL files; and do not store prompts, code, or tool output. P0 has no retention setting. Warn at 750 MiB or 1.5 million logical facts and enforce a 1 GiB or 2 million fact hard ceiling on whichever limit arrives first. The 20k fact budget remains the hot/query working set, not retention. Do not delete canonical facts when a source log later disappears; mark `log_present=0` and degrade live Coverage / Data State instead. All-history exact performance quantiles stay available until the hard ceiling. After the ceiling, run the verified ladder only: delete superseded facts, repeat-safe atomic compact of raw older than 90 days, then prune oldest rollups (mark historical Coverage partial and record `retention_pruned_before` / `earliest_retained_at`), then prune 7–90 day raw if still over. Never silently delete the 7-day protected raw window; if that window itself exceeds the ceiling, pause ingest and emit `CAPACITY_PROTECTED_WINDOW`. After any prune, mark remaining history partial or unavailable from the retained raw coverage; do not present it as complete. Reset Data wipes all App-owned telemetry, keeps schema metadata and non-telemetry preferences, does not modify source Coding Agent logs, and must warn that user-saved external exports cannot be deleted by the app. Treat the Node timings as local synthetic evidence, not a fleet SLO.
