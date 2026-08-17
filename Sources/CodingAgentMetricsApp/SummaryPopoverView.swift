@@ -102,9 +102,16 @@ struct SummaryPopoverView: View {
                     meta(title: "Coverage", value: presentation?.burnCoverageText ?? "Partial")
                 }
             } else {
-                Text(presentation?.callsUnavailableReason ?? "Distinct stable Model Call IDs in the selected 10m window")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(presentation?.callsDetailText ?? "Unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Text(presentation?.callsWindowLabel ?? "10m")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 8) {
                     meta(title: "Quality", value: presentation?.callsQualityText ?? "Unavailable")
                     meta(title: "State", value: presentation?.callsStateText ?? "Unavailable")

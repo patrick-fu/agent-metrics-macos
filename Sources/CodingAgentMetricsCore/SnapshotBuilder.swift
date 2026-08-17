@@ -45,14 +45,17 @@ public struct SnapshotBuilder: Sendable {
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> TokenBurnMetric {
         let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
-        let capable = selectedAuthorities(in: contributing.filter { $0.tokenParts?.normalizedBurnTotal != nil })
+        let authorityScoped = selectedAuthorities(in: contributing)
+        let capable = authorityScoped.filter { $0.tokenParts?.normalizedBurnTotal != nil }
         guard !capable.isEmpty else {
             let state: DataState = (!sourceHealth.isEmpty && sourceHealth.allSatisfy { !$0.isHealthy }) ? .unavailable : (contributing.isEmpty ? (facts.isEmpty ? .absent : .stale) : .unavailable)
             return unavailableBurn(state: state, coverage: coverage, authority: authority(in: facts) ?? "unavailable", scope: scope)
         }
         let parts = merge(parts: capable.compactMap(\.tokenParts))
         let total = capable.compactMap { $0.tokenParts?.normalizedBurnTotal }.reduce(0, +)
-        let isPartial = coverage == .partial || capable.count != contributing.count || !parts.isComplete
+        let hasSupportedSource = authorityScoped.contains { $0.tokenParts != nil }
+        let hasUnsupportedSource = authorityScoped.contains { $0.tokenParts == nil }
+        let isPartial = coverage == .partial || (hasSupportedSource && hasUnsupportedSource)
         var metric = TokenBurnMetric(
             parts: TokenParts(
                 inputUncached: parts.inputUncached,
@@ -73,23 +76,27 @@ public struct SnapshotBuilder: Sendable {
     private func calls(
         facts: [UsageFact], now: Date, coverage: Coverage, sourceHealth: [SourceHealth], scope: OutputThroughputScope
     ) -> CallsMetric {
-        let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) && $0.observedAt <= now }
-        let supported = selectedAuthorities(in: contributing.filter { $0.modelCallID != nil })
-        guard !supported.isEmpty else {
+        let contributing = facts.filter { $0.observedAt >= now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) && $0.observedAt <= now }
+        let authorityScopedFacts = selectedAuthorities(in: facts)
+        let capabilityAvailable = authorityScopedFacts.contains { $0.modelCallCapability == .available }
+        let hasUnavailableSource = authorityScopedFacts.contains { $0.modelCallCapability == .unavailable }
+        let metricCoverage: Coverage = coverage == .partial || (capabilityAvailable && hasUnavailableSource) ? .partial : .complete
+        guard capabilityAvailable else {
             var metric = CallsMetric(modelCallIDs: [], capabilityAvailable: false, sourceAuthority: authority(in: facts) ?? "unavailable")
-            metric.coverage = coverage == .partial ? .partial : .partial
+            metric.coverage = metricCoverage
             metric.scope = scope
-            if !facts.isEmpty && facts.allSatisfy({ $0.observedAt < now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)) }) {
+            if !facts.isEmpty && facts.allSatisfy({ $0.observedAt < now.addingTimeInterval(-TimeInterval(CallsDefinition.windowSeconds)) }) {
                 metric.dataState = .stale
             }
             return metric
         }
+        let supported = selectedAuthorities(in: contributing.filter { $0.modelCallCapability == .available })
         let identities = supported.compactMap { fact -> String? in
             guard let id = fact.modelCallID, !id.isEmpty else { return nil }
-            return "\(fact.codingAgent.rawValue):\(id)"
+            return "\(fact.sourceChannel.rawValue):\(fact.codingAgent.rawValue):\(id)"
         }
         var metric = CallsMetric(modelCallIDs: identities, capabilityAvailable: true, sourceAuthority: authority(in: supported) ?? "unavailable")
-        metric.coverage = coverage == .partial ? .partial : .complete
+        metric.coverage = metricCoverage
         metric.scope = scope
         return metric
     }
@@ -122,21 +129,27 @@ public struct SnapshotBuilder: Sendable {
 
     /// Enhanced request observations replace a matching fallback observation as
     /// one whole fact.  Facts without a durable call identity are intentionally
-    /// not stitched or guessed at this seam.
+    /// not stitched or guessed at this seam.  The source channel does not
+    /// isolate a cohort because fallback transcripts and enhanced telemetry
+    /// necessarily arrive from different channels.
     private func selectedAuthorities(in facts: [UsageFact]) -> [UsageFact] {
         let grouped = Dictionary(grouping: facts) { fact -> String in
             guard let modelCallID = fact.modelCallID, !modelCallID.isEmpty else { return fact.id }
-            return "\(fact.codingAgent.rawValue):\(modelCallID)"
+            return [
+                fact.modelCallCapability.rawValue,
+                fact.codingAgent.rawValue,
+                modelCallID,
+                fact.measurementGranularity.rawValue,
+                String(fact.measurementRange.start.timeIntervalSince1970),
+                String(fact.measurementRange.end.timeIntervalSince1970),
+            ].joined(separator: ":")
         }
-        return grouped.values.compactMap { candidates in
-            candidates.sorted { authorityRank($0.authority) > authorityRank($1.authority) }.first
+        return grouped.values.flatMap { candidates -> [UsageFact] in
+            guard let enhanced = candidates.first(where: { $0.authorityTier == .enhanced }) else {
+                return Set(candidates.map(\.authority)).count == 1 ? [candidates[0]] : candidates
+            }
+            return [enhanced]
         }
-    }
-
-    private func authorityRank(_ authority: String) -> Int {
-        let normalized = authority.lowercased()
-        if normalized.contains("otel") || normalized.contains("live") || normalized.contains("enhanced") { return 2 }
-        return 1
     }
 
     private func outputThroughput(

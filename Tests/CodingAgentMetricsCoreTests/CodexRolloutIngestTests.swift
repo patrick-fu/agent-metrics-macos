@@ -335,6 +335,28 @@ struct CodexRolloutIngestTests {
         #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
     }
 
+    @Test func invalidCumulativeSubsetRelationshipsAreUnavailable() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(
+                totalOutput: 100, lastOutput: 100, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3,
+                inputTotal: 5_000, cachedInput: 6_000, reasoningOutput: 40
+            ),
+            tokenCountLine(
+                totalOutput: 200, lastOutput: 100, timestamp: "2026-04-15T12:00:11.000Z", ordinal: 4,
+                inputTotal: 5_000, cachedInput: 3_000, reasoningOutput: 400
+            ),
+        ], terminated: true)
+
+        let observations = try CodexRolloutSourceAdapter(sessionRoot: home.root).loadObservations(clock: clock)
+        #expect(observations.count == 2)
+        #expect(observations.allSatisfy { $0.tokenParts == nil })
+    }
+
     @Test func unknownEventMessageWithoutUsageFailsClosed() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempCodexHome()
@@ -440,6 +462,42 @@ struct CodexRolloutIngestTests {
         )
         #expect(try restarted.lightSnapshot().outputThroughput.selectedOutputTokens == 2700)
         #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1800, 900])
+    }
+
+    @Test func restartPreservesEveryCumulativeTokenWatermarkForAppendDeltas() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1800, lastOutput: 1800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ], terminated: true)
+        _ = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        ).lightSnapshot()
+
+        try home.appendActiveRollout(
+            tokenCountLine(totalOutput: 1900, lastOutput: 100, timestamp: "2026-04-15T12:00:12.000Z", ordinal: 4)
+        )
+        _ = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        ).lightSnapshot()
+
+        let facts = try SQLiteFactStore(url: storeURL).allFacts()
+        #expect(facts.map(\.outputTokens) == [1800, 100])
+        #expect(facts.map(\.tokenParts?.normalizedBurnTotal) == [6800, 100])
+        #expect(facts[1].tokenParts == TokenParts(
+            inputUncached: 0, cacheRead: 0, cacheWrite: nil,
+            outputVisible: 100, reasoning: 0, normalizedBurnTotal: 100
+        ))
     }
 
     @Test func contentBearingLinesAndUserPathsAreNotPersisted() throws {
@@ -558,10 +616,13 @@ private func tokenCountLine(
     totalOutput: Int,
     lastOutput: Int,
     timestamp: String,
-    ordinal: Int
+    ordinal: Int,
+    inputTotal: Int = 5_000,
+    cachedInput: Int = 3_000,
+    reasoningOutput: Int = 400
 ) -> String {
     """
-    {"timestamp":"\(timestamp)","ordinal":\(ordinal),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":3000,"cache_write_input_tokens":800,"output_tokens":\(totalOutput),"reasoning_output_tokens":400,"total_tokens":6800},"last_token_usage":{"input_tokens":5000,"cached_input_tokens":3000,"cache_write_input_tokens":800,"output_tokens":\(lastOutput),"reasoning_output_tokens":400,"total_tokens":6800},"model_context_window":128000},"rate_limits":null}}
+    {"timestamp":"\(timestamp)","ordinal":\(ordinal),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\(inputTotal),"cached_input_tokens":\(cachedInput),"cache_write_input_tokens":800,"output_tokens":\(totalOutput),"reasoning_output_tokens":\(reasoningOutput),"total_tokens":6800},"last_token_usage":{"input_tokens":\(inputTotal),"cached_input_tokens":\(cachedInput),"cache_write_input_tokens":800,"output_tokens":\(lastOutput),"reasoning_output_tokens":\(reasoningOutput),"total_tokens":6800},"model_context_window":128000},"rate_limits":null}}
     """
 }
 
@@ -595,6 +656,13 @@ private final class TempCodexHome {
             body.append("\n")
         }
         try body.write(to: activeURL, atomically: true, encoding: .utf8)
+    }
+
+    func appendActiveRollout(_ line: String) throws {
+        let handle = try FileHandle(forWritingTo: activeURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\(line)\n".utf8))
     }
 
     func archiveActiveRollout() throws {

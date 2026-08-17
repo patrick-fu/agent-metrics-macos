@@ -34,7 +34,13 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 output_visible INTEGER,
                 reasoning INTEGER,
                 normalized_burn_total INTEGER,
-                model_call_id TEXT
+                model_call_id TEXT,
+                model_call_capability TEXT,
+                source_channel TEXT,
+                authority_tier TEXT,
+                measurement_granularity TEXT,
+                measurement_range_start REAL,
+                measurement_range_end REAL
             );
             """
         )
@@ -197,7 +203,9 @@ public final class SQLiteFactStore: @unchecked Sendable {
             output_tokens, measurement_quality, authority, definition_version
             , input_uncached, cache_read, cache_write, output_visible, reasoning,
             normalized_burn_total, model_call_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            , model_call_capability, source_channel, authority_tier,
+            measurement_granularity, measurement_range_start, measurement_range_end
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -224,6 +232,12 @@ public final class SQLiteFactStore: @unchecked Sendable {
         bind(statement, 18, fact.tokenParts?.reasoning)
         bind(statement, 19, fact.tokenParts?.normalizedBurnTotal)
         bind(statement, 20, fact.modelCallID)
+        bind(statement, 21, fact.modelCallCapability.rawValue)
+        bind(statement, 22, fact.sourceChannel.rawValue)
+        bind(statement, 23, fact.authorityTier.rawValue)
+        bind(statement, 24, fact.measurementGranularity.rawValue)
+        sqlite3_bind_double(statement, 25, fact.measurementRange.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 26, fact.measurementRange.end.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw StoreError.insertFailed
         }
@@ -284,7 +298,12 @@ public final class SQLiteFactStore: @unchecked Sendable {
                 reasoning: integer(statement, 17),
                 normalizedBurnTotal: integer(statement, 18)
             ),
-            modelCallID: optionalText(statement, 19)
+            modelCallID: optionalText(statement, 19),
+            modelCallCapability: optionalText(statement, 20).flatMap(ModelCallCapability.init(rawValue:)),
+            sourceChannel: optionalText(statement, 21).flatMap(SourceChannel.init(rawValue:)),
+            authorityTier: optionalText(statement, 22).flatMap(AuthorityTier.init(rawValue:)),
+            measurementGranularity: optionalText(statement, 23).flatMap(UsageGranularity.init(rawValue:)),
+            measurementRange: range(statement, start: 24, end: 25)
         )
     }
 
@@ -315,11 +334,22 @@ public final class SQLiteFactStore: @unchecked Sendable {
         sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, index))
     }
 
+    private func range(_ statement: OpaquePointer, start: Int32, end: Int32) -> DateInterval? {
+        guard sqlite3_column_type(statement, start) != SQLITE_NULL,
+              sqlite3_column_type(statement, end) != SQLITE_NULL else { return nil }
+        return DateInterval(
+            start: Date(timeIntervalSince1970: sqlite3_column_double(statement, start)),
+            end: Date(timeIntervalSince1970: sqlite3_column_double(statement, end))
+        )
+    }
+
     private func migrateUsageFacts() throws {
         let additions = [
             "input_uncached INTEGER", "cache_read INTEGER", "cache_write INTEGER",
             "output_visible INTEGER", "reasoning INTEGER", "normalized_burn_total INTEGER",
             "model_call_id TEXT",
+            "model_call_capability TEXT", "source_channel TEXT", "authority_tier TEXT",
+            "measurement_granularity TEXT", "measurement_range_start REAL", "measurement_range_end REAL",
         ]
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "PRAGMA table_info(usage_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {

@@ -19,6 +19,49 @@ public enum Coverage: String, Sendable, Equatable, Codable {
     case partial
 }
 
+/// Whether a source can report durable model call identities. This is a
+/// source capability, not an inference from a placeholder identifier.
+public enum ModelCallCapability: String, Sendable, Equatable, Codable {
+    case available
+    case unavailable
+}
+
+public enum SourceChannel: String, Sendable, Equatable, Codable {
+    case codexRollout
+    case claudeTranscript
+    case claudeTelemetry
+    case synthetic
+    case unknown
+
+    static func inferred(schemaVersion: String) -> SourceChannel {
+        switch schemaVersion {
+        case "codex-rollout-v1": .codexRollout
+        case "claude-code-transcript-v1": .claudeTranscript
+        case "synthetic-codex-token-count-v1", "synthetic-stable-call-v1": .synthetic
+        default: .unknown
+        }
+    }
+}
+
+public enum AuthorityTier: String, Sendable, Equatable, Codable {
+    case fallback
+    case enhanced
+
+    static func inferred(authority: String) -> AuthorityTier {
+        switch authority {
+        case "claude-otel-request": .enhanced
+        default: .fallback
+        }
+    }
+}
+
+public enum UsageGranularity: String, Sendable, Equatable, Codable {
+    case modelCall
+    case turn
+    case session
+    case unknown
+}
+
 public struct CodingAgent: Sendable, Equatable, Hashable, Codable {
     public var rawValue: String
     public var displayName: String
@@ -74,5 +117,6 @@ public enum TokenBurnDefinition {
 }
 
 public enum CallsDefinition {
+    public static let windowSeconds = 600
     public static let version = "calls-per-minute-v1"
 }

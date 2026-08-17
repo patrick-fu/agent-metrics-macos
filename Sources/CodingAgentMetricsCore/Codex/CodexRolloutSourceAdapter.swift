@@ -81,7 +81,11 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let files = try discoverRollouts()
         let discoveredIdentities = Set(files.map(\.identity))
         working.files = working.files.filter { discoveredIdentities.contains($0.key) }
-        working.watermarks = working.watermarks.filter { discoveredIdentities.contains($0.key) }
+        working.watermarks = working.watermarks.filter { key, _ in
+            discoveredIdentities.contains { identity in
+                key == identity || key.hasPrefix("\(identity):")
+            }
+        }
 
         for file in files {
             let result = try scanFile(
@@ -290,6 +294,8 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         let cacheDelta = delta(cached, "cached")
         let outputDelta = delta(output, "output")
         let reasoningDelta = delta(reasoning, "reasoning")
+        guard cached <= input, reasoning <= output,
+              cacheDelta <= inputDelta, reasoningDelta <= outputDelta else { return nil }
         return TokenParts(
             inputUncached: max(0, inputDelta - cacheDelta),
             cacheRead: cacheDelta,

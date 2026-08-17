@@ -86,6 +86,11 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
     public var outputTokens: Int
     public var tokenParts: TokenParts?
     public var modelCallID: String?
+    public var modelCallCapability: ModelCallCapability
+    public var sourceChannel: SourceChannel
+    public var authorityTier: AuthorityTier
+    public var measurementGranularity: UsageGranularity
+    public var measurementRange: DateInterval
     public var measurementQuality: MeasurementQuality
     public var authority: String
     public var definitionVersion: String
@@ -103,7 +108,12 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
         authority: String,
         definitionVersion: String,
         tokenParts: TokenParts? = nil,
-        modelCallID: String? = nil
+        modelCallID: String? = nil,
+        modelCallCapability: ModelCallCapability? = nil,
+        sourceChannel: SourceChannel? = nil,
+        authorityTier: AuthorityTier? = nil,
+        measurementGranularity: UsageGranularity? = nil,
+        measurementRange: DateInterval? = nil
     ) {
         self.id = id
         self.schemaVersion = schemaVersion
@@ -118,6 +128,11 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
         self.definitionVersion = definitionVersion
         self.tokenParts = tokenParts
         self.modelCallID = modelCallID
+        self.modelCallCapability = modelCallCapability ?? ((modelCallID?.isEmpty == false) ? .available : .unavailable)
+        self.sourceChannel = sourceChannel ?? SourceChannel.inferred(schemaVersion: schemaVersion)
+        self.authorityTier = authorityTier ?? AuthorityTier.inferred(authority: authority)
+        self.measurementGranularity = measurementGranularity ?? ((modelCallID?.isEmpty == false) ? .modelCall : .unknown)
+        self.measurementRange = measurementRange ?? DateInterval(start: .distantPast, end: .distantFuture)
     }
 }
 
@@ -204,7 +219,7 @@ public struct CallsMetric: Sendable, Equatable {
     public init(
         modelCallIDs: [String],
         capabilityAvailable: Bool,
-        windowSeconds: Int = TokenBurnDefinition.windowSeconds,
+        windowSeconds: Int = CallsDefinition.windowSeconds,
         sourceAuthority: String = "unavailable"
     ) {
         self.windowSeconds = windowSeconds

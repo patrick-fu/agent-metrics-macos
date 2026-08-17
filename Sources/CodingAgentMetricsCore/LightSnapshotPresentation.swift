@@ -34,6 +34,8 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var callsStateText: String
     public var callsCoverageText: String
     public var callsUnavailableReason: String?
+    public var callsDetailText: String
+    public var callsWindowLabel: String
     public var agentActiveCount: Int
     public var modelActiveCount: Int
     public var agentChips: [FilterChip]
@@ -63,6 +65,12 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         callsStateText = snapshot.calls.dataState?.displayLabel ?? "-"
         callsCoverageText = snapshot.calls.coverage.displayLabel
         callsUnavailableReason = snapshot.calls.dataState == .unavailable ? "Stable Model Call ID unavailable for this source" : nil
+        if let callCount = snapshot.calls.selectedCallCount {
+            callsDetailText = "\(callCount) distinct stable Model Call IDs"
+        } else {
+            callsDetailText = callsUnavailableReason ?? "Unavailable"
+        }
+        callsWindowLabel = "\(snapshot.calls.windowSeconds / 60)m"
         agentActiveCount = snapshot.filter.agents.activeCount
         modelActiveCount = snapshot.filter.models.activeCount
         agentChips = Self.chips(
