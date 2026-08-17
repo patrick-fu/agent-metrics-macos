@@ -44,6 +44,12 @@ public final class TelemetryRuntime: @unchecked Sendable {
         return snapshot
     }
 
+    public func lightSnapshotFromStore(filter: MetricFilter) throws -> LightSnapshot {
+        let snapshot = try snapshotFromStore(filter: filter)
+        lastGoodSnapshot = snapshot
+        return snapshot
+    }
+
     private func refresh(filter: MetricFilter) throws -> LightSnapshot {
         var health: [SourceHealth] = []
         for sourceAdapter in sourceAdapters {
@@ -58,14 +64,17 @@ public final class TelemetryRuntime: @unchecked Sendable {
             }
         }
         sourceHealth = health
+        return try snapshotFromStore(filter: filter)
+    }
 
+    private func snapshotFromStore(filter: MetricFilter) throws -> LightSnapshot {
         let facts = try store.allFacts()
         let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
             sample: sample,
             allFacts: facts,
             now: clock.now,
-            sourceHealth: health,
+            sourceHealth: sourceHealth,
             filter: filter
         )
     }

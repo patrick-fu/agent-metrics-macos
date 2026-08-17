@@ -118,9 +118,12 @@ struct SummaryPopoverView: View {
     }
 
     private func apply(_ action: FilterChipAction, on axis: FilterAxis) {
-        var filter = snapshot?.filter ?? .all
-        filter.apply(action, on: axis)
-        snapshot = loadSnapshot(filter)
+        snapshot = LightSnapshot.updated(
+            from: snapshot,
+            applying: action,
+            on: axis,
+            load: loadSnapshot
+        )
     }
 
     private func meta(title: String, value: String) -> some View {

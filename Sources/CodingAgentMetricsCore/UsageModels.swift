@@ -30,7 +30,6 @@ public struct UsageObservation: Sendable, Equatable {
         self.outputTokens = outputTokens
     }
 }
-
 public enum OutputThroughputScope: String, Sendable, Equatable, Codable {
     case all
     case selected
@@ -101,4 +100,17 @@ public struct LightSnapshot: Sendable, Equatable {
     public var filter: MetricFilter
     public var generatedAt: Date
     public var sourceHealth: [SourceHealth]
+}
+
+extension LightSnapshot {
+    public static func updated(
+        from current: LightSnapshot?,
+        applying action: FilterChipAction,
+        on axis: FilterAxis,
+        load: (MetricFilter) -> LightSnapshot?
+    ) -> LightSnapshot? {
+        var filter = current?.filter ?? .all
+        filter.apply(action, on: axis)
+        return load(filter) ?? current
+    }
 }

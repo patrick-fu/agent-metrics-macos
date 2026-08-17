@@ -72,8 +72,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let snapshot = try? runtime?.lightSnapshot(filter: filter)
         let root = SummaryPopoverView(snapshot: snapshot) { [weak self] newFilter in
             guard let self else { return nil }
+            guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter) else {
+                return nil
+            }
             self.filter = newFilter
-            return try? self.runtime?.lightSnapshot(filter: newFilter)
+            return next
         }
         .frame(width: AppIdentity.popoverWidth)
         panel.contentView = NSHostingView(rootView: root)

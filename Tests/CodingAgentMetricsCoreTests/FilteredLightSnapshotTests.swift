@@ -232,6 +232,66 @@ struct FilteredLightSnapshotTests {
         #expect(snapshot.modelIdentities.map(\.raw) == ["alpha-1", "alpha-2", "zeta"])
     }
 
+    @Test func failedFilterLoadKeepsPreviousSnapshotAndFilter() {
+        let original = build(facts: mixedFacts(now: now), filter: .all)
+        let kept = LightSnapshot.updated(
+            from: original,
+            applying: .toggle("codex"),
+            on: .agent,
+            load: { _ in nil }
+        )
+        #expect(kept == original)
+        #expect(kept?.filter.agents.isAll == true)
+    }
+
+    @Test func filterOnlySnapshotReusesPersistedFactsWithoutRescanningSources() throws {
+        let clock = FixedClock(now: now)
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cam-filter-only-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let incremental = CountingIncrementalAdapter(
+            observation: makeObservation(
+                agent: .codex,
+                modelRaw: "gpt-a",
+                display: "A",
+                outputTokens: 180,
+                observedAt: now.addingTimeInterval(-5)
+            )
+        )
+        let nonIncremental = CountingSourceAdapter(observations: [
+            makeObservation(
+                agent: .claudeCode,
+                modelRaw: "opus",
+                display: "Opus",
+                outputTokens: 540,
+                observedAt: now.addingTimeInterval(-5)
+            )
+        ])
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapters: [incremental, nonIncremental],
+            clock: clock
+        )
+
+        let first = try runtime.lightSnapshot()
+        #expect(incremental.scanCount == 1)
+        #expect(incremental.loadCount == 0)
+        #expect(nonIncremental.loadCount == 0)
+        #expect(first.outputThroughput.selectedOutputTokens == 180)
+
+        var filter = MetricFilter()
+        filter.agents.toggle("codex")
+        let second = try runtime.lightSnapshotFromStore(filter: filter)
+        let third = try runtime.lightSnapshotFromStore(filter: .all)
+        #expect(incremental.scanCount == 1)
+        #expect(incremental.loadCount == 0)
+        #expect(nonIncremental.loadCount == 0)
+        #expect(second.outputThroughput.selectedOutputTokens == 180)
+        #expect(second.filter.agents.selected == Set(["codex"]))
+        #expect(third.outputThroughput.selectedOutputTokens == 180)
+        #expect(third.filter.agents.isAll)
+    }
+
     @Test func runtimeAppliesFilterWhileKeepingUnfilteredOptions() throws {
         let clock = FixedClock(now: now)
         let storeURL = FileManager.default.temporaryDirectory
@@ -329,4 +389,37 @@ private func makeObservation(
 private struct FixedSourceAdapter: SourceAdapter {
     let observations: [UsageObservation]
     func loadObservations(clock: any Clock) throws -> [UsageObservation] { observations }
+}
+
+private final class CountingSourceAdapter: SourceAdapter, @unchecked Sendable {
+    let observations: [UsageObservation]
+    var loadCount = 0
+    init(observations: [UsageObservation]) { self.observations = observations }
+    func loadObservations(clock: any Clock) throws -> [UsageObservation] {
+        loadCount += 1
+        return observations
+    }
+}
+
+private final class CountingIncrementalAdapter: IncrementalSourceAdapter, @unchecked Sendable {
+    let observation: UsageObservation
+    var scanCount = 0
+    var loadCount = 0
+    init(observation: UsageObservation) { self.observation = observation }
+    var sourceID: String { "codex" }
+    var sourceRebuildScope: SourceFactScope { .schemaVersion("synthetic-filter-v1") }
+    func rebuiltFileScope(for identity: String) -> SourceFactScope { .idPrefix(identity) }
+    func loadObservations(clock: any Clock) throws -> [UsageObservation] {
+        loadCount += 1
+        return [observation]
+    }
+    func scan(clock: any Clock, state: SourceState?) throws -> SourceScan {
+        scanCount += 1
+        return SourceScan(
+            observations: [observation],
+            state: SourceState(sourceID: sourceID, parserVersion: "1"),
+            rebuildSource: false,
+            health: SourceHealth(sourceID: sourceID, isHealthy: true)
+        )
+    }
 }
