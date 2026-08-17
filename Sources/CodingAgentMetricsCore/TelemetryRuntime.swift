@@ -4,9 +4,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
     private let store: SQLiteFactStore
     private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
+    private var receiver: OTLPHTTPReceiver?
     private var lastGoodSnapshot: LightSnapshot?
 
     public private(set) var sourceHealth: [SourceHealth] = []
+    public let receiverConfiguration: OTLPReceiverConfiguration
 
     public convenience init(
         storeURL: URL,
@@ -19,11 +21,21 @@ public final class TelemetryRuntime: @unchecked Sendable {
     public init(
         storeURL: URL,
         sourceAdapters: [any SourceAdapter],
-        clock: any Clock = SystemClock()
+        clock: any Clock = SystemClock(),
+        receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration()
     ) throws {
         self.clock = clock
-        self.store = try SQLiteFactStore(url: storeURL)
+        let store = try SQLiteFactStore(url: storeURL)
+        self.store = store
         self.sourceAdapters = sourceAdapters
+        self.receiverConfiguration = receiverConfiguration
+        if receiverConfiguration.isEnabled {
+            let receiver = OTLPHTTPReceiver(configuration: receiverConfiguration) { facts in
+                try? store.upsertPerformanceFacts(facts)
+            }
+            try receiver.start()
+            self.receiver = receiver
+        }
     }
 
     public convenience init(
@@ -38,19 +50,23 @@ public final class TelemetryRuntime: @unchecked Sendable {
         )
     }
 
-    public func lightSnapshot(filter: MetricFilter = .all) throws -> LightSnapshot {
-        let snapshot = try refresh(filter: filter)
+    public func lightSnapshot(filter: MetricFilter = .all, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
+        let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
         lastGoodSnapshot = snapshot
         return snapshot
     }
 
-    public func lightSnapshotFromStore(filter: MetricFilter) throws -> LightSnapshot {
-        let snapshot = try snapshotFromStore(filter: filter)
+    public func lightSnapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
+        let snapshot = try snapshotFromStore(filter: filter, performanceRange: performanceRange)
         lastGoodSnapshot = snapshot
         return snapshot
     }
 
-    private func refresh(filter: MetricFilter) throws -> LightSnapshot {
+    public func ingestPerformance(_ facts: [PerformanceFact]) throws {
+        try store.upsertPerformanceFacts(facts)
+    }
+
+    private func refresh(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
         var health: [SourceHealth] = []
         for sourceAdapter in sourceAdapters {
             do {
@@ -64,18 +80,21 @@ public final class TelemetryRuntime: @unchecked Sendable {
             }
         }
         sourceHealth = health
-        return try snapshotFromStore(filter: filter)
+        return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
     }
 
-    private func snapshotFromStore(filter: MetricFilter) throws -> LightSnapshot {
+    private func snapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
         let facts = try store.allFacts()
+        let performanceFacts = try store.allPerformanceFacts()
         let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
             sample: sample,
             allFacts: facts,
+            performanceFacts: performanceFacts,
             now: clock.now,
             sourceHealth: sourceHealth,
-            filter: filter
+            filter: filter,
+            performanceRange: performanceRange
         )
     }
 

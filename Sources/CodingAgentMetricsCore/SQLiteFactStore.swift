@@ -47,6 +47,31 @@ public final class SQLiteFactStore: @unchecked Sendable {
         try migrateUsageFacts()
         try exec(
             """
+            CREATE TABLE IF NOT EXISTS performance_facts (
+                stable_request_id TEXT NOT NULL,
+                coding_agent_raw TEXT NOT NULL,
+                coding_agent_display TEXT NOT NULL,
+                model_raw TEXT NOT NULL,
+                model_display TEXT NOT NULL,
+                observed_at REAL NOT NULL,
+                duration_ms REAL NOT NULL,
+                ttft_ms REAL NOT NULL,
+                output_total INTEGER NOT NULL,
+                is_retry INTEGER NOT NULL,
+                source_channel TEXT NOT NULL,
+                authority_tier TEXT NOT NULL,
+                measurement_granularity TEXT NOT NULL,
+                measurement_range_start REAL NOT NULL,
+                measurement_range_end REAL NOT NULL,
+                PRIMARY KEY (
+                    coding_agent_raw, stable_request_id, measurement_granularity,
+                    measurement_range_start, measurement_range_end
+                )
+            );
+            """
+        )
+        try exec(
+            """
             CREATE TABLE IF NOT EXISTS source_states (
                 source_id TEXT PRIMARY KEY,
                 payload TEXT NOT NULL
@@ -184,6 +209,41 @@ public final class SQLiteFactStore: @unchecked Sendable {
         try query("SELECT * FROM usage_facts ORDER BY observed_at ASC, id ASC;")
     }
 
+    public func upsertPerformanceFacts(_ facts: [PerformanceFact]) throws {
+        guard !facts.isEmpty else { return }
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            for fact in facts { try insertPerformance(fact) }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func allPerformanceFacts() throws -> [PerformanceFact] {
+        let sql = "SELECT * FROM performance_facts ORDER BY observed_at ASC, stable_request_id ASC;"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        var facts: [PerformanceFact] = []
+        while sqlite3_step(statement) == SQLITE_ROW { facts.append(try performanceRow(statement)) }
+        return facts
+    }
+
+    public func performanceFactColumnNames() throws -> Set<String> {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(performance_facts);", -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        var names = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW { names.insert(text(statement, 1)) }
+        return names
+    }
+
     public func facts(in interval: DateInterval) throws -> [UsageFact] {
         try query(
             """
@@ -241,6 +301,37 @@ public final class SQLiteFactStore: @unchecked Sendable {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw StoreError.insertFailed
         }
+    }
+
+    private func insertPerformance(_ fact: PerformanceFact) throws {
+        let sql = """
+        INSERT OR REPLACE INTO performance_facts (
+            stable_request_id, coding_agent_raw, coding_agent_display, model_raw, model_display,
+            observed_at, duration_ms, ttft_ms, output_total, is_retry, source_channel,
+            authority_tier, measurement_granularity, measurement_range_start, measurement_range_end
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw StoreError.prepareFailed
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, fact.stableRequestID)
+        bind(statement, 2, fact.codingAgent.rawValue)
+        bind(statement, 3, fact.codingAgent.displayName)
+        bind(statement, 4, fact.model.raw)
+        bind(statement, 5, fact.model.display)
+        sqlite3_bind_double(statement, 6, fact.observedAt.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 7, fact.durationMilliseconds)
+        sqlite3_bind_double(statement, 8, fact.ttftMilliseconds)
+        sqlite3_bind_int64(statement, 9, Int64(fact.outputTotal))
+        sqlite3_bind_int(statement, 10, fact.isRetry ? 1 : 0)
+        bind(statement, 11, fact.sourceChannel.rawValue)
+        bind(statement, 12, fact.authorityTier.rawValue)
+        bind(statement, 13, fact.measurementGranularity.rawValue)
+        sqlite3_bind_double(statement, 14, fact.measurementRange.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 15, fact.measurementRange.end.timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.insertFailed }
     }
 
     private func deleteFacts(in scope: SourceFactScope) throws {
@@ -304,6 +395,31 @@ public final class SQLiteFactStore: @unchecked Sendable {
             authorityTier: optionalText(statement, 22).flatMap(AuthorityTier.init(rawValue:)),
             measurementGranularity: optionalText(statement, 23).flatMap(UsageGranularity.init(rawValue:)),
             measurementRange: range(statement, start: 24, end: 25)
+        )
+    }
+
+    private func performanceRow(_ statement: OpaquePointer) throws -> PerformanceFact {
+        guard let channel = SourceChannel(rawValue: text(statement, 10)),
+              let tier = AuthorityTier(rawValue: text(statement, 11)),
+              let granularity = UsageGranularity(rawValue: text(statement, 12)) else {
+            throw StoreError.invalidRow
+        }
+        return PerformanceFact(
+            stableRequestID: text(statement, 0),
+            codingAgent: CodingAgent(rawValue: text(statement, 1), displayName: text(statement, 2)),
+            model: ModelIdentity(raw: text(statement, 3), display: text(statement, 4)),
+            observedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+            durationMilliseconds: sqlite3_column_double(statement, 6),
+            ttftMilliseconds: sqlite3_column_double(statement, 7),
+            outputTotal: Int(sqlite3_column_int64(statement, 8)),
+            isRetry: sqlite3_column_int(statement, 9) != 0,
+            sourceChannel: channel,
+            authorityTier: tier,
+            measurementGranularity: granularity,
+            measurementRange: DateInterval(
+                start: Date(timeIntervalSince1970: sqlite3_column_double(statement, 13)),
+                end: Date(timeIntervalSince1970: sqlite3_column_double(statement, 14))
+            )
         )
     }
 

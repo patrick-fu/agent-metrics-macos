@@ -11,13 +11,14 @@ struct SummaryPopoverView: View {
 
     @State private var snapshot: LightSnapshot?
     @State private var activity: Activity = .burn
+    @State private var performanceRange: PerformanceRange = .oneHour
     let lifecycleServices: AppLifecycleServices
-    var loadSnapshot: (MetricFilter) -> LightSnapshot?
+    var loadSnapshot: (MetricFilter, PerformanceRange) -> LightSnapshot?
 
     init(
         snapshot: LightSnapshot?,
         lifecycleServices: AppLifecycleServices = .live,
-        loadSnapshot: @escaping (MetricFilter) -> LightSnapshot? = { _ in nil }
+        loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> LightSnapshot? = { _, _ in nil }
     ) {
         _snapshot = State(initialValue: snapshot)
         self.lifecycleServices = lifecycleServices
@@ -49,6 +50,7 @@ struct SummaryPopoverView: View {
                 kpi(title: "Token Burn/min", value: presentation?.burnValueText ?? "Unavailable", unit: presentation?.burnUnitText ?? "tokens/min")
                 kpi(title: "Calls/min", value: presentation?.callsValueText ?? "Unavailable", unit: presentation?.callsUnitText ?? "calls/min")
             }
+            performance(snapshot?.performance)
             Picker("Activity", selection: $activity) {
                 ForEach(Activity.allCases) { activity in
                     Text(activity.rawValue).tag(activity)
@@ -186,8 +188,66 @@ struct SummaryPopoverView: View {
             from: snapshot,
             applying: action,
             on: axis,
-            load: loadSnapshot
+            load: { filter in loadSnapshot(filter, performanceRange) }
         )
+    }
+
+    private func performance(_ metric: PerformanceSnapshot?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Performance")
+                    .font(.subheadline)
+                Spacer()
+                Picker("Performance range", selection: $performanceRange) {
+                    ForEach(PerformanceRange.allCases, id: \.self) { range in
+                        Text(range.label).tag(range)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                .onChange(of: performanceRange) { _, range in
+                    reloadPerformance(range)
+                }
+            }
+            HStack(spacing: 6) {
+                performanceKPI("TTFT", metric?.timeToFirstToken, secondary: "p95")
+                performanceKPI("E2E", metric?.endToEnd, secondary: "p95")
+                performanceKPI("Decode TPS", metric?.decodeTPS, secondary: "p10")
+            }
+            if let metric, metric.retryCount > 0 || metric.invalidDecodeCount > 0 {
+                Text("Retries excluded: \(metric.retryCount) · Invalid decode: \(metric.invalidDecodeCount)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let reason = metric?.unavailableReason {
+                Text(reason)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func performanceKPI(_ title: String, _ metric: PerformanceDistribution?, secondary: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(metric?.p50.map(format) ?? "Unavailable").font(.caption.weight(.semibold)).monospacedDigit()
+            Text("p50 · \(secondary) \(metric.flatMap { secondary == "p10" ? $0.p10 : $0.p95 }.map(format) ?? "-") · n \(metric?.sampleCount ?? 0)")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(6)
+        .background(Color.primary.opacity(0.04))
+    }
+
+    private func reloadPerformance(_ range: PerformanceRange) {
+        guard let snapshot else { return }
+        self.snapshot = loadSnapshot(snapshot.filter, range) ?? snapshot
+    }
+
+    private func format(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
 
     private func meta(title: String, value: String) -> some View {

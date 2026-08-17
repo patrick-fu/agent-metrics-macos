@@ -6,9 +6,11 @@ public struct SnapshotBuilder: Sendable {
     public func buildLightSnapshot(
         sample: LiveSample,
         allFacts: [UsageFact],
+        performanceFacts: [PerformanceFact] = [],
         now: Date,
         sourceHealth: [SourceHealth] = [],
-        filter: MetricFilter = .all
+        filter: MetricFilter = .all,
+        performanceRange: PerformanceRange = .oneHour
     ) -> LightSnapshot {
         let relevantHealth = Self.relevantHealth(from: sourceHealth, filter: filter, allFacts: allFacts)
         return LightSnapshot(
@@ -32,6 +34,12 @@ public struct SnapshotBuilder: Sendable {
                 coverage: relevantHealth.contains { !$0.isHealthy } ? .partial : .complete,
                 sourceHealth: relevantHealth,
                 scope: filter.agents.isAll && filter.models.isAll ? .all : .selected
+            ),
+            performance: PerformanceSnapshotBuilder().build(
+                facts: performanceFacts,
+                now: now,
+                range: performanceRange,
+                filter: filter
             ),
             codingAgents: uniqueAgents(in: allFacts),
             modelIdentities: uniqueModels(in: allFacts),

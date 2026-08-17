@@ -244,6 +244,7 @@ public struct LightSnapshot: Sendable, Equatable {
     public var outputThroughput: OutputThroughputMetric
     public var tokenBurn: TokenBurnMetric
     public var calls: CallsMetric
+    public var performance: PerformanceSnapshot
     public var codingAgents: [CodingAgent]
     public var modelIdentities: [ModelIdentity]
     public var filter: MetricFilter

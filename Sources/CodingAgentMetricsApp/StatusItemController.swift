@@ -70,9 +70,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func renderSnapshot() {
         let snapshot = try? runtime?.lightSnapshot(filter: filter)
-        let root = SummaryPopoverView(snapshot: snapshot) { [weak self] newFilter in
+        let root = SummaryPopoverView(snapshot: snapshot) { [weak self] newFilter, performanceRange in
             guard let self else { return nil }
-            guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter) else {
+            guard let next = try? self.runtime?.lightSnapshotFromStore(filter: newFilter, performanceRange: performanceRange) else {
                 return nil
             }
             self.filter = newFilter
