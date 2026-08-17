@@ -5,10 +5,12 @@ struct SettingsView: View {
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
     let resetData: ResetDataController
+    let diagnostics: DiagnosticActionController
 
     var body: some View {
         @Bindable var launchAtLogin = lifecycleServices.launchAtLogin
         @Bindable var enhancedTelemetry = telemetry
+        @Bindable var diagnosticActions = diagnostics
 
         Divider()
         VStack(alignment: .leading, spacing: 8) {
@@ -52,6 +54,108 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .accessibilityLabel("Enhanced telemetry error: \(failureMessage)")
+            }
+            Divider()
+            Text("Privacy-Safe Diagnostics")
+                .font(.subheadline)
+            Text("Preview stays in memory. Copy, Save, and Prepare Public Issue each require their own one-time confirmation. Nothing is uploaded or submitted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Preview Diagnostics") {
+                diagnosticActions.preview()
+            }
+            .accessibilityHint("Builds an allowlisted diagnostic preview in memory without writing a file.")
+            if let preview = diagnosticActions.previewText {
+                ScrollView {
+                    Text(preview)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+            }
+            HStack {
+                Button("Copy Diagnostics…") {
+                    diagnosticActions.requestCopy()
+                }
+                .confirmationDialog(
+                    DiagnosticActionController.Confirmation.copy.title,
+                    isPresented: confirmationBinding(.copy),
+                    titleVisibility: .visible
+                ) {
+                    Button(DiagnosticActionController.Confirmation.copy.confirmLabel) {
+                        diagnosticActions.confirmCopy()
+                    }
+                    Button("Cancel", role: .cancel) {
+                        diagnosticActions.cancel(.copy)
+                    }
+                } message: {
+                    Text(DiagnosticActionController.Confirmation.copy.message)
+                }
+
+                Button("Save Diagnostics…") {
+                    diagnosticActions.requestSave()
+                }
+                .confirmationDialog(
+                    DiagnosticActionController.Confirmation.save.title,
+                    isPresented: confirmationBinding(.save),
+                    titleVisibility: .visible
+                ) {
+                    Button(DiagnosticActionController.Confirmation.save.confirmLabel) {
+                        diagnosticActions.confirmSave()
+                    }
+                    Button("Cancel", role: .cancel) {
+                        diagnosticActions.cancel(.save)
+                    }
+                } message: {
+                    Text(DiagnosticActionController.Confirmation.save.message)
+                }
+            }
+            Button("Prepare Public Issue…") {
+                diagnosticActions.requestPreparePublicIssue()
+            }
+            .confirmationDialog(
+                DiagnosticActionController.Confirmation.preparePublicIssue.title,
+                isPresented: confirmationBinding(.preparePublicIssue),
+                titleVisibility: .visible
+            ) {
+                Button(DiagnosticActionController.Confirmation.preparePublicIssue.confirmLabel) {
+                    diagnosticActions.confirmPreparePublicIssue()
+                }
+                Button("Cancel", role: .cancel) {
+                    diagnosticActions.cancel(.preparePublicIssue)
+                }
+            } message: {
+                Text(DiagnosticActionController.Confirmation.preparePublicIssue.message)
+            }
+            if let issueText = diagnosticActions.preparedPublicIssueText {
+                Text("Prepared text — review and paste it yourself:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    Text(issueText)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 140)
+            }
+            if case .copied = diagnosticActions.outcome {
+                Text("Diagnostics copied after one-time confirmation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case .saved = diagnosticActions.outcome {
+                Text("Diagnostics saved to the location you selected. The app kept no managed copy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case .saveCancelled = diagnosticActions.outcome {
+                Text("Save cancelled; no diagnostic file was created by this action.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case let .failed(message) = diagnosticActions.outcome {
+                Text("Diagnostics failed: \(message)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
             Divider()
             Text("Reset Data")
@@ -100,5 +204,14 @@ struct SettingsView: View {
             }
             .accessibilityHint("Checks the stable update feed and always requires user confirmation to install.")
         }
+    }
+
+    private func confirmationBinding(_ confirmation: DiagnosticActionController.Confirmation) -> Binding<Bool> {
+        Binding(
+            get: { diagnostics.pendingConfirmation == confirmation },
+            set: { isPresented in
+                if !isPresented { diagnostics.cancel(confirmation) }
+            }
+        )
     }
 }

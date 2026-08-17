@@ -28,6 +28,7 @@ struct SummaryPopoverView: View {
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
     let resetData: ResetDataController
+    let diagnostics: DiagnosticActionController
     var loadSnapshot: (MetricFilter, PerformanceRange) -> Void
     var loadTrends: (MetricFilter) -> Void
     private var snapshot: LightSnapshot? { snapshots.light }
@@ -39,6 +40,7 @@ struct SummaryPopoverView: View {
         lifecycleServices: AppLifecycleServices = .live,
         telemetry: EnhancedTelemetryController? = nil,
         resetData: ResetDataController? = nil,
+        diagnostics: DiagnosticActionController? = nil,
         loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> Void = { _, _ in },
         loadTrends: @escaping (MetricFilter) -> Void = { _ in }
     ) {
@@ -47,6 +49,11 @@ struct SummaryPopoverView: View {
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
         self.resetData = resetData ?? ResetDataController()
+        self.diagnostics = diagnostics ?? DiagnosticActionController(
+            generate: { throw DiagnosticActionError.snapshotUnavailable },
+            copy: { _ in },
+            userSelectedSave: { _ in false }
+        )
         self.loadSnapshot = loadSnapshot
         self.loadTrends = loadTrends
     }
@@ -126,7 +133,12 @@ struct SummaryPopoverView: View {
                 loadTrends(requestedFilter)
             }
             .accessibilityHint("Opens trend charts and exact values")
-            SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry, resetData: resetData)
+            SettingsView(
+                lifecycleServices: lifecycleServices,
+                telemetry: telemetry,
+                resetData: resetData,
+                diagnostics: diagnostics
+            )
         }
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)

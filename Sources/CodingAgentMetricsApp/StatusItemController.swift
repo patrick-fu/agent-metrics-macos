@@ -1,6 +1,7 @@
 import AppKit
 import CodingAgentMetricsCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class StatusItemController: NSObject, NSWindowDelegate {
@@ -38,6 +39,45 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             return result
         })
     }()
+    private lazy var diagnostics = DiagnosticActionController(
+        generate: { [weak self] in
+            guard let snapshot = self?.snapshots.light else {
+                throw DiagnosticActionError.snapshotUnavailable
+            }
+            let info = Bundle.main.infoDictionary ?? [:]
+            let input = DiagnosticExportInput(
+                snapshot: snapshot,
+                appVersion: info["CFBundleShortVersionString"] as? String ?? "unavailable",
+                buildVersion: info["CFBundleVersion"] as? String ?? "unavailable",
+                parserVersions: [
+                    CodexRolloutParser.semanticVersion,
+                    ClaudeTranscriptParser.semanticVersion,
+                ],
+                schemaVersions: [
+                    CodexRolloutParser.schemaVersion,
+                    ClaudeTranscriptParser.schemaVersion,
+                ]
+            )
+            return try DiagnosticExporter().preview(input)
+        },
+        copy: { text in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard pasteboard.setString(text, forType: .string) else {
+                throw DiagnosticActionError.pasteboardWriteFailed
+            }
+        },
+        userSelectedSave: { data in
+            let panel = NSSavePanel()
+            panel.title = "Save Privacy-Safe Diagnostics"
+            panel.nameFieldStringValue = "coding-agent-metrics-diagnostics.json"
+            panel.allowedContentTypes = [.json]
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let url = panel.url else { return false }
+            try data.write(to: url, options: .atomic)
+            return true
+        }
+    )
 
     override init() {
         let createdRuntime = try? TelemetryRuntime(
@@ -114,7 +154,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func configureContent() {
-        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, resetData: resetData, loadSnapshot: { [weak self] newFilter, performanceRange in
+        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, resetData: resetData, diagnostics: diagnostics, loadSnapshot: { [weak self] newFilter, performanceRange in
             self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange)
         }, loadTrends: { [weak self] newFilter in
             self?.requestDetailSnapshot(filter: newFilter)
