@@ -10,7 +10,8 @@ public struct SnapshotBuilder: Sendable {
         now: Date,
         sourceHealth: [SourceHealth] = [],
         filter: MetricFilter = .all,
-        performanceRange: PerformanceRange = .oneHour
+        performanceRange: PerformanceRange = .oneHour,
+        retentionStatus: RetentionResult? = nil
     ) -> LightSnapshot {
         let filteredFacts = allFacts.filter(filter.includes)
         let usageWindowStart = now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds))
@@ -74,7 +75,8 @@ public struct SnapshotBuilder: Sendable {
             modelIdentities: uniqueModels(in: allFacts),
             filter: filter,
             generatedAt: now,
-            sourceHealth: sourceHealth
+            sourceHealth: sourceHealth,
+            retentionStatus: retentionStatus
         )
     }
 

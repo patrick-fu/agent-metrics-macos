@@ -3,6 +3,152 @@ import Testing
 @testable import CodingAgentMetricsCore
 
 struct CodexRolloutIngestTests {
+    @Test func resetCutoffExcludesExistingAndEqualTimestampRolloutObservations() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1_800, lastOutput: 1_800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1_800)
+
+        _ = try runtime.resetData()
+        let resetStore = try SQLiteFactStore(url: storeURL)
+        #expect(try resetStore.sourceState(sourceID: "codex") == nil)
+        #expect(try resetStore.telemetryResetCutoff() == clock.now)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+
+        try home.appendActiveRollout(tokenCountLine(
+            totalOutput: 2_200,
+            lastOutput: 400,
+            timestamp: "2026-04-15T12:00:20.000Z",
+            ordinal: 4
+        ))
+        try home.appendActiveRollout(tokenCountLine(
+            totalOutput: 2_700,
+            lastOutput: 500,
+            timestamp: "2026-04-15T12:00:21.000Z",
+            ordinal: 5
+        ))
+        let restarted = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:30Z"))
+        )
+        #expect(try restarted.lightSnapshot().outputThroughput.selectedOutputTokens == 500)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [500])
+    }
+
+    @Test func resetWhileRolloutIsMissingDoesNotReingestHistoryAfterRecovery() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let initial = [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1_800, lastOutput: 1_800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ]
+        try home.writeActiveRollout(lines: initial, terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+        _ = try runtime.lightSnapshot()
+        try FileManager.default.removeItem(at: home.activeURL)
+
+        _ = try runtime.resetData()
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex") == nil)
+        try home.writeActiveRollout(lines: initial, terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+
+        try home.appendActiveRollout(tokenCountLine(
+            totalOutput: 2_700,
+            lastOutput: 900,
+            timestamp: "2026-04-15T12:00:21.000Z",
+            ordinal: 4
+        ))
+        let laterClock = FixedClock(now: isoDate("2026-04-15T12:00:30Z"))
+        let restarted = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: laterClock
+        )
+        #expect(try restarted.lightSnapshot().outputThroughput.selectedOutputTokens == 900)
+    }
+
+    @Test func resetSucceedsWithoutScanningAFailingAdapterAndCutoffFiltersAfterRecovery() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(), turnContextLine(),
+            tokenCountLine(totalOutput: 1_800, lastOutput: 1_800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ], terminated: true)
+        let adapter = FlakyCodexAdapter(inner: CodexRolloutSourceAdapter(sessionRoot: home.root))
+        let runtime = try TelemetryRuntime(storeURL: storeURL, sourceAdapter: adapter, clock: clock)
+        _ = try runtime.lightSnapshot()
+        adapter.failNext = true
+
+        _ = try runtime.resetData()
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex") == nil)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        adapter.failNext = false
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+    }
+
+    @Test func disappearedRolloutKeepsFactsAndCursorUnavailableUntilRecoveryWithoutDoubleCount() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let initial = [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(totalOutput: 1_800, lastOutput: 1_800, timestamp: "2026-04-15T12:00:10.000Z", ordinal: 3),
+        ]
+        try home.writeActiveRollout(lines: initial, terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: CodexRolloutSourceAdapter(sessionRoot: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1_800)
+        let stateBefore = try #require(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex"))
+
+        try FileManager.default.removeItem(at: home.activeURL)
+        let unavailable = try runtime.lightSnapshot()
+        #expect(unavailable.outputThroughput.selectedOutputTokens == 1_800)
+        #expect(unavailable.outputThroughput.coverage == .partial)
+        #expect(runtime.sourceHealth.contains { $0.sourceID == "codex" && $0.diagnosticCode == "SOURCE_UNAVAILABLE" && !$0.isHealthy })
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [1_800])
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "codex")?.files == stateBefore.files)
+
+        try home.writeActiveRollout(lines: initial + [
+            tokenCountLine(totalOutput: 2_700, lastOutput: 900, timestamp: "2026-04-15T12:00:15.000Z", ordinal: 4),
+        ], terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 2_700)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens).reduce(0, +) == 2_700)
+    }
+
     @Test func oversizedContentLineIsSkippedBoundedlyAndFollowingUsageRemainsReachable() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempCodexHome()

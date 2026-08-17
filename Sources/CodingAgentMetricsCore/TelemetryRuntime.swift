@@ -19,6 +19,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     private let store: SQLiteFactStore
+    private let retentionManager: RetentionManager
     private let sourceAdapters: [any SourceAdapter]
     private let clock: any Clock
     private let storeQueue = DispatchQueue(label: "dev.codingagentmetrics.runtime-store")
@@ -33,6 +34,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
     public private(set) var sourceHealth: [SourceHealth] = []
     public let receiverConfiguration: OTLPReceiverConfiguration
     private var startupFailureMessage: String?
+    private var lastRetentionResult: RetentionResult?
+
+    public var retentionStatus: RetentionResult? {
+        storeQueue.sync { lastRetentionResult }
+    }
 
     public var receiverState: OTLPReceiverState {
         storeQueue.sync { receiver?.state ?? .stopped }
@@ -59,13 +65,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
         storeURL: URL,
         sourceAdapters: [any SourceAdapter],
         clock: any Clock = SystemClock(),
-        receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration()
+        receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration(),
+        retentionPolicy: RetentionPolicy = RetentionPolicy()
     ) throws {
         try self.init(
             storeURL: storeURL,
             sourceAdapters: sourceAdapters,
             clock: clock,
             receiverConfiguration: receiverConfiguration,
+            retentionPolicy: retentionPolicy,
             beforePersistingPerformance: nil
         )
     }
@@ -75,11 +83,13 @@ public final class TelemetryRuntime: @unchecked Sendable {
         sourceAdapters: [any SourceAdapter],
         clock: any Clock = SystemClock(),
         receiverConfiguration: OTLPReceiverConfiguration = OTLPReceiverConfiguration(),
+        retentionPolicy: RetentionPolicy = RetentionPolicy(),
         beforePersistingPerformance: (@Sendable () -> Void)?
     ) throws {
         self.clock = clock
         let store = try SQLiteFactStore(url: storeURL)
         self.store = store
+        retentionManager = RetentionManager(store: store, policy: retentionPolicy)
         self.sourceAdapters = sourceAdapters
         self.receiverConfiguration = receiverConfiguration
         self.beforePersistingPerformance = beforePersistingPerformance
@@ -102,13 +112,26 @@ public final class TelemetryRuntime: @unchecked Sendable {
 
     public func lightSnapshot(filter: MetricFilter = .all, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
         try storeQueue.sync {
-            try refresh(filter: filter, performanceRange: performanceRange)
+            let status = try enforceRetention()
+            if status.ingestionPaused {
+                applyCapacityHealth(status)
+                return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+            }
+            let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
+            let afterRefresh = try enforceRetention()
+            if afterRefresh.ingestionPaused { applyCapacityHealth(afterRefresh) }
+            if afterRefresh.level != status.level || afterRefresh.didPrune || afterRefresh.ingestionPaused {
+                return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+            }
+            return snapshot
         }
     }
 
     public func lightSnapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
         try storeQueue.sync {
-            try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+            let status = try enforceRetention()
+            if status.ingestionPaused { applyCapacityHealth(status) }
+            return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
         }
     }
 
@@ -116,6 +139,8 @@ public final class TelemetryRuntime: @unchecked Sendable {
     /// It reads a bounded, bucket-aligned history only after the user opens Trends.
     public func trendSnapshot(filter: MetricFilter = .all) throws -> TrendSnapshot {
         try storeQueue.sync {
+            let status = try enforceRetention()
+            if status.ingestionPaused { applyCapacityHealth(status) }
             let bucketSeconds = 30.0
             let closedEnd = floor(clock.now.timeIntervalSince1970 / bucketSeconds) * bucketSeconds
             let interval = DateInterval(
@@ -135,6 +160,9 @@ public final class TelemetryRuntime: @unchecked Sendable {
             )
             var facts = window.rows
             var snapshotHealth = sourceHealth
+            if try store.retentionCoverage(in: interval) == .partial {
+                snapshotHealth.append(Self.retentionPrunedHealth(impact: .usage))
+            }
             if window.isTruncated {
                 snapshotHealth = Self.applyingOverload(
                     Self.overloadHealth(
@@ -167,7 +195,26 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     public func ingestPerformance(_ facts: [PerformanceFact]) throws {
-        try storeQueue.sync { try store.upsertPerformanceFacts(facts) }
+        try storeQueue.sync {
+            let status = try enforceRetention()
+            if status.ingestionPaused {
+                throw TelemetryRuntimeError.ingestionPaused(
+                    status.diagnosticCode ?? RetentionManager.hardLimitDiagnostic
+                )
+            }
+            try store.upsertPerformanceFacts(facts)
+            let afterIngest = try enforceRetention()
+            if afterIngest.ingestionPaused { applyCapacityHealth(afterIngest) }
+        }
+    }
+
+    @discardableResult
+    public func retentionTick() throws -> RetentionResult {
+        try storeQueue.sync {
+            let status = try enforceRetention()
+            if status.ingestionPaused { applyCapacityHealth(status) }
+            return status
+        }
     }
 
     func storedPerformanceFactCountForTesting() throws -> Int {
@@ -179,6 +226,39 @@ public final class TelemetryRuntime: @unchecked Sendable {
     public func setEnhancedTelemetryEnabled(_ enabled: Bool) throws {
         lifecycleGate.lock()
         defer { lifecycleGate.unlock() }
+        try setEnhancedTelemetryEnabledLocked(enabled)
+    }
+
+    /// Serializes receiver shutdown, in-flight refresh completion, durable
+    /// deletion, and runtime-cache invalidation as one lifecycle operation.
+    public func resetData() throws -> TelemetryResetResult {
+        lifecycleGate.lock()
+        defer { lifecycleGate.unlock() }
+        let shouldRestartReceiver = storeQueue.sync { receiver != nil }
+        try setEnhancedTelemetryEnabledLocked(false)
+        let result: TelemetryResetResult
+        do {
+            result = try storeQueue.sync {
+                let result = try store.resetTelemetryData(at: clock.now)
+                observationQueue = SourceObservationQueue()
+                pendingIncrementalScans.removeAll()
+                incrementalReplays.removeAll()
+                sourceHealth.removeAll()
+                lastRetentionResult = nil
+                startupFailureMessage = nil
+                return result
+            }
+        } catch {
+            if shouldRestartReceiver { try? setEnhancedTelemetryEnabledLocked(true) }
+            throw error
+        }
+        // The destructive Reset is already committed. Receiver restart failure
+        // is retained as runtime health, not misreported as a failed Reset.
+        if shouldRestartReceiver { try? setEnhancedTelemetryEnabledLocked(true) }
+        return result
+    }
+
+    private func setEnhancedTelemetryEnabledLocked(_ enabled: Bool) throws {
         if !enabled {
             let toStop = storeQueue.sync { () -> OTLPHTTPReceiver? in
                 let existing = receiver
@@ -201,7 +281,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 self.beforePersistingPerformance?()
                 try self.storeQueue.sync {
                     guard self.activeReceiverToken == token else { return }
+                    let status = try self.enforceRetention()
+                    guard !status.ingestionPaused else {
+                        throw TelemetryRuntimeError.ingestionPaused(
+                            status.diagnosticCode ?? RetentionManager.hardLimitDiagnostic
+                        )
+                    }
                     try self.store.upsertPerformanceFacts(facts)
+                    let afterIngest = try self.enforceRetention()
+                    if afterIngest.ingestionPaused { self.applyCapacityHealth(afterIngest) }
                 }
             }
             created = next
@@ -249,12 +337,19 @@ public final class TelemetryRuntime: @unchecked Sendable {
             Self.maximumQueryFacts - 1,
             unhealthyUsageCount * Self.maximumRetainedFactsPerSource
         )
-        let window = try store.factWindow(in: DateInterval(
+        let usageInterval = DateInterval(
             start: clock.now.addingTimeInterval(-TimeInterval(TokenBurnDefinition.windowSeconds)),
             end: clock.now
-        ), limit: Self.maximumQueryFacts - retainedReserve)
+        )
+        let window = try store.factWindow(
+            in: usageInterval,
+            limit: Self.maximumQueryFacts - retainedReserve
+        )
         var facts = window.rows
         var snapshotHealth = sourceHealth
+        if try store.retentionCoverage(in: usageInterval) == .partial {
+            snapshotHealth.append(Self.retentionPrunedHealth(impact: .usage))
+        }
         if window.isTruncated {
             snapshotHealth = Self.applyingOverload(
                 Self.overloadHealth(
@@ -284,14 +379,18 @@ public final class TelemetryRuntime: @unchecked Sendable {
             let existing = Set(facts.map(\.id))
             facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
         }
+        let performanceInterval = DateInterval(
+            start: clock.now.addingTimeInterval(-performanceRange.seconds),
+            end: clock.now
+        )
         let performanceWindow = try store.performanceFactWindow(
-            in: DateInterval(
-                start: clock.now.addingTimeInterval(-performanceRange.seconds),
-                end: clock.now
-            ),
+            in: performanceInterval,
             limit: Self.maximumQueryFacts
         )
         let performanceFacts = performanceWindow.rows
+        if try store.retentionCoverage(in: performanceInterval) == .partial {
+            snapshotHealth.append(Self.retentionPrunedHealth(impact: .performance))
+        }
         if performanceWindow.isTruncated {
             snapshotHealth = Self.applyingOverload(
                 Self.overloadHealth(
@@ -309,7 +408,8 @@ public final class TelemetryRuntime: @unchecked Sendable {
             now: clock.now,
             sourceHealth: snapshotHealth,
             filter: filter,
-            performanceRange: performanceRange
+            performanceRange: performanceRange,
+            retentionStatus: lastRetentionResult
         )
     }
 
@@ -365,6 +465,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
         } + overloads
     }
 
+    private static func retentionPrunedHealth(impact: SourceImpact) -> SourceHealth {
+        SourceHealth(
+            sourceID: "retention",
+            isHealthy: false,
+            diagnosticCode: "RETENTION_PRUNED",
+            impacts: [impact]
+        )
+    }
+
     private func refresh(
         sourceAdapter: any SourceAdapter,
         health: inout [SourceHealth]
@@ -381,6 +490,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
                     prior?.replayState = nil
                 }
                 let scan = try incremental.scan(clock: clock, state: prior)
+                let resetCutoff = try store.telemetryResetCutoff()
+                let eligibleObservations = scan.observations.filter { observation in
+                    guard let resetCutoff else { return true }
+                    return observation.observedAt > resetCutoff
+                }
                 var replay = incrementalReplays[sourceID]
                     ?? persistedReplay.map {
                         IncrementalReplay(
@@ -405,7 +519,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 }
 
                 let ownership = sourceOwnership(for: sourceAdapter)
-                if replay.acceptedCount > scan.observations.count,
+                if replay.acceptedCount > eligibleObservations.count,
                    replay.acceptedPrefixDigest != nil,
                    !scan.health.isHealthy {
                     incrementalReplays[sourceID] = replay
@@ -431,14 +545,14 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 let acceptedPrefixMatches: Bool
                 if replay.acceptedCount == 0 {
                     acceptedPrefixMatches = true
-                } else if replay.acceptedCount > scan.observations.count {
+                } else if replay.acceptedCount > eligibleObservations.count {
                     acceptedPrefixMatches = false
                 } else {
                     let candidateDigest = try ReplayCheckpoint.digest(
-                        observations: scan.observations.prefix(replay.acceptedCount),
+                        observations: eligibleObservations.prefix(replay.acceptedCount),
                         deletionScopes: candidateScopes
                     )
-                    acceptedPrefixMatches = scan.observations[replay.acceptedCount - 1].observationIdentity
+                    acceptedPrefixMatches = eligibleObservations[replay.acceptedCount - 1].observationIdentity
                         == replay.lastAcceptedIdentity
                         && candidateDigest == replay.acceptedPrefixDigest
                 }
@@ -452,7 +566,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 var scopes = candidateScopes
                 if replay.deletionScopesApplied { scopes = [] }
 
-                let remaining = scan.observations.dropFirst(replay.acceptedCount)
+                let remaining = eligibleObservations.dropFirst(replay.acceptedCount)
                 let queuedBefore = observationQueue.count(for: sourceID)
                 for observation in remaining {
                     observationQueue.enqueue(observation, sourceID: sourceID)
@@ -476,9 +590,9 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 let acceptedEnd = replay.acceptedCount + acceptedCount
                 if acceptedCount > 0, overloaded {
                     replay.acceptedCount = acceptedEnd
-                    replay.lastAcceptedIdentity = scan.observations[acceptedEnd - 1].observationIdentity
+                    replay.lastAcceptedIdentity = eligibleObservations[acceptedEnd - 1].observationIdentity
                     replay.acceptedPrefixDigest = try ReplayCheckpoint.digest(
-                        observations: scan.observations.prefix(acceptedEnd),
+                        observations: eligibleObservations.prefix(acceptedEnd),
                         deletionScopes: candidateScopes
                     )
                 }
@@ -537,7 +651,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 ))
                 return
             }
-            let observations = try sourceAdapter.loadObservations(clock: clock)
+            let resetCutoff = try store.telemetryResetCutoff()
+            let observations = try sourceAdapter.loadObservations(clock: clock).filter { observation in
+                guard let resetCutoff else { return true }
+                return observation.observedAt > resetCutoff
+            }
             try store.replaceAll(CanonicalIngestor().ingest(observations))
             health.append(sourceOwnership(for: sourceAdapter).health(isHealthy: true))
         }
@@ -564,4 +682,25 @@ public final class TelemetryRuntime: @unchecked Sendable {
         }
         return ownership.health(isHealthy: receiver.isRunning)
     }
+
+    private func enforceRetention() throws -> RetentionResult {
+        let result = try retentionManager.enforce(at: clock.now)
+        lastRetentionResult = result
+        return result
+    }
+
+    private func applyCapacityHealth(_ status: RetentionResult) {
+        guard let diagnosticCode = status.diagnosticCode else { return }
+        sourceHealth.removeAll { $0.sourceID == "capacity" }
+        sourceHealth.append(SourceHealth(
+            sourceID: "capacity",
+            isHealthy: false,
+            diagnosticCode: diagnosticCode,
+            impacts: [.usage, .performance]
+        ))
+    }
+}
+
+public enum TelemetryRuntimeError: Error, Equatable {
+    case ingestionPaused(String)
 }

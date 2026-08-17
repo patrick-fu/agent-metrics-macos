@@ -98,6 +98,9 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
     public var measurementQuality: MeasurementQuality
     public var authority: String
     public var definitionVersion: String
+    /// Durable replacement identity. Retention may remove this Fact without
+    /// changing the selected canonical cohort.
+    public var supersededBy: String?
 
     public init(
         id: String,
@@ -118,7 +121,8 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
         sourceChannel: SourceChannel? = nil,
         authorityTier: AuthorityTier? = nil,
         measurementGranularity: UsageGranularity? = nil,
-        measurementRange: DateInterval? = nil
+        measurementRange: DateInterval? = nil,
+        supersededBy: String? = nil
     ) {
         self.id = id
         self.schemaVersion = schemaVersion
@@ -139,6 +143,7 @@ public struct UsageFact: Sendable, Equatable, Identifiable {
         self.authorityTier = authorityTier ?? AuthorityTier.inferred(authority: authority)
         self.measurementGranularity = measurementGranularity ?? ((modelCallID?.isEmpty == false) ? .modelCall : .unknown)
         self.measurementRange = measurementRange ?? DateInterval(start: .distantPast, end: .distantFuture)
+        self.supersededBy = supersededBy
     }
 }
 
@@ -285,6 +290,7 @@ public struct LightSnapshot: Sendable, Equatable {
     public var filter: MetricFilter
     public var generatedAt: Date
     public var sourceHealth: [SourceHealth]
+    public var retentionStatus: RetentionResult?
 }
 
 extension LightSnapshot {

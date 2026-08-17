@@ -95,12 +95,21 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         var seenIdentities = Set<String>()
 
         let files = try discoverRollouts()
-        let discoveredIdentities = Set(files.map(\.identity))
-        working.files = working.files.filter { discoveredIdentities.contains($0.key) }
-        working.watermarks = working.watermarks.filter { key, _ in
-            discoveredIdentities.contains { identity in
-                key == identity || key.hasPrefix("\(identity):")
-            }
+        let missingKnownFiles = !Set(working.files.keys).subtracting(files.map(\.identity)).isEmpty
+        if files.isEmpty, !working.files.isEmpty {
+            return SourceScan(
+                observations: [],
+                state: working,
+                rebuildSource: false,
+                diagnostics: working.diagnosticCodes.map { SourceDiagnostic(code: $0, sourceID: sourceID) },
+                health: SourceHealth.usage(
+                    sourceID: sourceID,
+                    codingAgent: .codex,
+                    channel: .codexRollout,
+                    isHealthy: false,
+                    diagnosticCode: "SOURCE_UNAVAILABLE"
+                )
+            )
         }
 
         for file in files {
@@ -132,8 +141,8 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             sourceID: sourceID,
             codingAgent: .codex,
             channel: .codexRollout,
-            isHealthy: uniqueDiagnostics.isEmpty,
-            diagnosticCode: uniqueDiagnostics.first?.code
+            isHealthy: !missingKnownFiles && uniqueDiagnostics.isEmpty,
+            diagnosticCode: missingKnownFiles ? "SOURCE_UNAVAILABLE" : uniqueDiagnostics.first?.code
         )
         return SourceScan(
             observations: observations,

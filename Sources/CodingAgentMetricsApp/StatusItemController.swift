@@ -26,6 +26,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var scheduler = SnapshotScheduler()
     private var refreshTimer: Timer?
     private var eventMonitor: Any?
+    private lazy var resetData: ResetDataController = {
+        guard let runtime else { return ResetDataController() }
+        return ResetDataController(reset: { [weak self, runtime] in
+            self?.lightLoader.invalidate()
+            self?.detailLoader.invalidate()
+            let result = try runtime.resetData()
+            self?.snapshots.light = nil
+            self?.snapshots.detail = nil
+            self?.detailFilter = nil
+            return result
+        })
+    }()
 
     override init() {
         let createdRuntime = try? TelemetryRuntime(
@@ -102,7 +114,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func configureContent() {
-        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, loadSnapshot: { [weak self] newFilter, performanceRange in
+        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, resetData: resetData, loadSnapshot: { [weak self] newFilter, performanceRange in
             self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange)
         }, loadTrends: { [weak self] newFilter in
             self?.requestDetailSnapshot(filter: newFilter)

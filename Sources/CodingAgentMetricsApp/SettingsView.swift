@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
+    let resetData: ResetDataController
 
     var body: some View {
         @Bindable var launchAtLogin = lifecycleServices.launchAtLogin
@@ -51,6 +52,47 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .accessibilityLabel("Enhanced telemetry error: \(failureMessage)")
+            }
+            Divider()
+            Text("Reset Data")
+                .font(.subheadline)
+            Text("Deletes this app's telemetry and managed copies. Source logs and external user-saved files stay untouched; settings are preserved.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Review Reset Scope…", role: .destructive) {
+                resetData.requestReset()
+            }
+            .disabled(!resetData.isAvailable || resetData.phase == .resetting)
+            .accessibilityHint("Reviews the complete deletion scope before a separate destructive confirmation.")
+            .confirmationDialog(
+                "Reset all app-owned telemetry?",
+                isPresented: Binding(
+                    get: { resetData.isConfirmationPresented },
+                    set: { if !$0 { resetData.cancelReset() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Reset App Telemetry", role: .destructive) {
+                    resetData.confirmReset()
+                }
+                Button("Cancel", role: .cancel) {
+                    resetData.cancelReset()
+                }
+            } message: {
+                Text(resetData.scope)
+            }
+            if case .completed = resetData.phase {
+                Text("App telemetry was reset. Settings and Coding Agent source logs were preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case .completedCleanupPending = resetData.phase {
+                Text("App telemetry was reset. Space cleanup is pending and will retry automatically; settings and Coding Agent source logs were preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if case let .failed(message) = resetData.phase {
+                Text("Reset failed: \(message)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             Button("Check for Updates") {

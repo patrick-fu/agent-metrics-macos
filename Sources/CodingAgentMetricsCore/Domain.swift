@@ -62,6 +62,9 @@ public enum UnavailableReasonCode: String, Sendable, Equatable, Codable {
     case stableModelCallIdentityUnavailable = "STABLE_MODEL_CALL_ID_UNAVAILABLE"
     case requestTimingUnavailable = "REQUEST_TIMING_UNAVAILABLE"
     case authorityConflict = "AUTHORITY_CONFLICT"
+    case capacityProtectedWindow = "CAPACITY_PROTECTED_WINDOW"
+    case capacityHardLimit = "CAPACITY_HARD_LIMIT"
+    case retentionPruned = "RETENTION_PRUNED"
 
     static func sourceDiagnostic(_ code: String?) -> UnavailableReasonCode? {
         guard let code else { return nil }
@@ -70,6 +73,9 @@ public enum UnavailableReasonCode: String, Sendable, Equatable, Codable {
         case "SOURCE_UNAVAILABLE": .sourceUnavailable
         case "SOURCE_OVERLOADED", "OVERLOADED": .sourceOverloaded
         case "UNKNOWN_SCHEMA", "PARSER_VERSION_CHANGED", "UNSUPPORTED_SCHEMA": .unsupportedSchema
+        case "CAPACITY_PROTECTED_WINDOW": .capacityProtectedWindow
+        case "CAPACITY_HARD_LIMIT": .capacityHardLimit
+        case "RETENTION_PRUNED": .retentionPruned
         default: .sourceUnavailable
         }
     }
@@ -86,6 +92,9 @@ public enum UnavailableReasonCode: String, Sendable, Equatable, Codable {
         case .stableModelCallIdentityUnavailable: "Stable Model Call ID unavailable for this source"
         case .requestTimingUnavailable: "Enable loopback OTel request traces; local logs do not contain request-level timings."
         case .authorityConflict: "Conflicting source authorities cannot be combined."
+        case .capacityProtectedWindow: "Ingestion is paused because the protected seven-day window reached capacity."
+        case .capacityHardLimit: "Ingestion is paused because the telemetry store remains at its hard limit."
+        case .retentionPruned: "Older telemetry was pruned; this range has partial coverage."
         }
     }
 }
@@ -95,6 +104,7 @@ public enum MetricAction: String, Sendable, Equatable, Codable {
     case waitForObservations = "WAIT_FOR_OBSERVATIONS"
     case updateSource = "UPDATE_SOURCE"
     case reduceFilter = "REDUCE_FILTER"
+    case resetData = "RESET_DATA"
 
     static func recommended(for reason: UnavailableReasonCode?) -> MetricAction? {
         switch reason {
@@ -103,6 +113,8 @@ public enum MetricAction: String, Sendable, Equatable, Codable {
         case .sourceUnavailable, .sourceFailure, .sourceOverloaded, .unsupportedSchema: .updateSource
         case .unsupportedCapability, .stableModelCallIdentityUnavailable, .requestTimingUnavailable: .enableEnhancedTelemetry
         case .authorityConflict, .none: nil
+        case .capacityProtectedWindow, .capacityHardLimit: .resetData
+        case .retentionPruned: nil
         }
     }
 
@@ -112,6 +124,7 @@ public enum MetricAction: String, Sendable, Equatable, Codable {
         case .waitForObservations: "Wait for new observations"
         case .updateSource: "Update or restore the source"
         case .reduceFilter: "Reduce the active filter"
+        case .resetData: "Reset app telemetry data"
         }
     }
 }

@@ -88,6 +88,7 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var burnMetadata: MetricMetadataPresentation
     public var callsMetadata: MetricMetadataPresentation
     public var sourceHealthText: String
+    public var capacityText: String?
 
     public init(snapshot: LightSnapshot) {
         title = "Output Throughput"
@@ -158,6 +159,16 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
         sourceHealthText = snapshot.sourceHealth.isEmpty ? "Source health unavailable" : snapshot.sourceHealth.map { health in
             "\(health.sourceID): \(health.isHealthy ? "Healthy" : health.reasonCode?.rawValue ?? "Degraded")"
         }.joined(separator: " · ")
+        capacityText = switch snapshot.retentionStatus?.level {
+        case .warning:
+            "Capacity warning: telemetry storage is approaching its hard limit."
+        case .hardLimit:
+            snapshot.retentionStatus?.diagnosticCode == RetentionManager.protectedWindowDiagnostic
+                ? "Ingestion paused: the protected seven-day window reached capacity. Reset Data to resume."
+                : "Ingestion paused: telemetry storage reached its hard limit."
+        case .normal, .none:
+            nil
+        }
         agentActiveCount = snapshot.filter.agents.activeCount
         modelActiveCount = snapshot.filter.models.activeCount
         agentChips = Self.chips(

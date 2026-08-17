@@ -3,6 +3,102 @@ import Testing
 @testable import CodingAgentMetricsCore
 
 struct ClaudeTranscriptIngestTests {
+    @Test func resetCutoffExcludesExistingAndEqualTimestampTranscriptObservations() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeTranscript(lines: [userLine(), assistantLine(outputTokens: 1_800)], terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == 1_800)
+
+        _ = try runtime.resetData()
+        let resetStore = try SQLiteFactStore(url: storeURL)
+        #expect(try resetStore.sourceState(sourceID: "claude-code") == nil)
+        #expect(try resetStore.telemetryResetCutoff() == clock.now)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+
+        try home.appendTranscript(assistantLine(
+            outputTokens: 2_200,
+            timestamp: "2026-04-15T12:00:20.000Z"
+        ))
+        try home.appendTranscript(assistantLine(
+            outputTokens: 2_700,
+            timestamp: "2026-04-15T12:00:21.000Z"
+        ))
+        let restarted = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:30Z"))
+        )
+        #expect(try restarted.lightSnapshot().outputThroughput.selectedOutputTokens == 500)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().map(\.outputTokens) == [500])
+    }
+
+    @Test func resetWhileTranscriptIsMissingDoesNotReingestHistoryAfterRecovery() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        let initial = [userLine(), assistantLine(outputTokens: 1_800)]
+        try home.writeTranscript(lines: initial, terminated: true)
+        let runtime = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: clock
+        )
+        _ = try runtime.lightSnapshot()
+        try FileManager.default.removeItem(at: home.transcriptURL)
+
+        _ = try runtime.resetData()
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code") == nil)
+        try home.writeTranscript(lines: initial, terminated: true)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+
+        try home.appendTranscript(assistantLine(
+            outputTokens: 2_700,
+            timestamp: "2026-04-15T12:00:21.000Z"
+        ))
+        let restarted = try TelemetryRuntime(
+            storeURL: storeURL,
+            sourceAdapter: ClaudeTranscriptSourceAdapter(home: home.root),
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:30Z"))
+        )
+        #expect(try restarted.lightSnapshot().outputThroughput.selectedOutputTokens == 900)
+    }
+
+    @Test func resetSucceedsWithoutScanningAFailingClaudeAdapterAndCutoffFiltersAfterRecovery() throws {
+        let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let storeURL = uniqueStoreURL()
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+        try home.writeTranscript(lines: [
+            userLine(),
+            assistantLine(outputTokens: 1_800, timestamp: "2026-04-15T12:00:10.000Z"),
+        ], terminated: true)
+        let adapter = FlakyClaudeAdapter(inner: ClaudeTranscriptSourceAdapter(home: home.root))
+        let runtime = try TelemetryRuntime(storeURL: storeURL, sourceAdapter: adapter, clock: clock)
+        _ = try runtime.lightSnapshot()
+        adapter.failNext = true
+
+        _ = try runtime.resetData()
+        #expect(try SQLiteFactStore(url: storeURL).sourceState(sourceID: "claude-code") == nil)
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        adapter.failNext = false
+        #expect(try runtime.lightSnapshot().outputThroughput.selectedOutputTokens == nil)
+        #expect(try SQLiteFactStore(url: storeURL).allFacts().isEmpty)
+    }
+
     @Test func oversizedContentLineIsSkippedBoundedlyAndFollowingUsageRemainsReachable() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let home = try TempClaudeHome()
@@ -804,6 +900,13 @@ private final class TempClaudeHome {
             body.append("\n")
         }
         try body.write(to: transcriptURL, atomically: true, encoding: .utf8)
+    }
+
+    func appendTranscript(_ line: String) throws {
+        let handle = try FileHandle(forWritingTo: transcriptURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\(line)\n".utf8))
     }
 
     func tearDown() {

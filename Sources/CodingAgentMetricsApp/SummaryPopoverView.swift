@@ -27,6 +27,7 @@ struct SummaryPopoverView: View {
     @State private var requestedFilter: MetricFilter
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
+    let resetData: ResetDataController
     var loadSnapshot: (MetricFilter, PerformanceRange) -> Void
     var loadTrends: (MetricFilter) -> Void
     private var snapshot: LightSnapshot? { snapshots.light }
@@ -37,6 +38,7 @@ struct SummaryPopoverView: View {
         snapshots: RuntimeSnapshots? = nil,
         lifecycleServices: AppLifecycleServices = .live,
         telemetry: EnhancedTelemetryController? = nil,
+        resetData: ResetDataController? = nil,
         loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> Void = { _, _ in },
         loadTrends: @escaping (MetricFilter) -> Void = { _ in }
     ) {
@@ -44,6 +46,7 @@ struct SummaryPopoverView: View {
         _requestedFilter = State(initialValue: snapshot?.filter ?? .all)
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
+        self.resetData = resetData ?? ResetDataController()
         self.loadSnapshot = loadSnapshot
         self.loadTrends = loadTrends
     }
@@ -111,13 +114,19 @@ struct SummaryPopoverView: View {
             Text(presentation?.sourceHealthText ?? "Source health unavailable")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            if let capacityText = presentation?.capacityText {
+                Text(capacityText)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(capacityText)
+            }
             Button("View Trends") {
                 guard snapshot != nil else { return }
                 showsTrends = true
                 loadTrends(requestedFilter)
             }
             .accessibilityHint("Opens trend charts and exact values")
-            SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry)
+            SettingsView(lifecycleServices: lifecycleServices, telemetry: telemetry, resetData: resetData)
         }
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
