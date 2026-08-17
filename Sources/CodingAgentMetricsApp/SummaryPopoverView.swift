@@ -1,8 +1,18 @@
 import CodingAgentMetricsCore
+import CodingAgentMetricsLifecycle
 import SwiftUI
 
 struct SummaryPopoverView: View {
     let snapshot: LightSnapshot?
+    let lifecycleServices: AppLifecycleServices
+
+    init(
+        snapshot: LightSnapshot?,
+        lifecycleServices: AppLifecycleServices = .live
+    ) {
+        self.snapshot = snapshot
+        self.lifecycleServices = lifecycleServices
+    }
 
     var body: some View {
         let presentation = snapshot.map(LightSnapshotPresentation.init)
@@ -40,6 +50,7 @@ struct SummaryPopoverView: View {
                 meta(title: "State", value: presentation?.dataStateText ?? "Absent")
                 meta(title: "Coverage", value: presentation?.coverageText ?? "Complete")
             }
+            SettingsView(lifecycleServices: lifecycleServices)
         }
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)

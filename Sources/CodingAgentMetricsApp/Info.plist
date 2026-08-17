@@ -24,5 +24,11 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUFeedURL</key>
+    <string>https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml</string>
 </dict>
 </plist>
