@@ -29,7 +29,8 @@ mkdir -p "$bundle/Contents/Frameworks"
 
 core_bundle="$bin_dir/CodingAgentMetrics_CodingAgentMetricsCore.bundle"
 if [ -d "$core_bundle" ]; then
-  cp -R "$core_bundle" "$bundle/CodingAgentMetrics_CodingAgentMetricsCore.bundle"
+  mkdir -p "$bundle/Contents/Resources"
+  cp -R "$core_bundle" "$bundle/Contents/Resources/CodingAgentMetrics_CodingAgentMetricsCore.bundle"
 fi
 
 echo "$bundle"

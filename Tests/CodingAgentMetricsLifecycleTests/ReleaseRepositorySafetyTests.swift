@@ -96,6 +96,14 @@ struct ReleaseRepositorySafetyTests {
         #expect(runbook.contains("#27 remains blocked"))
     }
 
+    @Test func appBuilderPlacesTheCoreResourceBundleInContentsResources() throws {
+        let script = try Self.contents("scripts/build-app.sh")
+
+        #expect(script.contains("mkdir -p \"$bundle/Contents/Resources\""))
+        #expect(script.contains("cp -R \"$core_bundle\" \"$bundle/Contents/Resources/CodingAgentMetrics_CodingAgentMetricsCore.bundle\""))
+        #expect(!script.contains("cp -R \"$core_bundle\" \"$bundle/$core_bundle\""))
+    }
+
     private static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
