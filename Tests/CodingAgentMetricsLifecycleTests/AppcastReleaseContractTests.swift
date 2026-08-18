@@ -41,9 +41,25 @@ struct AppcastReleaseContractTests {
     @Test func rejectsAFeedWithoutExactlyOneReleaseItem() {
         #expect(throws: AppcastReleaseContractError.invalidAppcast) {
             try AppcastReleaseContract.validate(
-                "<rss><channel><sparkle:version xmlns:sparkle=\"http://www.andymatuschak.org/xml-namespaces/sparkle\">2</sparkle:version></channel></rss>",
+                "<rss><channel><sparkle:version xmlns:sparkle=\"https://sparkle.example.invalid/xml-namespaces/sparkle\">2</sparkle:version></channel></rss>",
                 currentBuild: 1
             )
+        }
+    }
+
+    @Test func rejectsDuplicateReleaseMetadata() {
+        let xml = Self.appcastXML(
+            version: "2",
+            enclosureURL: "https://example.invalid/update.dmg",
+            length: "42",
+            edSignature: "synthetic"
+        ).replacingOccurrences(
+            of: "<sparkle:version>2</sparkle:version>",
+            with: "<sparkle:version>2</sparkle:version><sparkle:version>3</sparkle:version>"
+        )
+
+        #expect(throws: AppcastReleaseContractError.invalidAppcast) {
+            try AppcastReleaseContract.validate(xml, currentBuild: 1)
         }
     }
 
@@ -74,7 +90,7 @@ struct AppcastReleaseContractTests {
         let signature = edSignature.map { "sparkle:edSignature=\"\($0)\"" } ?? ""
         let channelElement = channel.map { "<sparkle:channel>\($0)</sparkle:channel>" } ?? ""
         return """
-        <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
+        <rss xmlns:sparkle="https://sparkle.example.invalid/xml-namespaces/sparkle"><channel><item>
         <sparkle:version>\(version)</sparkle:version>\(channelElement)
         <enclosure url="\(enclosureURL)" length="\(length)" \(signature) />
         </item></channel></rss>

@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "CodingAgentMetricsLifecycle", targets: ["CodingAgentMetricsLifecycle"]),
         .executable(name: "CodingAgentMetricsApp", targets: ["CodingAgentMetricsApp"]),
         .executable(name: "CodingAgentMetricsBenchmark", targets: ["CodingAgentMetricsBenchmark"]),
+        .executable(name: "CodingAgentMetricsReleaseCheck", targets: ["CodingAgentMetricsReleaseCheck"]),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
@@ -33,6 +34,10 @@ let package = Package(
         .executableTarget(
             name: "CodingAgentMetricsBenchmark",
             dependencies: ["CodingAgentMetricsCore"]
+        ),
+        .executableTarget(
+            name: "CodingAgentMetricsReleaseCheck",
+            dependencies: ["CodingAgentMetricsLifecycle"]
         ),
         .target(
             name: "CodingAgentMetricsLifecycle",
