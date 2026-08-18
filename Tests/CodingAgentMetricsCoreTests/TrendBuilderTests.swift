@@ -216,6 +216,8 @@ struct TrendBuilderTests {
         let estimated = TrendPresentation(chart: estimatedChart, reduceMotion: true)
         #expect(estimated.qualityText == "Estimated")
         #expect(estimated.allowsContinuousAnimation == false)
+        #expect(estimated.seriesCues.map(\.text) == ["Estimated"])
+        #expect(estimated.seriesCues.map(\.symbol) == ["┄"])
 
         var fallback = measured
         fallback.id = "fallback"
@@ -231,6 +233,69 @@ struct TrendBuilderTests {
         #expect(conflicted.coverage == .partial)
         #expect(conflicted.sourceAuthority == "mixed")
         #expect(TrendPresentation(chart: conflicted).coverageText == "Partial")
+    }
+
+    @Test func presentationGivesBurnPartsNonColorCuesAndHonorsReduceMotion() {
+        let parts = TokenParts(inputUncached: 10, cacheRead: 20, cacheWrite: 30, outputVisible: 40, reasoning: 50)
+        let chart = TrendBuilder().build(
+            facts: [fact(id: "parts", agent: .codex, modelRaw: "gpt-a", display: "A", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: 40, parts: parts)],
+            now: alignedNow
+        ).tokenBurn
+        let reduced = TrendPresentation(chart: chart, reduceMotion: true)
+        #expect(reduced.allowsContinuousAnimation == false)
+        #expect(reduced.partCues.map(\.title) == ["Input uncached", "Cache read", "Cache write", "Output visible", "Reasoning"])
+        #expect(reduced.partCues.map(\.symbol) == ["■", "▣", "▤", "▲", "●"])
+        #expect(reduced.partCues.map(\.textureName) == ["solid", "grid", "stripes", "triangle", "dots"])
+        #expect(Set(reduced.partCues.map(\.symbol)).count == 5)
+        #expect(TrendPresentation(chart: chart).allowsContinuousAnimation)
+        let livePlans = TrendPresentation(chart: chart).partRenderPlans
+        #expect(reduced.partRenderPlans == livePlans)
+        #expect(livePlans.map(\.textureName) == reduced.partCues.map(\.textureName))
+        #expect(livePlans.map(\.pattern) == ["solid", "grid", "stripes", "triangle", "dots"])
+    }
+
+    @Test func fourNormalSeriesGetDistinctStableNonColorCues() {
+        let facts = (1...4).map { value in
+            fact(id: "m\(value)", agent: .codex, modelRaw: "model-\(value)", display: "Model \(value)", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: value * 10)
+        }
+        let chart = TrendBuilder().build(facts: facts, now: alignedNow).outputThroughput
+        #expect(chart.series.allSatisfy { $0.emphasis == .normal })
+        let presentation = TrendPresentation(chart: chart)
+        #expect(Set(presentation.seriesCues.map(\.endpoint)) == Set(chart.series.map { $0.identity.accessibilityLabel }))
+        #expect(presentation.seriesCues.allSatisfy { $0.endpoint == $0.identityLabel })
+
+        let reversed = TrendPresentation(chart: TrendBuilder().build(facts: facts.reversed(), now: alignedNow).outputThroughput)
+        let first = Dictionary(uniqueKeysWithValues: presentation.seriesCues.map { ($0.identityLabel, "\($0.symbol)|\($0.dash)|\($0.endpoint)") })
+        let second = Dictionary(uniqueKeysWithValues: reversed.seriesCues.map { ($0.identityLabel, "\($0.symbol)|\($0.dash)|\($0.endpoint)") })
+        #expect(first == second)
+    }
+
+    @Test func identityCueIgnoresColorSlotCollisionAndTopFourMembership() {
+        let pair = collidingRawIdentities()
+        let left = TrendNonColorCuePalette.cue(forRawIdentity: pair.0)
+        let right = TrendNonColorCuePalette.cue(forRawIdentity: pair.1)
+        #expect(TrendColorPalette.slotIndex(pair.0) == TrendColorPalette.slotIndex(pair.1))
+        #expect(left.endpoint == pair.0)
+        #expect(right.endpoint == pair.1)
+        #expect(left.endpoint != right.endpoint)
+        #expect(left == TrendNonColorCuePalette.cue(forRawIdentity: pair.0))
+
+        let leader = fact(id: "lead", agent: .codex, modelRaw: pair.0, display: "Lead", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: 500)
+        let stable = (1...3).map { value in
+            fact(id: "keep-\(value)", agent: .codex, modelRaw: "keep-\(value)", display: "Keep \(value)", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: 80)
+        }
+        let four = TrendPresentation(chart: TrendBuilder().build(facts: [leader] + stable, now: alignedNow).outputThroughput)
+        let extras = (1...3).map { value in
+            fact(id: "extra-\(value)", agent: .codex, modelRaw: "extra-\(value)", display: "Extra \(value)", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: 40)
+        }
+        let six = TrendPresentation(chart: TrendBuilder().build(facts: [leader] + stable + extras, now: alignedNow).outputThroughput)
+        let before = four.seriesCues.first { $0.identityLabel == pair.0 }
+        let after = six.seriesCues.first { $0.identityLabel == pair.0 }
+        #expect(before?.symbol == after?.symbol)
+        #expect(before?.dash == after?.dash)
+        #expect(before?.endpoint == pair.0)
+        #expect(after?.endpoint == pair.0)
+        #expect(Set(six.seriesCues.map(\.endpoint)).count == six.seriesCues.count)
     }
 
     @Test func burnBarsKeepMutuallyExclusivePartsAndTheNormalizedTotal() throws {
@@ -378,6 +443,33 @@ struct TrendBuilderTests {
         let chart = TrendBuilder().build(facts: facts, now: alignedNow).outputThroughput
         #expect(chart.series.map(\.identity) == [.model("opus-b"), .model("opus-a")])
         #expect(chart.table.columnTitles == ["Opus (opus-b)", "Opus (opus-a)"])
+        #expect(chart.table.columns.map(\.identityLabel) == ["opus-b", "opus-a"])
+        #expect(chart.table.qualityText == "Derived")
+        #expect(chart.table.coverageText == "Complete")
+        #expect(chart.table.dataStateText == "-")
+    }
+
+    @Test func accessibleTableKeepsTopFourOtherAndExactAbsoluteValues() throws {
+        let facts = (1...6).map { value in
+            fact(id: "m\(value)", agent: .codex, modelRaw: "m\(value)", display: "Top \(value)", observedAt: alignedNow.addingTimeInterval(-10), outputTokens: (7 - value) * 10)
+        }
+        let chart = TrendBuilder().build(facts: facts, now: alignedNow).outputThroughput
+        #expect(chart.table.columnTitles == ["Top 1", "Top 2", "Top 3", "Top 4", "Other"])
+        #expect(chart.table.columns.map(\.identityLabel) == ["m1", "m2", "m3", "m4", "Other models"])
+        #expect(chart.table.rows.contains { $0.cells == ["60", "50", "40", "30", "30"] })
+        #expect(chart.table.columns.map(\.emphasisText) == ["Exact", "Exact", "Exact", "Exact", "Other"])
+
+        let valuedRow = try #require(chart.table.rows.firstIndex { $0.cells == ["60", "50", "40", "30", "30"] })
+        var cursor = AccessibleTrendTableCursor(rowIndex: valuedRow)
+        #expect(cursor.announcement(in: chart.table).contains("Top 1"))
+        #expect(cursor.announcement(in: chart.table).contains("m1"))
+        #expect(cursor.announcement(in: chart.table).contains("60"))
+        cursor.move(rows: 0, columns: 4, in: chart.table)
+        #expect(cursor.announcement(in: chart.table).contains("Other"))
+        #expect(cursor.announcement(in: chart.table).contains("Other models"))
+        #expect(cursor.announcement(in: chart.table).contains("30"))
+        cursor.move(rows: 0, columns: 1, in: chart.table)
+        #expect(cursor.columnIndex == 4)
     }
 
     @Test func topFourRankingUsesOnlyCompletedBucketsAndTotalsBeforeNames() {
@@ -407,6 +499,10 @@ struct TrendBuilderTests {
         #expect(chart.partSeries.map(\.part) == [.inputUncached, .cacheRead, .cacheWrite, .outputVisible, .reasoning])
         #expect(partCounts.reduce(0, +) == 150)
         #expect(chart.table.columnTitles == ["Input uncached", "Cache read", "Cache write", "Output visible", "Reasoning"])
+        #expect(chart.table.columns.map(\.identityLabel) == ["Input uncached", "Cache read", "Cache write", "Output visible", "Reasoning"])
+        #expect(chart.table.columns.map(\.symbol) == ["■", "▣", "▤", "▲", "●"])
+        #expect(Set(chart.table.columns.map(\.symbol)).count == 5)
+        #expect(chart.table.rows.contains { $0.cells == ["10", "20", "30", "40", "50"] })
     }
 
     @Test func callsConflictKeepsOneStableCallAndMatchesKPIConflictSemantics() {
@@ -490,4 +586,17 @@ private func observation(
 private struct FixedTrendSourceAdapter: SourceAdapter {
     let observations: [UsageObservation]
     func loadObservations(clock: any Clock) throws -> [UsageObservation] { observations }
+}
+
+private func collidingRawIdentities() -> (String, String) {
+    var seen: [Int: String] = [:]
+    for value in 0..<10_000 {
+        let identity = "slot-\(value)"
+        let slot = TrendColorPalette.slotIndex(identity)
+        if let existing = seen[slot], existing != identity {
+            return (existing, identity)
+        }
+        seen[slot] = identity
+    }
+    fatalError("expected a colorSlot collision")
 }

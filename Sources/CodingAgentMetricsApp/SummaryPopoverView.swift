@@ -14,15 +14,9 @@ final class RuntimeSnapshots: ObservableObject {
 }
 
 struct SummaryPopoverView: View {
-    private enum Activity: String, CaseIterable, Identifiable {
-        case burn = "Burn"
-        case calls = "Calls"
-        var id: String { rawValue }
-    }
-
     @ObservedObject private var snapshots: RuntimeSnapshots
-    @State private var showsTrends = false
-    @State private var activity: Activity = .burn
+    @ObservedObject private var accessibility: AccessibilitySession
+    @FocusState private var focusedControl: AccessibilityNavigation.Control?
     @State private var performanceRange: PerformanceRange = .oneHour
     @State private var requestedFilter: MetricFilter
     let lifecycleServices: AppLifecycleServices
@@ -37,6 +31,7 @@ struct SummaryPopoverView: View {
     init(
         snapshot: LightSnapshot?,
         snapshots: RuntimeSnapshots? = nil,
+        accessibility: AccessibilitySession? = nil,
         lifecycleServices: AppLifecycleServices = .live,
         telemetry: EnhancedTelemetryController? = nil,
         resetData: ResetDataController? = nil,
@@ -45,6 +40,7 @@ struct SummaryPopoverView: View {
         loadTrends: @escaping (MetricFilter) -> Void = { _ in }
     ) {
         _snapshots = ObservedObject(wrappedValue: snapshots ?? RuntimeSnapshots(light: snapshot))
+        _accessibility = ObservedObject(wrappedValue: accessibility ?? AccessibilitySession())
         _requestedFilter = State(initialValue: snapshot?.filter ?? .all)
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
@@ -59,11 +55,19 @@ struct SummaryPopoverView: View {
     }
 
     var body: some View {
-        if showsTrends {
-            trendsDetail
-        } else {
-            summary
+        Group {
+            switch accessibility.surface {
+            case .trends:
+                trendsDetail
+            case .settings, .diagnosticsConfirmation, .resetConfirmation:
+                settingsDetail
+            case .dismissed, .summary:
+                summary
+            }
         }
+        .onAppear { syncFocus() }
+        .onChange(of: accessibility.navigation.focusedControl) { _, _ in syncFocus() }
+        .onExitCommand(perform: handleEscape)
     }
 
     @ViewBuilder private var summary: some View {
@@ -77,7 +81,8 @@ struct SummaryPopoverView: View {
                     FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
                 ],
                 count: presentation?.agentActiveCount ?? 0,
-                axis: .agent
+                axis: .agent,
+                control: .agentFilter
             )
             filterRow(
                 title: "Model",
@@ -85,19 +90,24 @@ struct SummaryPopoverView: View {
                     FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
                 ],
                 count: presentation?.modelActiveCount ?? 0,
-                axis: .model
+                axis: .model,
+                control: .modelFilter
             )
             HStack(spacing: 8) {
                 kpi(title: "Token Burn/min", value: presentation?.burnValueText ?? "Unavailable", unit: presentation?.burnUnitText ?? "tokens/min")
                 kpi(title: "Calls/min", value: presentation?.callsValueText ?? "Unavailable", unit: presentation?.callsUnitText ?? "calls/min")
             }
             performance(snapshot?.performance)
-            Picker("Activity", selection: $activity) {
-                ForEach(Activity.allCases) { activity in
-                    Text(activity.rawValue).tag(activity)
-                }
+            Picker("Activity", selection: accessibility.activityBinding) {
+                Text(AccessibilityNavigation.ActivityMetric.burn.rawValue)
+                    .tag(AccessibilityNavigation.ActivityMetric.burn)
+                Text(AccessibilityNavigation.ActivityMetric.calls.rawValue)
+                    .tag(AccessibilityNavigation.ActivityMetric.calls)
             }
             .pickerStyle(.segmented)
+            .focused($focusedControl, equals: .activityPicker)
+            .accessibilityFocusChrome(focusedControl == .activityPicker)
+            .accessibilityLabel("Activity")
             activityDetail(presentation)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -127,17 +137,42 @@ struct SummaryPopoverView: View {
                     .foregroundStyle(.orange)
                     .accessibilityLabel(capacityText)
             }
-            Button("View Trends") {
-                guard snapshot != nil else { return }
-                showsTrends = true
-                loadTrends(requestedFilter)
+            HStack {
+                Button("View Trends") {
+                    accessibility.activate(.viewTrends)
+                    loadTrends(requestedFilter)
+                }
+                .focused($focusedControl, equals: .viewTrends)
+                .accessibilityFocusChrome(focusedControl == .viewTrends)
+                .accessibilityHint("Opens trend charts and exact values")
+                Button("Settings") {
+                    accessibility.activate(.settings)
+                }
+                .focused($focusedControl, equals: .settings)
+                .accessibilityFocusChrome(focusedControl == .settings)
+                .accessibilityHint("Opens login, telemetry, diagnostics, reset, and update controls")
             }
-            .accessibilityHint("Opens trend charts and exact values")
+        }
+        .padding(14)
+        .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .background(.regularMaterial)
+    }
+
+    private var settingsDetail: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button("Back") { handleEscape() }
+                    .focused($focusedControl, equals: .back)
+                    .accessibilityFocusChrome(focusedControl == .back)
+                Spacer()
+                Text("Settings").font(.headline)
+            }
             SettingsView(
                 lifecycleServices: lifecycleServices,
                 telemetry: telemetry,
                 resetData: resetData,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                accessibility: accessibility
             )
         }
         .padding(14)
@@ -148,7 +183,9 @@ struct SummaryPopoverView: View {
     private var trendsDetail: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Button("Back") { showsTrends = false }
+                Button("Back") { handleEscape() }
+                    .focused($focusedControl, equals: .back)
+                    .accessibilityFocusChrome(focusedControl == .back)
                 Spacer()
                 Text("Trends").font(.headline)
             }
@@ -159,15 +196,21 @@ struct SummaryPopoverView: View {
                     chart: trends.outputThroughput,
                     style: .line
                 )
-                Picker("Activity", selection: $activity) {
-                    ForEach(Activity.allCases) { activity in Text(activity.rawValue).tag(activity) }
+                Picker("Activity", selection: accessibility.activityBinding) {
+                    Text(AccessibilityNavigation.ActivityMetric.burn.rawValue)
+                        .tag(AccessibilityNavigation.ActivityMetric.burn)
+                    Text(AccessibilityNavigation.ActivityMetric.calls.rawValue)
+                        .tag(AccessibilityNavigation.ActivityMetric.calls)
                 }
                 .pickerStyle(.segmented)
+                .focused($focusedControl, equals: .activityPicker)
+                .accessibilityFocusChrome(focusedControl == .activityPicker)
+                .accessibilityLabel("Activity")
                 trendSection(
-                    title: activity == .burn ? "Token Burn" : "Calls",
-                    aggregate: activity == .burn ? "\(presentation.burnValueText) \(presentation.burnUnitText)" : "\(presentation.callsValueText) \(presentation.callsUnitText)",
-                    chart: activity == .burn ? trends.tokenBurn : trends.calls,
-                    style: activity == .burn ? .burnParts : .calls
+                    title: ActivitySurfaceProjection.make(navigation: accessibility.navigation, trends: trends).selected == .calls ? "Calls" : "Token Burn",
+                    aggregate: ActivitySurfaceProjection.make(navigation: accessibility.navigation, trends: trends).selected == .calls ? "\(presentation.callsValueText) \(presentation.callsUnitText)" : "\(presentation.burnValueText) \(presentation.burnUnitText)",
+                    chart: ActivitySurfaceProjection.make(navigation: accessibility.navigation, trends: trends).selected == .calls ? trends.calls : trends.tokenBurn,
+                    style: ActivitySurfaceProjection.make(navigation: accessibility.navigation, trends: trends).chartStyle
                 )
             } else {
                 Text("Trends unavailable").foregroundStyle(.secondary)
@@ -176,7 +219,6 @@ struct SummaryPopoverView: View {
         .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
         .background(.regularMaterial)
-        .onExitCommand { showsTrends = false }
     }
 
     private func trendSection(title: String, aggregate: String, chart: TrendChart, style: TrendChartView.Style) -> some View {
@@ -199,14 +241,21 @@ struct SummaryPopoverView: View {
             if let action = presentation.actionText {
                 Text(action).font(.caption2).foregroundStyle(.tint)
             }
-            TrendChartView(chart: chart, style: style)
+            TrendChartView(
+                chart: chart,
+                style: style,
+                isTableFocused: focusedControl == tableControl(for: style),
+                onTableFocused: { accessibility.activate(tableControl(for: style)) }
+            )
+            .focused($focusedControl, equals: tableControl(for: style))
+            .accessibilityFocusChrome(focusedControl == tableControl(for: style))
         }
     }
 
     @ViewBuilder
     private func activityDetail(_ presentation: LightSnapshotPresentation?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            if activity == .burn {
+            if accessibility.navigation.activity == .burn {
                 Text("Burn composition")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -241,7 +290,13 @@ struct SummaryPopoverView: View {
         .background(Color.primary.opacity(0.04))
     }
 
-    private func filterRow(title: String, chips: [FilterChip], count: Int, axis: FilterAxis) -> some View {
+    private func filterRow(
+        title: String,
+        chips: [FilterChip],
+        count: Int,
+        axis: FilterAxis,
+        control: AccessibilityNavigation.Control
+    ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(count == 0 ? title : "\(title) \(count)")
                 .font(.caption)
@@ -251,6 +306,7 @@ struct SummaryPopoverView: View {
             Menu {
                 ForEach(chips) { chip in
                     Button {
+                        accessibility.activate(control)
                         apply(chip.action, on: axis)
                     } label: {
                         if chip.isSelected {
@@ -266,10 +322,12 @@ struct SummaryPopoverView: View {
             }
             .menuIndicator(.hidden)
             .accessibilityLabel("\(title) filter menu")
+            .focused($focusedControl, equals: control)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(chips) { chip in
                         Button(chip.title) {
+                            accessibility.activate(control)
                             apply(chip.action, on: axis)
                         }
                         .buttonStyle(.plain)
@@ -288,6 +346,8 @@ struct SummaryPopoverView: View {
             }
         }
         .accessibilityElement(children: .contain)
+        .focused($focusedControl, equals: control)
+        .accessibilityFocusChrome(focusedControl == control)
     }
 
     private func apply(_ action: FilterChipAction, on axis: FilterAxis) {
@@ -309,7 +369,10 @@ struct SummaryPopoverView: View {
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .frame(width: 160)
+                .focused($focusedControl, equals: .performanceRange)
+                .accessibilityFocusChrome(focusedControl == .performanceRange)
                 .onChange(of: performanceRange) { _, range in
+                    accessibility.activate(.performanceRange)
                     reloadPerformance(range)
                 }
             }
@@ -407,6 +470,35 @@ struct SummaryPopoverView: View {
             if let action = metadata.actionText {
                 Text(action).font(.caption2).foregroundStyle(.tint)
             }
+        }
+    }
+
+    private func handleEscape() {
+        switch accessibility.surface {
+        case .diagnosticsConfirmation(let action):
+            diagnostics.cancel(confirmation(for: action))
+        case .resetConfirmation:
+            resetData.cancelReset()
+        default:
+            break
+        }
+        accessibility.escape()
+    }
+
+    private func syncFocus() {
+        let control = accessibility.focusedControl
+        focusedControl = control == .statusItem ? nil : control
+    }
+
+    private func tableControl(for style: TrendChartView.Style) -> AccessibilityNavigation.Control {
+        style == .line ? .outputTable : .activityTable
+    }
+
+    private func confirmation(for action: AccessibilityNavigation.DiagnosticsAction) -> DiagnosticActionController.Confirmation {
+        switch action {
+        case .copy: .copy
+        case .save: .save
+        case .preparePublicIssue: .preparePublicIssue
         }
     }
 }

@@ -36,6 +36,26 @@ public enum TrendTokenPart: CaseIterable, Sendable, Equatable, Hashable {
         case .reasoning: "Reasoning"
         }
     }
+
+    public var symbol: String {
+        switch self {
+        case .inputUncached: "■"
+        case .cacheRead: "▣"
+        case .cacheWrite: "▤"
+        case .outputVisible: "▲"
+        case .reasoning: "●"
+        }
+    }
+
+    public var textureName: String {
+        switch self {
+        case .inputUncached: "solid"
+        case .cacheRead: "grid"
+        case .cacheWrite: "stripes"
+        case .outputVisible: "triangle"
+        case .reasoning: "dots"
+        }
+    }
 }
 
 /// Non-color styling cues exposed to the view layer.
@@ -44,6 +64,24 @@ public enum TrendSeriesEmphasis: Sendable, Equatable {
     case estimated
     case partial
     case other
+
+    public var accessibilityText: String {
+        switch self {
+        case .normal: "Exact"
+        case .estimated: "Estimated"
+        case .partial: "Partial"
+        case .other: "Other"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .normal: "●"
+        case .estimated: "┄"
+        case .partial: "╌"
+        case .other: "◇"
+        }
+    }
 }
 
 public struct TrendBucket: Sendable, Equatable, Identifiable {
@@ -86,16 +124,124 @@ public struct TrendPartSeries: Sendable, Equatable, Identifiable {
     public var id: TrendTokenPart { part }
 }
 
+public struct AccessibleTrendColumn: Sendable, Equatable {
+    public var title: String
+    public var identityLabel: String
+    public var emphasisText: String
+    public var symbol: String
+}
+
 public struct AccessibleTrendRow: Sendable, Equatable, Identifiable {
     public var bucketStart: Date
     public var bucketEnd: Date
     public var cells: [String]
+    public var isComplete: Bool
     public var id: Date { bucketStart }
+
+    public init(bucketStart: Date, bucketEnd: Date, cells: [String], isComplete: Bool = true) {
+        self.bucketStart = bucketStart
+        self.bucketEnd = bucketEnd
+        self.cells = cells
+        self.isComplete = isComplete
+    }
 }
 
 public struct AccessibleTrendTable: Sendable, Equatable {
     public var columnTitles: [String]
+    public var columns: [AccessibleTrendColumn]
     public var rows: [AccessibleTrendRow]
+    public var qualityText: String
+    public var dataStateText: String
+    public var coverageText: String
+
+    public init(
+        columnTitles: [String],
+        rows: [AccessibleTrendRow],
+        columns: [AccessibleTrendColumn] = [],
+        qualityText: String = "-",
+        dataStateText: String = "-",
+        coverageText: String = "-"
+    ) {
+        self.columnTitles = columnTitles
+        self.columns = columns
+        self.rows = rows
+        self.qualityText = qualityText
+        self.dataStateText = dataStateText
+        self.coverageText = coverageText
+    }
+}
+
+public struct AccessibleTrendTableCursor: Sendable, Equatable {
+    public var rowIndex: Int
+    public var columnIndex: Int
+
+    public init(rowIndex: Int = 0, columnIndex: Int = 0) {
+        self.rowIndex = rowIndex
+        self.columnIndex = columnIndex
+    }
+
+    public mutating func move(rows: Int, columns: Int, in table: AccessibleTrendTable) {
+        rowIndex += rows
+        columnIndex += columns
+        clamp(to: table)
+    }
+
+    public mutating func clamp(to table: AccessibleTrendTable) {
+        if table.rows.isEmpty || columnCount(in: table) == 0 {
+            rowIndex = 0
+            columnIndex = 0
+            return
+        }
+        rowIndex = min(max(rowIndex, 0), table.rows.count - 1)
+        columnIndex = min(max(columnIndex, 0), columnCount(in: table) - 1)
+    }
+
+    public func announcement(in table: AccessibleTrendTable) -> String {
+        cellAccessibility(in: table).value
+    }
+
+    public func cellAccessibility(in table: AccessibleTrendTable) -> (label: String, value: String) {
+        guard table.rows.indices.contains(rowIndex), columnIndex >= 0, columnIndex < columnCount(in: table) else {
+            let empty = "No trend values. Quality \(table.qualityText). State \(table.dataStateText). Coverage \(table.coverageText)."
+            return (empty, empty)
+        }
+        let row = table.rows[rowIndex]
+        let column = table.columns.indices.contains(columnIndex) ? table.columns[columnIndex] : nil
+        let title = column?.title ?? (table.columnTitles.indices.contains(columnIndex) ? table.columnTitles[columnIndex] : "Series")
+        let identity = column?.identityLabel ?? title
+        let emphasis = column?.emphasisText ?? ""
+        let symbol = column?.symbol ?? ""
+        let value = row.cells.indices.contains(columnIndex) ? row.cells[columnIndex] : "—"
+        let completeness = row.isComplete ? "complete bucket" : "open bucket"
+        let start = Self.utcTimestamp(row.bucketStart)
+        let end = Self.utcTimestamp(row.bucketEnd)
+        let label = "\(title), \(identity), \(start) to \(end)"
+        let spoken = [
+            start,
+            end,
+            title,
+            identity,
+            value,
+            emphasis,
+            symbol,
+            completeness,
+            "Quality \(table.qualityText)",
+            "State \(table.dataStateText)",
+            "Coverage \(table.coverageText)",
+        ].filter { !$0.isEmpty }.joined(separator: ", ")
+        return (label, spoken)
+    }
+
+    private func columnCount(in table: AccessibleTrendTable) -> Int {
+        max(table.columnTitles.count, table.columns.count)
+    }
+
+    public static func utcTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
 }
 
 public struct TrendChart: Sendable, Equatable {
@@ -138,6 +284,57 @@ public enum TrendColorPalette {
     }
 }
 
+public struct TrendSeriesCue: Sendable, Equatable {
+    public var title: String
+    public var identityLabel: String
+    public var text: String
+    public var symbol: String
+    public var dash: [Int]
+    public var endpoint: String
+}
+
+public struct TrendPartCue: Sendable, Equatable {
+    public var title: String
+    public var symbol: String
+    public var textureName: String
+}
+
+public struct TrendPartRenderPlan: Sendable, Equatable {
+    public var title: String
+    public var symbol: String
+    public var textureName: String
+    public var pattern: String
+}
+
+public struct TrendIdentityCue: Sendable, Equatable {
+    public var symbol: String
+    public var dash: [Int]
+    public var endpoint: String
+}
+
+public enum TrendNonColorCuePalette {
+    public static let symbols = ["●", "▲", "■", "◆", "✚", "★", "⬡", "▽", "▤", "◌"]
+    public static let dashes: [[Int]] = [
+        [], [6, 3], [2, 2], [8, 3, 2, 3], [1, 3], [10, 2], [4, 4], [3, 1, 1, 1], [12, 3], [1, 1],
+    ]
+
+    public static func cue(forRawIdentity identity: String) -> TrendIdentityCue {
+        let hash = fullHash(identity)
+        let symbol = symbols[Int(hash % UInt64(symbols.count))]
+        let dash = dashes[Int((hash / 33) % UInt64(dashes.count))]
+        return TrendIdentityCue(symbol: symbol, dash: dash, endpoint: identity)
+    }
+
+    private static func fullHash(_ identity: String) -> UInt64 {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in identity.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+}
+
 public struct TrendPresentation: Sendable, Equatable {
     public var qualityText: String
     public var dataStateText: String
@@ -150,6 +347,9 @@ public struct TrendPresentation: Sendable, Equatable {
     public var reasonText: String?
     public var actionText: String?
     public var allowsContinuousAnimation: Bool
+    public var seriesCues: [TrendSeriesCue]
+    public var partCues: [TrendPartCue]
+    public var partRenderPlans: [TrendPartRenderPlan]
 
     public init(chart: TrendChart, reduceMotion: Bool = false) {
         qualityText = chart.measurementQuality.displayLabel
@@ -163,6 +363,42 @@ public struct TrendPresentation: Sendable, Equatable {
         reasonText = chart.unavailableReason?.message
         actionText = chart.recommendedAction?.message
         allowsContinuousAnimation = !reduceMotion
+        seriesCues = chart.series.map { series in
+            let raw = series.identity.accessibilityLabel
+            let derived = TrendNonColorCuePalette.cue(forRawIdentity: raw)
+            return TrendSeriesCue(
+                title: series.title,
+                identityLabel: raw,
+                text: series.emphasis.accessibilityText,
+                symbol: series.emphasis == .normal ? derived.symbol : series.emphasis.symbol,
+                dash: series.emphasis == .normal ? derived.dash : Self.dash(for: series.emphasis),
+                endpoint: raw
+            )
+        }
+        partCues = chart.partSeries.map {
+            TrendPartCue(title: $0.part.title, symbol: $0.part.symbol, textureName: $0.part.textureName)
+        }
+        partRenderPlans = partCues.map {
+            TrendPartRenderPlan(title: $0.title, symbol: $0.symbol, textureName: $0.textureName, pattern: $0.textureName)
+        }
+    }
+
+    private static func dash(for emphasis: TrendSeriesEmphasis) -> [Int] {
+        switch emphasis {
+        case .estimated: [4, 3]
+        case .partial: [1, 2]
+        case .other: [6, 2]
+        case .normal: []
+        }
+    }
+
+    private static func endpoint(for emphasis: TrendSeriesEmphasis) -> String {
+        switch emphasis {
+        case .other: "square"
+        case .estimated: "circle"
+        case .partial: "circle"
+        case .normal: "circle"
+        }
     }
 
     private static func freshness(_ freshness: Freshness) -> String {

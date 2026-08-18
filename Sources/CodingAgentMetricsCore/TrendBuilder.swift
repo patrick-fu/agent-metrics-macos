@@ -181,7 +181,15 @@ public struct TrendBuilder: Sendable {
             scope: scope,
             unavailableReason: noDataReason,
             recommendedAction: degradation?.1 ?? MetricAction.recommended(for: noDataReason),
-            table: accessibleTable(starts: starts, duration: duration, series: series, partSeries: partSeries)
+            table: accessibleTable(
+                starts: starts,
+                duration: duration,
+                series: series,
+                partSeries: partSeries,
+                quality: quality,
+                dataState: state,
+                coverage: coverage
+            )
         )
     }
 
@@ -245,15 +253,62 @@ public struct TrendBuilder: Sendable {
         )
     }
 
-    private func accessibleTable(starts: [Date], duration: TimeInterval, series: [TrendSeries], partSeries: [TrendPartSeries]) -> AccessibleTrendTable {
+    private func accessibleTable(
+        starts: [Date],
+        duration: TimeInterval,
+        series: [TrendSeries],
+        partSeries: [TrendPartSeries],
+        quality: MeasurementQuality,
+        dataState: DataState?,
+        coverage: Coverage
+    ) -> AccessibleTrendTable {
+        let columns: [AccessibleTrendColumn]
+        let rows: [AccessibleTrendRow]
         if !partSeries.isEmpty {
-            return AccessibleTrendTable(columnTitles: partSeries.map { $0.part.title }, rows: starts.enumerated().map { index, start in
-                AccessibleTrendRow(bucketStart: start, bucketEnd: start.addingTimeInterval(duration), cells: partSeries.map { index < $0.buckets.count ? $0.buckets[index].absoluteCount.map(String.init) ?? "—" : "—" })
-            })
+            columns = partSeries.map {
+                AccessibleTrendColumn(
+                    title: $0.part.title,
+                    identityLabel: $0.part.title,
+                    emphasisText: $0.part.title,
+                    symbol: $0.part.symbol
+                )
+            }
+            rows = starts.enumerated().map { index, start in
+                let buckets = partSeries.map { index < $0.buckets.count ? $0.buckets[index] : nil }
+                return AccessibleTrendRow(
+                    bucketStart: start,
+                    bucketEnd: start.addingTimeInterval(duration),
+                    cells: buckets.map { $0?.absoluteCount.map(String.init) ?? "—" },
+                    isComplete: buckets.contains { $0?.isComplete == true }
+                )
+            }
+        } else {
+            columns = series.map {
+                AccessibleTrendColumn(
+                    title: $0.title,
+                    identityLabel: $0.identity.accessibilityLabel,
+                    emphasisText: $0.emphasis.accessibilityText,
+                    symbol: $0.emphasis.symbol
+                )
+            }
+            rows = starts.enumerated().map { index, start in
+                let buckets = series.map { index < $0.buckets.count ? $0.buckets[index] : nil }
+                return AccessibleTrendRow(
+                    bucketStart: start,
+                    bucketEnd: start.addingTimeInterval(duration),
+                    cells: buckets.map { $0?.absoluteCount.map(String.init) ?? "—" },
+                    isComplete: buckets.contains { $0?.isComplete == true }
+                )
+            }
         }
-        return AccessibleTrendTable(columnTitles: series.map(\.title), rows: starts.enumerated().map { index, start in
-            AccessibleTrendRow(bucketStart: start, bucketEnd: start.addingTimeInterval(duration), cells: series.map { index < $0.buckets.count ? $0.buckets[index].absoluteCount.map(String.init) ?? "—" : "—" })
-        })
+        return AccessibleTrendTable(
+            columnTitles: columns.map(\.title),
+            rows: rows,
+            columns: columns,
+            qualityText: quality.displayLabel,
+            dataStateText: dataState?.displayLabel ?? "-",
+            coverageText: coverage.displayLabel
+        )
     }
 
     private func supports(_ fact: UsageFact, kind: Kind) -> Bool {

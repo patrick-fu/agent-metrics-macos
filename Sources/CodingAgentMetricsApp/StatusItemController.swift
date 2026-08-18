@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CodingAgentMetricsCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,7 +12,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private let statusItem: NSStatusItem
-    private let panel: NSPanel
+    private let panel: KeyablePanel
     private let runtime: TelemetryRuntime?
     private let telemetry: EnhancedTelemetryController
     private let snapshots: RuntimeSnapshots
@@ -27,6 +28,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var scheduler = SnapshotScheduler()
     private var refreshTimer: Timer?
     private var eventMonitor: Any?
+    private var keyMonitor: Any?
+    private var menuBeginObserver: NSObjectProtocol?
+    private var menuEndObserver: NSObjectProtocol?
+    private var keyRouting = AccessibilityKeyRouting()
+    private let accessibility = AccessibilitySession()
+    private var accessibilityObserver: AnyCancellable?
+    private var panelLifecycle: AccessibilityPanelLifecycle!
     private lazy var resetData: ResetDataController = {
         guard let runtime else { return ResetDataController() }
         return ResetDataController(reset: { [weak self, runtime] in
@@ -91,7 +99,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         telemetry = EnhancedTelemetryController(runtime: createdRuntime)
         snapshots = RuntimeSnapshots()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        panel = NSPanel(
+        panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: AppIdentity.popoverWidth, height: 292),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
@@ -114,6 +122,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         refreshSnapshots()
         configureContent()
         startRefreshTimer()
+        observeAccessibility()
+        observeMenuTracking()
+        panelLifecycle = AccessibilityPanelLifecycle(
+            panel: panel,
+            accessibility: accessibility,
+            hasModalWindow: { NSApp.modalWindow != nil },
+            isMenuTracking: { [weak self] in self?.keyRouting.isMenuTracking ?? false },
+            onDismiss: { [weak self] in self?.dismissPanel() }
+        )
+        diagnostics.onExternalModalFinished = { [weak self] in
+            self?.panelLifecycle.onExternalModalFinished()
+        }
     }
 
     @objc func togglePanel() {
@@ -125,7 +145,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissPanel()
+        panelLifecycle.handleResignKey()
     }
 
     private func configureStatusItem() {
@@ -137,6 +157,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         button.imagePosition = .imageOnly
         button.target = self
         button.action = #selector(togglePanel)
+        button.setAccessibilityLabel("Coding Agent Metrics")
+        button.setAccessibilityRole(.button)
+        button.setAccessibilityIdentifier("status-item")
     }
 
     private func configurePanel() {
@@ -154,7 +177,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func configureContent() {
-        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, telemetry: telemetry, resetData: resetData, diagnostics: diagnostics, loadSnapshot: { [weak self] newFilter, performanceRange in
+        let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, accessibility: accessibility, telemetry: telemetry, resetData: resetData, diagnostics: diagnostics, loadSnapshot: { [weak self] newFilter, performanceRange in
             self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange)
         }, loadTrends: { [weak self] newFilter in
             self?.requestDetailSnapshot(filter: newFilter)
@@ -228,6 +251,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func showPanel() {
         scheduler.setPopoverVisible(true)
+        accessibility.openPanel()
         refreshSnapshots()
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
         let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
@@ -236,19 +260,105 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let y = buttonRect.minY - panelSize.height - 6
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(panel.contentView)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.dismissPanel()
+        }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKey(event)
         }
     }
 
     private func dismissPanel() {
         scheduler.setPopoverVisible(false)
         detailLoader.invalidate()
+        if accessibility.isPanelVisible {
+            accessibility.dismissToStatusItem()
+        }
         panel.orderOut(nil)
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
         }
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+        restoreStatusItemFocus()
+    }
+
+    private func observeAccessibility() {
+        accessibilityObserver = accessibility.$navigation.sink { [weak self] navigation in
+            guard let self else { return }
+            if navigation.surface == .dismissed, self.panel.isVisible {
+                self.dismissPanel()
+            }
+        }
+    }
+
+    private func observeMenuTracking() {
+        menuBeginObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.keyRouting.menuDidBeginTracking()
+            }
+        }
+        menuEndObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.keyRouting.menuDidEndTracking()
+            }
+        }
+    }
+
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        let routed = AccessibilityKeyEvent(
+            event: event,
+            panel: panel,
+            hasModalWindow: NSApp.modalWindow != nil
+        )
+        switch keyRouting.decision(for: routed) {
+        case .handleEscape:
+            handleEscapeFromPanel()
+            return nil
+        case .handleTab(let shift):
+            accessibility.moveFocus(forward: !shift)
+            return nil
+        case .ignore:
+            return event
+        }
+    }
+
+    private func handleEscapeFromPanel() {
+        switch accessibility.surface {
+        case .diagnosticsConfirmation(let action):
+            diagnostics.cancel(confirmation(for: action))
+        case .resetConfirmation:
+            resetData.cancelReset()
+        default:
+            break
+        }
+        accessibility.escape()
+    }
+
+    private func confirmation(for action: AccessibilityNavigation.DiagnosticsAction) -> DiagnosticActionController.Confirmation {
+        switch action {
+        case .copy: .copy
+        case .save: .save
+        case .preparePublicIssue: .preparePublicIssue
+        }
+    }
+
+    private func restoreStatusItemFocus() {
+        guard let button = statusItem.button else { return }
+        button.window?.makeKeyAndOrderFront(nil)
+        button.window?.makeFirstResponder(button)
     }
 
     private static func storeURL() -> URL {

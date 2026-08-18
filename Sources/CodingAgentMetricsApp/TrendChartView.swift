@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import CodingAgentMetricsCore
 import SwiftUI
@@ -7,8 +8,15 @@ struct TrendChartView: View {
 
     let chart: TrendChart
     let style: Style
+    var isTableFocused: Bool = false
+    var onTableFocused: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedBucketStart: Date?
+    @State private var tableCursor = AccessibleTrendTableCursor()
+
+    private var presentation: TrendPresentation {
+        TrendPresentation(chart: chart, reduceMotion: reduceMotion)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -18,16 +26,36 @@ struct TrendChartView: View {
                         ForEach(part.buckets) { bucket in
                             if let value = bucket.value {
                                 BarMark(x: .value("Time", bucket.start), y: .value("Value", value))
-                                    .foregroundStyle(partColor(part.part))
+                                    .foregroundStyle(partPatternStyle(part.part))
+                                    .annotation(position: .top, spacing: 0) {
+                                        if shouldAnnotate(part: part, bucket: bucket) {
+                                            Text(part.part.symbol)
+                                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                                .accessibilityHidden(true)
+                                        }
+                                    }
                             }
                         }
                     }
                 } else {
-                    ForEach(chart.series) { series in
+                    let plans = Self.plotPlans(for: chart)
+                    ForEach(Array(chart.series.enumerated()), id: \.element.id) { index, series in
+                        let plan = plans.first { $0.identityLabel == series.identity.accessibilityLabel }
                         ForEach(series.buckets) { bucket in
                             if let value = bucket.value {
-                                mark(value: value, series: series, bucket: bucket)
+                                mark(value: value, series: series, bucket: bucket, plan: plan)
                             }
+                        }
+                        if style == .line, let plan, let last = endpointBucket(in: series), let value = last.value, plan.showsEndpointLabel {
+                            PointMark(x: .value("Time", last.start), y: .value("Value", value))
+                                .foregroundStyle(color(for: series.colorSlot))
+                                .symbol(TrendLinePlotPlanning.chartSymbol(plan.shapeName))
+                                .annotation(position: .trailing, alignment: .leading, spacing: CGFloat(2 + index * 3)) {
+                                    Text(plan.visibleEndpointText)
+                                        .font(.system(size: 8, design: .monospaced))
+                                        .accessibilityLabel(plan.endpointLabel)
+                                        .accessibilityValue(plan.endpointLabel)
+                                }
                         }
                     }
                 }
@@ -51,16 +79,24 @@ struct TrendChartView: View {
                 }
             }
             .frame(height: 130)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: chart)
+            .animation(presentation.allowsContinuousAnimation ? .easeInOut(duration: 0.2) : nil, value: chart)
             legend
             accessibleTable
+        }
+        .onAppear { tableCursor.clamp(to: chart.table) }
+        .onChange(of: chart.table) { _, table in
+            tableCursor.clamp(to: table)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Trend chart")
     }
 
+    nonisolated static func plotPlans(for chart: TrendChart) -> [TrendLinePlotPlan] {
+        TrendLinePlotPlanning.plans(chart: chart)
+    }
+
     @ChartContentBuilder
-    private func mark(value: Double, series: TrendSeries, bucket: TrendBucket) -> some ChartContent {
+    private func mark(value: Double, series: TrendSeries, bucket: TrendBucket, plan: TrendLinePlotPlan?) -> some ChartContent {
         switch style {
         case .line:
             LineMark(
@@ -68,8 +104,8 @@ struct TrendChartView: View {
                 series: .value("Model", series.identity.accessibilityLabel)
             )
             .foregroundStyle(color(for: series.colorSlot))
-            .lineStyle(StrokeStyle(lineWidth: series.emphasis == .estimated ? 1.5 : 2, dash: nonColorDash(for: series)))
-            .symbol(series.emphasis == .other ? .square : .circle)
+            .lineStyle(StrokeStyle(lineWidth: series.emphasis == .estimated ? 1.5 : 2, dash: dash(from: plan?.dash ?? [])))
+            .symbol(TrendLinePlotPlanning.chartSymbol(plan?.shapeName ?? "circle"))
         case .calls:
             BarMark(
                 x: .value("Time", bucket.start), y: .value("Value", value)
@@ -106,36 +142,67 @@ struct TrendChartView: View {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
                 GridRow {
                     Text("Time").font(.caption2)
-                    ForEach(Array(chart.table.columnTitles.enumerated()), id: \.offset) { _, title in
-                        Text(title).font(.caption2)
+                    ForEach(Array(chart.table.columns.enumerated()), id: \.offset) { _, column in
+                        Text("\(column.symbol) \(column.title)")
+                            .font(.caption2)
+                            .accessibilityLabel("\(column.title), \(column.identityLabel), \(column.emphasisText)")
                     }
                 }
-                ForEach(chart.table.rows) { row in
+                ForEach(Array(chart.table.rows.enumerated()), id: \.element.id) { rowIndex, row in
                     GridRow {
                         Text(row.bucketStart, format: .dateTime.hour().minute().second()).font(.caption2)
-                        ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
-                            Text(cell).font(.caption2).monospacedDigit()
+                        ForEach(Array(row.cells.enumerated()), id: \.offset) { columnIndex, cell in
+                            let spoken = AccessibleTrendTableCursor(rowIndex: rowIndex, columnIndex: columnIndex)
+                                .cellAccessibility(in: chart.table)
+                            Text(cell)
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .padding(1)
+                                .background(isSelected(row: rowIndex, column: columnIndex) ? Color.primary.opacity(0.12) : Color.clear)
+                                .overlay {
+                                    if isSelected(row: rowIndex, column: columnIndex) {
+                                        Rectangle().strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [2, 1]))
+                                    }
+                                }
+                                .accessibilityLabel(spoken.label)
+                                .accessibilityValue(spoken.value)
                         }
                     }
                 }
             }
         }
         .frame(maxHeight: 80)
+        .focusable(true)
+        .onTapGesture(perform: onTableFocused)
+        .onMoveCommand { direction in
+            onTableFocused()
+            switch direction {
+            case .up: tableCursor.move(rows: -1, columns: 0, in: chart.table)
+            case .down: tableCursor.move(rows: 1, columns: 0, in: chart.table)
+            case .left: tableCursor.move(rows: 0, columns: -1, in: chart.table)
+            case .right: tableCursor.move(rows: 0, columns: 1, in: chart.table)
+            default: break
+            }
+        }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Exact trend values")
+        .accessibilityLabel(tableAccessibilityLabel)
+        .accessibilityValue(tableCursor.announcement(in: chart.table))
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var legend: some View {
         HStack(spacing: 8) {
             if style == .burnParts {
-                ForEach(chart.partSeries) { part in
-                    Text(part.part.title).font(.caption2).foregroundStyle(partColor(part.part))
+                ForEach(presentation.partCues, id: \.title) { cue in
+                    Text("\(cue.symbol) \(cue.title) [\(cue.textureName)]")
+                        .font(.caption2)
+                        .foregroundStyle(partColor(part(for: cue.title)))
                 }
             } else {
-                ForEach(chart.series) { series in
-                    Text("\(series.emphasis == .other ? "◇ " : series.emphasis == .estimated ? "┄ " : series.emphasis == .partial ? "╌ " : "● ")\(series.title) [\(series.identity.accessibilityLabel)]")
+                ForEach(presentation.seriesCues, id: \.identityLabel) { cue in
+                    Text("\(cue.symbol) \(cue.title) [\(cue.identityLabel)] \(cue.text) \(cue.endpoint)")
                         .font(.caption2)
-                        .foregroundStyle(color(for: series.colorSlot))
+                        .foregroundStyle(color(for: cue.identityLabel == "Other models" ? "other" : cue.identityLabel))
                 }
             }
         }
@@ -166,5 +233,36 @@ struct TrendChartView: View {
         case .outputVisible: .orange
         case .reasoning: .purple
         }
+    }
+
+    private func partPatternStyle(_ part: TrendTokenPart) -> AnyShapeStyle {
+        let image = BurnPartPatternRenderer.image(textureName: part.textureName, color: NSColor(partColor(part)))
+        return AnyShapeStyle(ImagePaint(image: Image(nsImage: image), scale: 1))
+    }
+
+    private func dash(from values: [Int]) -> [CGFloat] {
+        values.map { CGFloat($0) }
+    }
+
+    private func part(for title: String) -> TrendTokenPart {
+        TrendTokenPart.allCases.first { $0.title == title } ?? .inputUncached
+    }
+
+    private func shouldAnnotate(part: TrendPartSeries, bucket: TrendBucket) -> Bool {
+        guard !reduceMotion else { return false }
+        return part.buckets.last(where: { $0.absoluteCount != nil })?.start == bucket.start
+    }
+
+    private func endpointBucket(in series: TrendSeries) -> TrendBucket? {
+        series.buckets.last { $0.isComplete && $0.value != nil }
+    }
+
+    private func isSelected(row: Int, column: Int) -> Bool {
+        isTableFocused && tableCursor.rowIndex == row && tableCursor.columnIndex == column
+    }
+
+    private var tableAccessibilityLabel: String {
+        let columns = chart.table.columns.map { "\($0.symbol) \($0.title) \($0.identityLabel)" }.joined(separator: ", ")
+        return "Exact trend values. Quality \(chart.table.qualityText). State \(chart.table.dataStateText). Coverage \(chart.table.coverageText). Columns: \(columns)."
     }
 }

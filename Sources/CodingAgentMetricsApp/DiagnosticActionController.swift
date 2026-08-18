@@ -67,6 +67,7 @@ final class DiagnosticActionController {
     private(set) var previewText: String?
     private(set) var preparedPublicIssueText: String?
     private(set) var outcome: Outcome = .idle
+    var onExternalModalFinished: (() -> Void)?
 
     init(
         generate: @escaping () throws -> Data,
@@ -122,6 +123,7 @@ final class DiagnosticActionController {
         } catch {
             outcome = .failed(String(describing: error))
         }
+        onExternalModalFinished?()
     }
 
     func confirmPreparePublicIssue() {
