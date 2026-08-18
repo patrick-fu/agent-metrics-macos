@@ -29,7 +29,7 @@ struct ReleaseDryRunCheckerTests {
             )
         )
 
-        #expect(gate == .blockedByIssue27MissingSparklePublicKey)
+        #expect(gate == .requiresIssue27ManualKeyValidation)
     }
 
     @Test func aPresentKeyStillRequiresIssue27ManualValidation() throws {
