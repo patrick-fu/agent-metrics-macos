@@ -30,5 +30,7 @@
     <true/>
     <key>SUFeedURL</key>
     <string>https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>xLcFpTMbuvJVcOJlZyap0OgZ2Tp8dJ1oC/BImxW2TaM=</string>
 </dict>
 </plist>
