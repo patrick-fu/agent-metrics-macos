@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Coding Agent Metrics</title>
+    <link>https://github.com/patrick-fu/coding-agent-metrics</link>
+    <description>Stable updates for Coding Agent Metrics.</description>
+    <language>en</language>
+    <item>
+      <title>Version 0.1.1</title>
+      <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.1</link>
+      <pubDate>Thu, 20 Aug 2026 22:15:43 +0800</pubDate>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.1/CodingAgentMetrics-0.1.1.dmg"
+        length="2404227"
+        type="application/octet-stream"
+        sparkle:edSignature="5RM65Vujs3wS/bjBT4pJKzVqD43SPVV1lhJ1Au5L4bydSBhObmlh3n+94wF8XZU58exRcESdIbGCK5ur9L41Ag==" />
+    </item>
+  </channel>
+</rss>
