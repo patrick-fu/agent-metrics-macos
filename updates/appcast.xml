@@ -1,22 +1,34 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Coding Agent Metrics</title>
-    <link>https://github.com/patrick-fu/coding-agent-metrics</link>
-    <description>Stable updates for Coding Agent Metrics.</description>
-    <language>en</language>
-    <item>
-      <title>Version 0.1.1</title>
-      <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.1</link>
-      <pubDate>Thu, 20 Aug 2026 22:15:43 +0800</pubDate>
-      <sparkle:version>2</sparkle:version>
-      <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure
-        url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.1/CodingAgentMetrics-0.1.1.dmg"
-        length="2404227"
-        type="application/octet-stream"
-        sparkle:edSignature="5RM65Vujs3wS/bjBT4pJKzVqD43SPVV1lhJ1Au5L4bydSBhObmlh3n+94wF8XZU58exRcESdIbGCK5ur9L41Ag==" />
-    </item>
-  </channel>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Coding Agent Metrics</title>
+        <link>https://github.com/patrick-fu/coding-agent-metrics</link>
+        <description>Stable updates for Coding Agent Metrics.</description>
+        <language>en</language>
+        <item>
+            <title>0.1.2</title>
+            <pubDate>Sat, 22 Aug 2026 16:17:00 +0800</pubDate>
+            <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.2</link>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[Coding Agent Metrics 0.1.2 keeps metrics available when local Codex or Claude Code histories exceed the active discovery window. It also prevents confirmation surfaces from re-entering menu bar panel dismissal.
+
+- Large histories now retain a bounded recent window and report partial coverage instead of making the source unavailable.
+- Confirmation, modal, and menu interactions no longer trigger recursive panel dismissal.
+- Local metadata-only collection and privacy boundaries are unchanged.
+]]></description>
+            <enclosure url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.2/CodingAgentMetrics-0.1.2.dmg" length="2570888" type="application/octet-stream" sparkle:edSignature="od7Rtu/O/Cz4QQsgoAU8vMgGH8pshQWLmuvnZnTlIwCX9JSA5M8yjbfc8K73t7868bUBK0rJMgnrnNcS5AtmAg=="/>
+        </item>
+        <item>
+            <title>Version 0.1.1</title>
+            <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.1</link>
+            <pubDate>Thu, 20 Aug 2026 22:15:43 +0800</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.1/CodingAgentMetrics-0.1.1.dmg" length="2404227" type="application/octet-stream" sparkle:edSignature="5RM65Vujs3wS/bjBT4pJKzVqD43SPVV1lhJ1Au5L4bydSBhObmlh3n+94wF8XZU58exRcESdIbGCK5ur9L41Ag=="/>
+        </item>
+    </channel>
 </rss>
