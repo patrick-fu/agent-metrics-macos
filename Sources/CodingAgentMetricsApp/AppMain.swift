@@ -16,8 +16,22 @@ enum CodingAgentMetricsApp {
                 FileHandle.standardError.write(Data("appkit_render=failed\n".utf8))
             }
             return
+        case let .snapshotSummary(outputPath, mutateOnePixel):
+            do {
+                try SummaryPopoverSnapshotRenderer.writePNG(
+                    to: URL(fileURLWithPath: outputPath),
+                    mutateOnePixel: mutateOnePixel
+                )
+                print(outputPath)
+            } catch {
+                FileHandle.standardError.write(Data("snapshot_render=failed\n".utf8))
+            }
+            return
         case .invalidBenchmarkArguments:
             FileHandle.standardError.write(Data("usage: CodingAgentMetricsApp --benchmark-render <positive-sample-count>\n".utf8))
+            return
+        case .invalidSnapshotArguments:
+            FileHandle.standardError.write(Data("usage: CodingAgentMetricsApp --snapshot-summary <png-path> [--mutate-one-pixel]\n".utf8))
             return
         }
         let app = NSApplication.shared

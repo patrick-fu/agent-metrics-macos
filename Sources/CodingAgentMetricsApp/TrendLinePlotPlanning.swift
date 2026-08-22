@@ -1,3 +1,4 @@
+import Foundation
 import Charts
 import CodingAgentMetricsCore
 
@@ -10,8 +11,36 @@ struct TrendLinePlotPlan: Equatable, Sendable {
     var dash: [Int]
 }
 
+struct TrendLinePoint: Equatable, Sendable {
+    var start: Date
+    var value: Double
+}
+
+struct TrendLineSegment: Equatable, Sendable {
+    var points: [TrendLinePoint]
+}
+
 enum TrendLinePlotPlanning {
     static let knownShapeNames = ["circle", "triangle", "square", "diamond", "plus", "asterisk", "pentagon"]
+
+    static func segments(for series: TrendSeries) -> [TrendLineSegment] {
+        var segments: [TrendLineSegment] = []
+        var current: [TrendLinePoint] = []
+        for bucket in series.buckets {
+            if bucket.isComplete, let value = bucket.value {
+                current.append(TrendLinePoint(start: bucket.start, value: value))
+                continue
+            }
+            if !current.isEmpty {
+                segments.append(TrendLineSegment(points: current))
+                current = []
+            }
+        }
+        if !current.isEmpty {
+            segments.append(TrendLineSegment(points: current))
+        }
+        return segments
+    }
 
     static func plans(chart: TrendChart, reduceMotion: Bool = false) -> [TrendLinePlotPlan] {
         let presentation = TrendPresentation(chart: chart, reduceMotion: reduceMotion)

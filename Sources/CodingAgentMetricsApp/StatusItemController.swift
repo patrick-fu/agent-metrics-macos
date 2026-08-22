@@ -7,8 +7,13 @@ import UniformTypeIdentifiers
 @MainActor
 final class StatusItemController: NSObject, NSWindowDelegate {
     private enum LightLoad: Sendable, Equatable {
-        case ingest(MetricFilter, PerformanceRange)
-        case stored(MetricFilter, PerformanceRange)
+        case ingest(MetricFilter, PerformanceRange, Int)
+        case stored(MetricFilter, PerformanceRange, Int)
+    }
+
+    private struct DetailLoad: Sendable, Equatable {
+        var filter: MetricFilter
+        var windowSeconds: Int
     }
 
     private let statusItem: NSStatusItem
@@ -21,11 +26,14 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let lightQueue = DispatchQueue(label: "dev.codingagentmetrics.light-snapshot", qos: .utility)
     private let detailQueue = DispatchQueue(label: "dev.codingagentmetrics.detail-snapshot", qos: .userInitiated)
     private var lightLoader: LatestBackgroundLoader<LightLoad, LightSnapshot>!
-    private var detailLoader: LatestBackgroundLoader<MetricFilter, TrendSnapshot>!
+    private var detailLoader: LatestBackgroundLoader<DetailLoad, TrendSnapshot>!
     private var filter = MetricFilter.all
     private var performanceRange = PerformanceRange.oneHour
     private var detailFilter: MetricFilter?
+    private let displayPreferences = DisplayPreferencesController()
     private var scheduler = SnapshotScheduler()
+    private var latestLight: LightSnapshot?
+    private var heroPublication = LightSnapshotPublishDecision()
     private var refreshTimer: Timer?
     private var eventMonitor: Any?
     private var keyMonitor: Any?
@@ -109,15 +117,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         super.init()
         lightLoader = LatestBackgroundLoader(queue: lightQueue, gate: lightGate) { request in
             switch request {
-            case let .ingest(filter, range):
-                try? createdRuntime?.lightSnapshot(filter: filter, performanceRange: range)
-            case let .stored(filter, range):
-                try? createdRuntime?.lightSnapshotFromStore(filter: filter, performanceRange: range)
+            case let .ingest(filter, range, windowSeconds):
+                try? createdRuntime?.lightSnapshot(filter: filter, performanceRange: range, windowSeconds: windowSeconds)
+            case let .stored(filter, range, windowSeconds):
+                try? createdRuntime?.lightSnapshotFromStore(filter: filter, performanceRange: range, windowSeconds: windowSeconds)
             }
         }
-        detailLoader = LatestBackgroundLoader(queue: detailQueue, gate: detailGate) { filter in
-            try? createdRuntime?.trendSnapshot(filter: filter)
+        detailLoader = LatestBackgroundLoader(queue: detailQueue, gate: detailGate) { request in
+            try? createdRuntime?.trendSnapshot(filter: request.filter, windowSeconds: request.windowSeconds)
         }
+        scheduler.setDisplayCadence(displayPreferences.cadence)
         configureStatusItem()
         configurePanel()
         refreshSnapshots()
@@ -155,7 +164,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             systemSymbolName: "gauge.with.dots.needle.67percent",
             accessibilityDescription: "Coding Agent Metrics"
         )
-        button.imagePosition = .imageOnly
+        button.imagePosition = .imageLeading
+        button.title = "—"
         button.target = self
         button.action = #selector(togglePanel)
         button.setAccessibilityLabel("Coding Agent Metrics")
@@ -179,9 +189,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func configureContent() {
         let root = SummaryPopoverView(snapshot: snapshots.light, snapshots: snapshots, accessibility: accessibility, telemetry: telemetry, resetData: resetData, diagnostics: diagnostics, loadSnapshot: { [weak self] newFilter, performanceRange in
-            self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange)
+            self?.requestStoredLightSnapshot(filter: newFilter, performanceRange: performanceRange, publishHero: true)
         }, loadTrends: { [weak self] newFilter in
             self?.requestDetailSnapshot(filter: newFilter)
+        }, preferences: displayPreferences, onWindowChange: { [weak self] window in
+            self?.applyWindow(window)
+        }, onCadenceChange: { [weak self] cadence in
+            self?.applyCadence(cadence)
         })
         .frame(width: AppIdentity.popoverWidth)
         panel.contentView = NSHostingView(rootView: root)
@@ -211,31 +225,74 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func refreshSnapshots() {
         let schedule = scheduler.tick(at: Date())
-        if schedule.publishLight { requestLightSnapshot() }
+        if schedule.publishLight { requestLightSnapshot(publishHero: schedule.publishDisplay) }
+        else if schedule.publishDisplay { publishDisplayedHero() }
         if schedule.publishDetail { requestDetailSnapshot() }
     }
 
-    private func requestLightSnapshot() {
+    private func requestLightSnapshot(publishHero: Bool) {
         let requestedFilter = filter
         let requestedRange = performanceRange
-        lightLoader.submit(.ingest(requestedFilter, requestedRange)) { [weak self] light in
+        let requestedWindow = displayPreferences.window.seconds
+        heroPublication.noteRequested(publishHero: publishHero)
+        lightLoader.submit(.ingest(requestedFilter, requestedRange, requestedWindow)) { [weak self] light in
             guard let self, self.filter == requestedFilter, self.performanceRange == requestedRange else { return }
-            self.snapshots.light = light
+            self.latestLight = light
+            if self.heroPublication.shouldPublishHero(forThisCompletion: publishHero) {
+                self.publish(light)
+            }
             self.resizePanelSoon()
         }
     }
 
-    private func requestStoredLightSnapshot(filter newFilter: MetricFilter, performanceRange: PerformanceRange) {
+    private func requestStoredLightSnapshot(filter newFilter: MetricFilter, performanceRange: PerformanceRange, publishHero: Bool) {
         filter = newFilter
         self.performanceRange = performanceRange
         detailFilter = nil
         snapshots.detail = nil
         detailLoader.invalidate()
-        lightLoader.submit(.stored(newFilter, performanceRange)) { [weak self] light in
+        let requestedWindow = displayPreferences.window.seconds
+        heroPublication.noteRequested(publishHero: publishHero)
+        lightLoader.submit(.stored(newFilter, performanceRange, requestedWindow)) { [weak self] light in
             guard let self, self.filter == newFilter, self.performanceRange == performanceRange else { return }
-            self.snapshots.light = light
+            self.latestLight = light
+            if self.heroPublication.shouldPublishHero(forThisCompletion: publishHero) {
+                self.publish(light)
+            }
             self.resizePanelSoon()
         }
+    }
+
+    private func publishDisplayedHero() {
+        publish(latestLight)
+    }
+
+    private func publish(_ light: LightSnapshot?) {
+        snapshots.light = light
+        updateStatusItem(light)
+    }
+
+    private func applyWindow(_ window: OutputThroughputWindow) {
+        displayPreferences.window = window
+        requestStoredLightSnapshot(filter: filter, performanceRange: performanceRange, publishHero: true)
+        if panel.isVisible {
+            detailFilter = nil
+            requestDetailSnapshot(filter: filter)
+        }
+    }
+
+    private func applyCadence(_ cadence: DisplayCadence) {
+        displayPreferences.cadence = cadence
+        scheduler.setDisplayCadence(cadence)
+        publishDisplayedHero()
+    }
+
+    private func updateStatusItem(_ snapshot: LightSnapshot?) {
+        guard let button = statusItem.button else { return }
+        let presentation = snapshot.map { LightSnapshotPresentation(snapshot: $0) }
+        button.title = presentation?.menuBarTitleText ?? "—"
+        button.imagePosition = .imageLeading
+        button.setAccessibilityLabel(presentation?.menuBarAccessibilityLabel ?? "Coding Agent Metrics")
     }
 
     private func requestDetailSnapshot(filter requestedFilter: MetricFilter? = nil) {
@@ -244,7 +301,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let requestedFilter = requestedFilter ?? filter
         guard requestedFilter == filter else { return }
         if isUserRequest, detailFilter == requestedFilter, snapshots.detail != nil { return }
-        detailLoader.submit(requestedFilter) { [weak self] detail in
+        detailLoader.submit(DetailLoad(filter: requestedFilter, windowSeconds: displayPreferences.window.seconds)) { [weak self] detail in
             guard let self, self.panel.isVisible, self.filter == requestedFilter else { return }
             self.detailFilter = requestedFilter
             self.snapshots.detail = detail
@@ -259,6 +316,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func showPanel() {
         scheduler.setPopoverVisible(true)
         accessibility.openPanel()
+        requestStoredLightSnapshot(filter: filter, performanceRange: performanceRange, publishHero: true)
         refreshSnapshots()
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
         let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))

@@ -55,7 +55,10 @@ let package = Package(
         ),
         .testTarget(
             name: "CodingAgentMetricsAppTests",
-            dependencies: ["CodingAgentMetricsApp", "CodingAgentMetricsCore"]
+            dependencies: ["CodingAgentMetricsApp", "CodingAgentMetricsCore", "CodingAgentMetricsLifecycle"],
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )

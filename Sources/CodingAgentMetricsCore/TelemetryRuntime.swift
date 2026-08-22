@@ -112,34 +112,45 @@ public final class TelemetryRuntime: @unchecked Sendable {
         )
     }
 
-    public func lightSnapshot(filter: MetricFilter = .all, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
+    public func lightSnapshot(
+        filter: MetricFilter = .all,
+        performanceRange: PerformanceRange = .oneHour,
+        windowSeconds: Int = OutputThroughputDefinition.windowSeconds
+    ) throws -> LightSnapshot {
         try storeQueue.sync {
             let status = try enforceRetention()
             if status.ingestionPaused {
                 applyCapacityHealth(status)
-                return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+                return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
             }
-            let snapshot = try refresh(filter: filter, performanceRange: performanceRange)
+            let snapshot = try refresh(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
             let afterRefresh = try enforceRetention()
             if afterRefresh.ingestionPaused { applyCapacityHealth(afterRefresh) }
             if afterRefresh.level != status.level || afterRefresh.didPrune || afterRefresh.ingestionPaused {
-                return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+                return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
             }
             return snapshot
         }
     }
 
-    public func lightSnapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange = .oneHour) throws -> LightSnapshot {
+    public func lightSnapshotFromStore(
+        filter: MetricFilter,
+        performanceRange: PerformanceRange = .oneHour,
+        windowSeconds: Int = OutputThroughputDefinition.windowSeconds
+    ) throws -> LightSnapshot {
         try storeQueue.sync {
             let status = try enforceRetention()
             if status.ingestionPaused { applyCapacityHealth(status) }
-            return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+            return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
         }
     }
 
     /// Detail is intentionally separate from the compact LightSnapshot path.
     /// It reads a bounded, bucket-aligned history only after the user opens Trends.
-    public func trendSnapshot(filter: MetricFilter = .all) throws -> TrendSnapshot {
+    public func trendSnapshot(
+        filter: MetricFilter = .all,
+        windowSeconds: Int = OutputThroughputDefinition.windowSeconds
+    ) throws -> TrendSnapshot {
         try storeQueue.sync {
             let status = try enforceRetention()
             if status.ingestionPaused { applyCapacityHealth(status) }
@@ -192,7 +203,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 let existing = Set(facts.map(\.id))
                 facts.append(contentsOf: retained.filter { !existing.contains($0.id) })
             }
-            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter, sourceHealth: snapshotHealth)
+            return TrendBuilder().build(facts: facts, now: clock.now, filter: filter, sourceHealth: snapshotHealth, windowSeconds: windowSeconds)
         }
     }
 
@@ -314,7 +325,11 @@ public final class TelemetryRuntime: @unchecked Sendable {
         }
     }
 
-    private func refresh(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
+    private func refresh(
+        filter: MetricFilter,
+        performanceRange: PerformanceRange,
+        windowSeconds: Int
+    ) throws -> LightSnapshot {
         var health: [SourceHealth] = []
         for sourceAdapter in sourceAdapters {
             do {
@@ -328,10 +343,14 @@ public final class TelemetryRuntime: @unchecked Sendable {
             health.append(performanceHealth)
         }
         sourceHealth = health
-        return try snapshotFromStore(filter: filter, performanceRange: performanceRange)
+        return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
     }
 
-    private func snapshotFromStore(filter: MetricFilter, performanceRange: PerformanceRange) throws -> LightSnapshot {
+    private func snapshotFromStore(
+        filter: MetricFilter,
+        performanceRange: PerformanceRange,
+        windowSeconds: Int
+    ) throws -> LightSnapshot {
         let unhealthyUsageCount = sourceHealth.filter {
             !$0.isHealthy && $0.impacts.contains(.usage)
         }.count
@@ -402,7 +421,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
                 to: snapshotHealth
             )
         }
-        let sample = LiveSampler().sample(facts: facts, filter: filter, now: clock.now)
+        let sample = LiveSampler(windowSeconds: windowSeconds).sample(facts: facts, filter: filter, now: clock.now)
         return SnapshotBuilder().buildLightSnapshot(
             sample: sample,
             allFacts: facts,

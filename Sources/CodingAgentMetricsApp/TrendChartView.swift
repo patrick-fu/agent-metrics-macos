@@ -37,16 +37,23 @@ struct TrendChartView: View {
                             }
                         }
                     }
-                } else {
+                } else if style == .line {
                     let plans = Self.plotPlans(for: chart)
                     ForEach(Array(chart.series.enumerated()), id: \.element.id) { index, series in
                         let plan = plans.first { $0.identityLabel == series.identity.accessibilityLabel }
-                        ForEach(series.buckets) { bucket in
-                            if let value = bucket.value {
-                                mark(value: value, series: series, bucket: bucket, plan: plan)
+                        ForEach(Array(TrendLinePlotPlanning.segments(for: series).enumerated()), id: \.offset) { segmentIndex, segment in
+                            ForEach(segment.points, id: \.start) { point in
+                                LineMark(
+                                    x: .value("Time", point.start),
+                                    y: .value("Value", point.value),
+                                    series: .value("Model", "\(series.identity.accessibilityLabel)#\(segmentIndex)")
+                                )
+                                .interpolationMethod(.linear)
+                                .foregroundStyle(color(for: series.colorSlot))
+                                .lineStyle(StrokeStyle(lineWidth: series.emphasis == .estimated ? 1.5 : 2, dash: dash(from: plan?.dash ?? [])))
                             }
                         }
-                        if style == .line, let plan, let last = endpointBucket(in: series), let value = last.value, plan.showsEndpointLabel {
+                        if let plan, let last = endpointBucket(in: series), let value = last.value, plan.showsEndpointLabel {
                             PointMark(x: .value("Time", last.start), y: .value("Value", value))
                                 .foregroundStyle(color(for: series.colorSlot))
                                 .symbol(TrendLinePlotPlanning.chartSymbol(plan.shapeName))
@@ -56,6 +63,16 @@ struct TrendChartView: View {
                                         .accessibilityLabel(plan.endpointLabel)
                                         .accessibilityValue(plan.endpointLabel)
                                 }
+                        }
+                    }
+                } else {
+                    let plans = Self.plotPlans(for: chart)
+                    ForEach(Array(chart.series.enumerated()), id: \.element.id) { index, series in
+                        let plan = plans.first { $0.identityLabel == series.identity.accessibilityLabel }
+                        ForEach(series.buckets) { bucket in
+                            if let value = bucket.value {
+                                mark(value: value, series: series, bucket: bucket, plan: plan)
+                            }
                         }
                     }
                 }

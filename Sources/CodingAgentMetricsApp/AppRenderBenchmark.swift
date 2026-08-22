@@ -7,16 +7,28 @@ import SwiftUI
 enum AppLaunchMode: Equatable {
     case application
     case renderBenchmark(sampleCount: Int)
+    case snapshotSummary(outputPath: String, mutateOnePixel: Bool)
     case invalidBenchmarkArguments
+    case invalidSnapshotArguments
 }
 
 enum AppCommandLine {
     static func mode(arguments: [String]) -> AppLaunchMode {
-        guard arguments.first == "--benchmark-render" else { return .application }
-        guard arguments.count == 2,
-              let sampleCount = Int(arguments[1]),
-              sampleCount > 0 else { return .invalidBenchmarkArguments }
-        return .renderBenchmark(sampleCount: sampleCount)
+        switch arguments.first {
+        case "--benchmark-render":
+            guard arguments.count == 2,
+                  let sampleCount = Int(arguments[1]),
+                  sampleCount > 0 else { return .invalidBenchmarkArguments }
+            return .renderBenchmark(sampleCount: sampleCount)
+        case "--snapshot-summary":
+            guard arguments.count >= 2 else { return .invalidSnapshotArguments }
+            return .snapshotSummary(
+                outputPath: arguments[1],
+                mutateOnePixel: arguments.contains("--mutate-one-pixel")
+            )
+        default:
+            return .application
+        }
     }
 }
 

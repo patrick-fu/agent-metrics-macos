@@ -66,7 +66,8 @@ public struct TrendBuilder: Sendable {
         facts: [UsageFact],
         now: Date,
         filter: MetricFilter = .all,
-        sourceHealth: [SourceHealth] = []
+        sourceHealth: [SourceHealth] = [],
+        windowSeconds: Int = OutputThroughputDefinition.windowSeconds
     ) -> TrendSnapshot {
         let filtered = facts.filter(filter.includes)
         let selection = AuthorityCoalescing.select(filtered)
@@ -75,7 +76,7 @@ public struct TrendBuilder: Sendable {
         let emptyReason: UnavailableReasonCode = filtered.isEmpty && !facts.isEmpty && scope == .selected
             ? .filterExcludesObservations : .noObservations
         return TrendSnapshot(
-            outputThroughput: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: OutputThroughputDefinition.windowSeconds, bucketSeconds: 5, kind: .output, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
+            outputThroughput: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: windowSeconds, bucketSeconds: 5, kind: .output, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
             tokenBurn: chart(facts: selection.facts, originalFacts: filtered, now: now, windowSeconds: TokenBurnDefinition.windowSeconds, bucketSeconds: 30, kind: .burn, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),
             // Calls KPI retains one stable identity through an authority conflict.
             calls: chart(facts: filtered, originalFacts: filtered, now: now, windowSeconds: CallsDefinition.windowSeconds, bucketSeconds: 30, kind: .calls, conflict: selection.hasConflict, sourceHealth: health, scope: scope, emptyReason: emptyReason),

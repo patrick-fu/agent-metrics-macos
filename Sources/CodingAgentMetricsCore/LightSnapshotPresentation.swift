@@ -63,6 +63,11 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var windowLabel: String
     public var valueText: String
     public var unitText: String
+    public var averageValueText: String
+    public var activeSessionsText: String
+    public var lastKnownValueText: String?
+    public var menuBarTitleText: String
+    public var menuBarAccessibilityLabel: String
     public var qualityText: String
     public var dataStateText: String
     public var coverageText: String
@@ -90,23 +95,57 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
     public var sourceHealthText: String
     public var capacityText: String?
 
-    public init(snapshot: LightSnapshot) {
+    public init(snapshot: LightSnapshot, now: Date? = nil) {
         title = "Output Throughput"
-        windowLabel = "3m"
+        windowLabel = "\(snapshot.outputThroughput.windowSeconds / 60)m"
         unitText = "tokens/s"
-        if let tokensPerSecond = snapshot.outputThroughput.tokensPerSecond {
+        let metric = snapshot.outputThroughput
+        let isLive = metric.tokensPerSecond != nil
+            && metric.dataState != .stale
+            && metric.dataState != .absent
+            && metric.dataState != .unavailable
+            && !metric.freshness.isRetained
+        lastKnownValueText = (!isLive ? metric.tokensPerSecond : nil).map(Self.format)
+        if isLive, let tokensPerSecond = metric.tokensPerSecond {
             valueText = Self.format(tokensPerSecond)
         } else {
-            valueText = "-"
+            valueText = "—"
         }
+        if isLive, let average = metric.averageTokensPerSecond {
+            averageValueText = Self.format(average)
+        } else {
+            averageValueText = "—"
+        }
+        activeSessionsText = metric.activeSessionCount == 1
+            ? "1 active session"
+            : "\(metric.activeSessionCount) active sessions"
+        if isLive, let tokensPerSecond = metric.tokensPerSecond {
+            menuBarTitleText = Self.menuBarTitle(tokensPerSecond)
+        } else {
+            menuBarTitleText = "—"
+        }
+        menuBarAccessibilityLabel = Self.menuBarAccessibilityLabel(
+            title: title,
+            windowLabel: windowLabel,
+            valueText: isLive ? valueText : nil,
+            averageValueText: isLive ? averageValueText : nil,
+            activeSessionsText: activeSessionsText,
+            isLive: isLive
+        )
         qualityText = snapshot.outputThroughput.measurementQuality.displayLabel
         dataStateText = snapshot.outputThroughput.dataState?.displayLabel ?? "-"
         coverageText = snapshot.outputThroughput.coverage.displayLabel
+        let displayNow = now ?? snapshot.generatedAt
+        let outputFreshness = Freshness.observed(
+            at: snapshot.outputThroughput.freshness.lastUpdatedAt,
+            now: displayNow,
+            retained: snapshot.outputThroughput.freshness.isRetained
+        )
         outputMetadata = MetricMetadataPresentation(
             quality: snapshot.outputThroughput.measurementQuality,
             state: snapshot.outputThroughput.dataState,
             coverage: snapshot.outputThroughput.coverage,
-            freshness: snapshot.outputThroughput.freshness,
+            freshness: outputFreshness,
             sampleCount: snapshot.outputThroughput.sampleCount,
             definitionVersion: snapshot.outputThroughput.definitionVersion,
             sourceAuthority: snapshot.outputThroughput.sourceAuthority,
@@ -201,6 +240,31 @@ public struct LightSnapshotPresentation: Sendable, Equatable {
             return String(Int(value))
         }
         return String(format: "%.1f", value)
+    }
+
+    static func menuBarTitle(_ value: Double) -> String {
+        if abs(value) >= 1_000 {
+            let thousands = value / 1_000
+            if (thousands * 10).rounded() / 10 == thousands.rounded() {
+                return "\(Int(thousands.rounded()))k t/s"
+            }
+            return String(format: "%.1fk t/s", thousands)
+        }
+        return "\(format(value)) t/s"
+    }
+
+    private static func menuBarAccessibilityLabel(
+        title: String,
+        windowLabel: String,
+        valueText: String?,
+        averageValueText: String?,
+        activeSessionsText: String,
+        isLive: Bool
+    ) -> String {
+        guard isLive, let valueText, let averageValueText else {
+            return "\(title) unavailable"
+        }
+        return "\(title) \(valueText) tokens/s over \(windowLabel), average \(averageValueText) tokens/s, \(activeSessionsText)"
     }
 
     private static func composition(_ parts: TokenParts?) -> String {

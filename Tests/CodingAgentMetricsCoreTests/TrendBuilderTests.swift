@@ -65,6 +65,28 @@ struct TrendBuilderTests {
         })
     }
 
+    @Test func completedOutputBucketsMatchSelectedWindowsWithoutOverallSeries() {
+        let completeFact = fact(
+            id: "complete",
+            agent: .codex,
+            modelRaw: "gpt-a",
+            display: "A",
+            observedAt: Date(timeIntervalSince1970: 1_771_197),
+            outputTokens: 10
+        )
+        let three = TrendBuilder().build(facts: [completeFact], now: midBucketNow, windowSeconds: 180).outputThroughput
+        let five = TrendBuilder().build(facts: [completeFact], now: midBucketNow, windowSeconds: 300).outputThroughput
+        let ten = TrendBuilder().build(facts: [completeFact], now: midBucketNow, windowSeconds: 600).outputThroughput
+        #expect(three.windowSeconds == 180)
+        #expect(five.windowSeconds == 300)
+        #expect(ten.windowSeconds == 600)
+        #expect(three.series[0].buckets.filter(\.isComplete).count == 36)
+        #expect(five.series[0].buckets.filter(\.isComplete).count == 60)
+        #expect(ten.series[0].buckets.filter(\.isComplete).count == 120)
+        #expect(three.series.count == 1)
+        #expect(three.series.contains { $0.identity == .aggregate("overall") } == false)
+    }
+
     @Test func activityUsesBoundedThirtySecondBarsOverTheTenMinuteWindow() {
         let snapshot = TrendBuilder().build(facts: [], now: alignedNow)
         #expect(snapshot.tokenBurn.windowSeconds == TokenBurnDefinition.windowSeconds)

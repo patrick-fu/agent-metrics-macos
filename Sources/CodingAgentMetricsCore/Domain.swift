@@ -218,12 +218,33 @@ public struct FixedClock: Clock {
 
 public enum AppIdentity {
     public static let bundleIdentifier = "dev.codingagentmetrics.app"
-    public static let popoverWidth: Double = 430
+    public static let popoverWidth: Double = 440
 }
 
 public enum OutputThroughputDefinition {
     public static let windowSeconds = 180
     public static let version = "output-throughput-v1"
+}
+
+public enum OutputThroughputWindow: Int, Sendable, Equatable, CaseIterable {
+    case threeMinutes = 180
+    case fiveMinutes = 300
+    case tenMinutes = 600
+
+    public static let `default` = threeMinutes
+
+    public var seconds: Int { rawValue }
+    public var menuLabel: String { "\(rawValue / 60)m" }
+}
+
+public enum DisplayCadence: Int, Sendable, Equatable, CaseIterable {
+    case fifteenSeconds = 15
+    case thirtySeconds = 30
+    case sixtySeconds = 60
+
+    public static let `default` = thirtySeconds
+
+    public var seconds: TimeInterval { TimeInterval(rawValue) }
 }
 
 public enum TokenBurnDefinition {

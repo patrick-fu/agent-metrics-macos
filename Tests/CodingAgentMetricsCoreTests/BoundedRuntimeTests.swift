@@ -38,6 +38,34 @@ struct BoundedRuntimeTests {
         #expect(hidden.filter(\.publishDetail).isEmpty)
     }
 
+    @Test func displayCadenceDefaultsToThirtySecondsWithoutSlowingCollectorLightTicks() {
+        var scheduler = SnapshotScheduler()
+        #expect(scheduler.displayCadence == .thirtySeconds)
+        let start = scheduler.tick(at: Date(timeIntervalSince1970: 0))
+        #expect(start.publishLight)
+        #expect(start.publishDisplay)
+
+        let nextTwentyNineSeconds = (1...29).map { scheduler.tick(at: Date(timeIntervalSince1970: TimeInterval($0))) }
+        #expect(nextTwentyNineSeconds.filter(\.publishLight).count == 29)
+        #expect(nextTwentyNineSeconds.filter(\.publishDisplay).isEmpty)
+        let atThirty = scheduler.tick(at: Date(timeIntervalSince1970: 30))
+        #expect(atThirty.publishLight)
+        #expect(atThirty.publishDisplay)
+    }
+
+    @Test func displayCadenceChangePublishesImmediatelyWhileCollectorStaysAtOneHertz() {
+        var scheduler = SnapshotScheduler()
+        #expect(scheduler.tick(at: Date(timeIntervalSince1970: 0)).publishDisplay)
+        scheduler.setDisplayCadence(.fifteenSeconds)
+        let next = scheduler.tick(at: Date(timeIntervalSince1970: 1))
+        #expect(next.publishDisplay)
+        #expect(next.publishLight)
+        let quiet = (2...14).map { scheduler.tick(at: Date(timeIntervalSince1970: TimeInterval($0))) }
+        #expect(quiet.filter(\.publishDisplay).isEmpty)
+        #expect(quiet.filter(\.publishLight).count == 13)
+        #expect(scheduler.tick(at: Date(timeIntervalSince1970: 15)).publishDisplay)
+    }
+
     @Test func hidingAndShowingRestartsDetailWithoutPausingLightHealthTicks() {
         var scheduler = SnapshotScheduler()
         scheduler.setPopoverVisible(true)

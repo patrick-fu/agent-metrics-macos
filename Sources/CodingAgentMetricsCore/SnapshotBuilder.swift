@@ -114,6 +114,8 @@ public struct SnapshotBuilder: Sendable {
             return OutputThroughputMetric(
                 tokensPerSecond: nil,
                 selectedOutputTokens: nil,
+                averageTokensPerSecond: nil,
+                activeSessionCount: 0,
                 windowSeconds: sample.windowSeconds,
                 measurementQuality: .unavailable,
                 dataState: state,
@@ -134,9 +136,13 @@ public struct SnapshotBuilder: Sendable {
         let partial = authorityConflict || !degraded.isEmpty || mixedQuality
             || allFacts.contains { $0.measurementQuality == .unavailable }
         let degradation = firstDegradation(in: degraded)
+        let liveSessionCount = Set(current.map { "\($0.codingAgent.rawValue)\u{1e}\($0.sessionID)" }).count
+        let tokensPerSecond = Double(tokens) / Double(sample.windowSeconds)
         return OutputThroughputMetric(
-            tokensPerSecond: Double(tokens) / Double(sample.windowSeconds),
+            tokensPerSecond: tokensPerSecond,
             selectedOutputTokens: tokens,
+            averageTokensPerSecond: liveSessionCount == 0 ? nil : tokensPerSecond / Double(liveSessionCount),
+            activeSessionCount: liveSessionCount,
             windowSeconds: sample.windowSeconds,
             measurementQuality: .combined(qualities, derivedResult: true),
             dataState: retained ? .stale : (tokens == 0 ? .zero : nil),

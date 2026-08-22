@@ -8,7 +8,11 @@ struct AccessibilitySurfaceSmokeTests {
     func summarySettingsAndTrendSurfacesCanBeConstructed() {
         let session = AccessibilitySession()
         session.openPanel()
-        let popover = SummaryPopoverView(snapshot: nil, accessibility: session)
+        let popover = SummaryPopoverView(
+            snapshot: nil,
+            accessibility: session,
+            lifecycleServices: inertLifecycleServices()
+        )
         _ = popover.body
 
         session.activate(.settings)

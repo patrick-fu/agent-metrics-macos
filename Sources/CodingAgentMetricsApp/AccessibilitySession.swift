@@ -52,6 +52,10 @@ final class AccessibilitySession: ObservableObject {
         navigation.focus(control)
     }
 
+    func setShowsPerformanceEnable(_ visible: Bool) {
+        navigation.setShowsPerformanceEnable(visible)
+    }
+
     var activityBinding: Binding<AccessibilityNavigation.ActivityMetric> {
         Binding(
             get: { self.navigation.activity },

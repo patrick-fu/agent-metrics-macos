@@ -47,6 +47,40 @@ struct LatestBackgroundLoaderTests {
     }
 
     @Test @MainActor
+    func displayTickDuringInFlightSameInputPublishesHeroWhenLoadFinishes() async {
+        let firstEntered = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let loader = LatestBackgroundLoader<Int, Int>(
+            queue: DispatchQueue(label: "loader-hero-promotion-test"),
+            gate: DetailQueryGate(),
+            load: { input in
+                firstEntered.signal()
+                releaseFirst.wait()
+                return input
+            }
+        )
+        var decision = LightSnapshotPublishDecision()
+        var published: [Int] = []
+
+        func request(publishHero: Bool) {
+            decision.noteRequested(publishHero: publishHero)
+            let publishHero = publishHero
+            loader.submit(7) { output in
+                if decision.shouldPublishHero(forThisCompletion: publishHero) {
+                    published.append(output)
+                }
+            }
+        }
+
+        request(publishHero: false)
+        #expect(await wait(for: firstEntered, timeout: 1) == .success)
+        request(publishHero: true)
+        releaseFirst.signal()
+        while published.isEmpty { await Task.yield() }
+        #expect(published == [7])
+    }
+
+    @Test @MainActor
     func submitReturnsImmediatelyAndOnlyTheLatestBlockedRequestPublishes() async {
         let firstEntered = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)

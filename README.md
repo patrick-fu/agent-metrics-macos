@@ -19,4 +19,4 @@ There is no GitHub Actions workflow. All automated checks run locally.
 
 `dev.codingagentmetrics.app` is the frozen reverse-DNS identifier. A later product-name change must not change it.
 
-The packaged app is an `LSUIElement` status-item/panel shell. The SwiftUI popover is 430 pt wide and reads only a `LightSnapshot` from `TelemetryRuntime`.
+The packaged app is an `LSUIElement` status-item/panel shell. The SwiftUI popover is 440 pt wide and reads only a `LightSnapshot` from `TelemetryRuntime`.

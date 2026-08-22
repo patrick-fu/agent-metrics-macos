@@ -108,19 +108,38 @@ struct AccessibilityNavigationTests {
         navigation.moveFocus(forward: true)
         #expect(navigation.focusedControl == .modelFilter)
         navigation.moveFocus(forward: true)
-        #expect(navigation.focusedControl == .performanceRange)
+        #expect(navigation.focusedControl == .windowSelector)
         navigation.moveFocus(forward: true)
-        #expect(navigation.focusedControl == .activityPicker)
+        #expect(navigation.focusedControl == .settings)
+        navigation.moveFocus(forward: true)
+        #expect(navigation.focusedControl == .performanceEnable)
+        navigation.moveFocus(forward: true)
+        #expect(navigation.focusedControl == .qualityDisclosure)
         navigation.moveFocus(forward: true)
         #expect(navigation.focusedControl == .viewTrends)
         navigation.moveFocus(forward: true)
-        #expect(navigation.focusedControl == .settings)
-        navigation.moveFocus(forward: true)
-        #expect(navigation.focusedControl == .settings)
+        #expect(navigation.focusedControl == .viewTrends)
 
         navigation.moveFocus(forward: false)
+        #expect(navigation.focusedControl == .qualityDisclosure)
+    }
+
+    @Test func summaryOmitsPerformanceEnableWhenTelemetryMetricsAreAvailable() {
+        var navigation = openedSummary()
+        navigation.setShowsPerformanceEnable(false)
+        let order: [AccessibilityNavigation.Control] = [
+            .agentFilter, .modelFilter, .windowSelector, .settings, .qualityDisclosure, .viewTrends,
+        ]
+        #expect(navigation.focusedControl == .agentFilter)
+        for control in order.dropFirst() {
+            navigation.moveFocus(forward: true)
+            #expect(navigation.focusedControl == control)
+        }
+        #expect(navigation.focusedControl != .performanceEnable)
+        navigation.moveFocus(forward: true)
         #expect(navigation.focusedControl == .viewTrends)
     }
+
 
     @Test func settingsTabOrderReachesLoginTelemetryDiagnosticsResetAndUpdate() {
         var navigation = openedSummary()
@@ -129,6 +148,8 @@ struct AccessibilityNavigationTests {
 
         let expected: [AccessibilityNavigation.Control] = [
             .launchAtLogin,
+            .aggregateWindow,
+            .displayCadence,
             .enhancedTelemetry,
             .diagnosticsPreview,
             .diagnosticsCopy,
@@ -158,14 +179,12 @@ struct AccessibilityNavigationTests {
     @Test func activityPickerCanSwitchToCallsAndFocusTheActivityTable() {
         var navigation = openedSummary()
         #expect(navigation.activity == .burn)
+        navigation.activate(.viewTrends)
         navigation.activate(.activityPicker)
         #expect(navigation.focusedControl == .activityPicker)
         navigation.selectActivity(.calls)
         #expect(navigation.activity == .calls)
         #expect(navigation.focusedControl == .activityPicker)
-
-        navigation.activate(.viewTrends)
-        navigation.selectActivity(.calls)
         navigation.activate(.activityTable)
         #expect(navigation.surface == .trends)
         #expect(navigation.activity == .calls)

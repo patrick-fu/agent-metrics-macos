@@ -12,12 +12,17 @@ struct AccessibilityNavigation: Equatable, Sendable {
         case statusItem
         case agentFilter
         case modelFilter
+        case windowSelector
+        case qualityDisclosure
+        case performanceEnable
         case performanceRange
         case activityPicker
         case viewTrends
         case settings
         case back
         case launchAtLogin
+        case aggregateWindow
+        case displayCadence
         case enhancedTelemetry
         case diagnosticsPreview
         case diagnosticsCopy
@@ -45,10 +50,23 @@ struct AccessibilityNavigation: Equatable, Sendable {
     private(set) var surface: Surface
     private(set) var focusedControl: Control
     private(set) var activity: ActivityMetric
+    private(set) var showsPerformanceEnable: Bool
 
     var isPanelVisible: Bool { surface != .dismissed }
 
-    static let closed = AccessibilityNavigation(surface: .dismissed, focusedControl: .statusItem, activity: .burn)
+    static let closed = AccessibilityNavigation(
+        surface: .dismissed,
+        focusedControl: .statusItem,
+        activity: .burn,
+        showsPerformanceEnable: true
+    )
+
+    mutating func setShowsPerformanceEnable(_ visible: Bool) {
+        showsPerformanceEnable = visible
+        if !visible, focusedControl == .performanceEnable {
+            focusedControl = controls(for: surface).first ?? focusedControl
+        }
+    }
 
     mutating func openPanel() {
         guard surface == .dismissed else { return }
@@ -84,7 +102,7 @@ struct AccessibilityNavigation: Equatable, Sendable {
 
     mutating func selectActivity(_ activity: ActivityMetric) {
         self.activity = activity
-        if surface == .summary || surface == .trends {
+        if surface == .trends {
             focusedControl = .activityPicker
         }
     }
@@ -159,15 +177,21 @@ struct AccessibilityNavigation: Equatable, Sendable {
     private func controls(for surface: Surface) -> [Control] {
         switch surface {
         case .dismissed:
-            [.statusItem]
+            return [.statusItem]
         case .summary:
-            [.agentFilter, .modelFilter, .performanceRange, .activityPicker, .viewTrends, .settings]
+            var summary: [Control] = [.agentFilter, .modelFilter, .windowSelector, .settings]
+            if showsPerformanceEnable {
+                summary.append(.performanceEnable)
+            }
+            return summary + [.qualityDisclosure, .viewTrends]
         case .trends:
-            [.back, .outputTable, .activityPicker, .activityTable]
+            return [.back, .outputTable, .activityPicker, .activityTable]
         case .settings:
-            [
+            return [
                 .back,
                 .launchAtLogin,
+                .aggregateWindow,
+                .displayCadence,
                 .enhancedTelemetry,
                 .diagnosticsPreview,
                 .diagnosticsCopy,
@@ -177,7 +201,7 @@ struct AccessibilityNavigation: Equatable, Sendable {
                 .checkForUpdates,
             ]
         case .diagnosticsConfirmation, .resetConfirmation:
-            [.confirmationCancel, .confirmationConfirm]
+            return [.confirmationCancel, .confirmationConfirm]
         }
     }
 }

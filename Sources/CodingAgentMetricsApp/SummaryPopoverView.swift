@@ -19,12 +19,18 @@ struct SummaryPopoverView: View {
     @FocusState private var focusedControl: AccessibilityNavigation.Control?
     @State private var performanceRange: PerformanceRange = .oneHour
     @State private var requestedFilter: MetricFilter
+    @State private var qualityExpanded = false
+    @State private var now: Date
+    @ObservedObject private var preferences: DisplayPreferencesController
+    var clock: any Clock
     let lifecycleServices: AppLifecycleServices
     let telemetry: EnhancedTelemetryController
     let resetData: ResetDataController
     let diagnostics: DiagnosticActionController
     var loadSnapshot: (MetricFilter, PerformanceRange) -> Void
     var loadTrends: (MetricFilter) -> Void
+    var onWindowChange: (OutputThroughputWindow) -> Void
+    var onCadenceChange: (DisplayCadence) -> Void
     private var snapshot: LightSnapshot? { snapshots.light }
     private var trends: TrendSnapshot? { snapshots.detail }
 
@@ -37,11 +43,18 @@ struct SummaryPopoverView: View {
         resetData: ResetDataController? = nil,
         diagnostics: DiagnosticActionController? = nil,
         loadSnapshot: @escaping (MetricFilter, PerformanceRange) -> Void = { _, _ in },
-        loadTrends: @escaping (MetricFilter) -> Void = { _ in }
+        loadTrends: @escaping (MetricFilter) -> Void = { _ in },
+        preferences: DisplayPreferencesController? = nil,
+        clock: any Clock = SystemClock(),
+        onWindowChange: @escaping (OutputThroughputWindow) -> Void = { _ in },
+        onCadenceChange: @escaping (DisplayCadence) -> Void = { _ in }
     ) {
         _snapshots = ObservedObject(wrappedValue: snapshots ?? RuntimeSnapshots(light: snapshot))
         _accessibility = ObservedObject(wrappedValue: accessibility ?? AccessibilitySession())
         _requestedFilter = State(initialValue: snapshot?.filter ?? .all)
+        _preferences = ObservedObject(wrappedValue: preferences ?? DisplayPreferencesController())
+        self.clock = clock
+        _now = State(initialValue: clock.now)
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry ?? EnhancedTelemetryController(runtime: nil)
         self.resetData = resetData ?? ResetDataController()
@@ -52,6 +65,8 @@ struct SummaryPopoverView: View {
         )
         self.loadSnapshot = loadSnapshot
         self.loadTrends = loadTrends
+        self.onWindowChange = onWindowChange
+        self.onCadenceChange = onCadenceChange
     }
 
     var body: some View {
@@ -65,97 +80,77 @@ struct SummaryPopoverView: View {
                 summary
             }
         }
-        .onAppear { syncFocus() }
+        .onAppear { syncFocus(); now = clock.now }
         .onChange(of: accessibility.navigation.focusedControl) { _, _ in syncFocus() }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            now = clock.now
+        }
         .onExitCommand(perform: handleEscape)
     }
 
     @ViewBuilder private var summary: some View {
-        let presentation = snapshot.map(LightSnapshotPresentation.init)
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Coding Agent Metrics")
-                .font(.headline)
-            filterRow(
-                title: "Agent",
-                chips: presentation?.agentChips ?? [
-                    FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
-                ],
-                count: presentation?.agentActiveCount ?? 0,
-                axis: .agent,
-                control: .agentFilter
-            )
-            filterRow(
-                title: "Model",
-                chips: presentation?.modelChips ?? [
-                    FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
-                ],
-                count: presentation?.modelActiveCount ?? 0,
-                axis: .model,
-                control: .modelFilter
-            )
-            HStack(spacing: 8) {
-                kpi(title: "Token Burn/min", value: presentation?.burnValueText ?? "Unavailable", unit: presentation?.burnUnitText ?? "tokens/min")
-                kpi(title: "Calls/min", value: presentation?.callsValueText ?? "Unavailable", unit: presentation?.callsUnitText ?? "calls/min")
-            }
-            performance(snapshot?.performance)
-            Picker("Activity", selection: accessibility.activityBinding) {
-                Text(AccessibilityNavigation.ActivityMetric.burn.rawValue)
-                    .tag(AccessibilityNavigation.ActivityMetric.burn)
-                Text(AccessibilityNavigation.ActivityMetric.calls.rawValue)
-                    .tag(AccessibilityNavigation.ActivityMetric.calls)
-            }
-            .pickerStyle(.segmented)
-            .focused($focusedControl, equals: .activityPicker)
-            .accessibilityFocusChrome(focusedControl == .activityPicker)
-            .accessibilityLabel("Activity")
-            activityDetail(presentation)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(presentation?.title ?? "Output Throughput")
-                        .font(.subheadline)
-                    Spacer()
-                    Text(presentation?.windowLabel ?? "3m")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        let projection = SummaryPopoverProjection.make(
+            snapshot: snapshot,
+            trends: trends,
+            qualityExpanded: qualityExpanded,
+            telemetryEnabled: telemetry.isEnabled,
+            now: now
+        )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                header(projection)
+                HStack(spacing: 8) {
+                    compactFilter(title: projection.agentMenuTitle, chips: snapshot.map { LightSnapshotPresentation(snapshot: $0) }?.agentChips ?? [
+                        FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
+                    ], axis: .agent, control: .agentFilter)
+                    compactFilter(title: projection.modelMenuTitle, chips: snapshot.map { LightSnapshotPresentation(snapshot: $0) }?.modelChips ?? [
+                        FilterChip(id: "all", title: "All", isSelected: true, action: .selectAll)
+                    ], axis: .model, control: .modelFilter)
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(presentation?.valueText ?? "-")
-                        .font(.system(size: 28, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                    Text(presentation?.unitText ?? "tokens/s")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    heroCard(title: "TOTAL OUTPUT", value: projection.totalValueText, unit: projection.unitText)
+                    heroCard(title: "AVG / SESSION", value: projection.averageValueText, unit: projection.unitText)
                 }
-            }
-            metricMetadata(presentation?.outputMetadata)
-            Text(presentation?.sourceHealthText ?? "Source health unavailable")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if let capacityText = presentation?.capacityText {
-                Text(capacityText)
+                Label(projection.activeSessionsText, systemImage: "person.2")
                     .font(.caption)
-                    .foregroundStyle(.orange)
-                    .accessibilityLabel(capacityText)
-            }
-            HStack {
-                Button("View Trends") {
-                    accessibility.activate(.viewTrends)
-                    loadTrends(requestedFilter)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(projection.activeSessionsText)
+                summaryChart(projection)
+                HStack(spacing: 8) {
+                    smallMetric(title: "Token burn", value: projection.burnValueText, unit: projection.burnUnitText)
+                    smallMetric(title: "Calls", value: projection.callsValueText, unit: projection.callsUnitText)
                 }
-                .focused($focusedControl, equals: .viewTrends)
-                .accessibilityFocusChrome(focusedControl == .viewTrends)
-                .accessibilityHint("Opens trend charts and exact values")
-                Button("Settings") {
-                    accessibility.activate(.settings)
+                performanceBanner(projection)
+                qualityRow(projection)
+                if let capacityText = (snapshot.map { LightSnapshotPresentation(snapshot: $0) })?.capacityText {
+                    Text(capacityText)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel(capacityText)
                 }
-                .focused($focusedControl, equals: .settings)
-                .accessibilityFocusChrome(focusedControl == .settings)
-                .accessibilityHint("Opens login, telemetry, diagnostics, reset, and update controls")
+                HStack {
+                    Text(projection.footerUpdatedText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(projection.detailsTitle) {
+                        accessibility.activate(.viewTrends)
+                        loadTrends(requestedFilter)
+                    }
+                    .focused($focusedControl, equals: .viewTrends)
+                    .accessibilityFocusChrome(focusedControl == .viewTrends)
+                    .accessibilityHint("Opens trend charts and exact values")
+                }
             }
+            .padding(14)
         }
-        .padding(14)
         .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .frame(maxHeight: 720)
         .background(.regularMaterial)
+        .onAppear { accessibility.setShowsPerformanceEnable(projection.performance == .banner) }
+        .onChange(of: projection.performance) { _, mode in
+            accessibility.setShowsPerformanceEnable(mode == .banner)
+        }
     }
 
     private var settingsDetail: some View {
@@ -172,7 +167,11 @@ struct SummaryPopoverView: View {
                 telemetry: telemetry,
                 resetData: resetData,
                 diagnostics: diagnostics,
-                accessibility: accessibility
+                accessibility: accessibility,
+                selectedWindow: $preferences.window,
+                selectedCadence: $preferences.cadence,
+                onWindowChange: onWindowChange,
+                onCadenceChange: onCadenceChange
             )
         }
         .padding(14)
@@ -189,7 +188,7 @@ struct SummaryPopoverView: View {
                 Spacer()
                 Text("Trends").font(.headline)
             }
-            if let trends, let presentation = snapshot.map(LightSnapshotPresentation.init) {
+            if let trends, let presentation = (snapshot.map { LightSnapshotPresentation(snapshot: $0) }) {
                 trendSection(
                     title: "Output Throughput",
                     aggregate: "\(presentation.valueText) \(presentation.unitText)",
@@ -279,7 +278,225 @@ struct SummaryPopoverView: View {
         }
     }
 
+    private func header(_ projection: SummaryPopoverProjection) -> some View {
+        HStack(spacing: 8) {
+            Text(projection.title)
+                .font(.headline)
+                .accessibilityIdentifier("summary-title")
+            Spacer()
+            Circle()
+                .fill(projection.isLive ? Color.green : Color.secondary.opacity(0.45))
+                .frame(width: 8, height: 8)
+                .accessibilityLabel(projection.isLive ? "Live" : "Not live")
+            Menu {
+                ForEach(OutputThroughputWindow.allCases, id: \.self) { window in
+                    Button(window.menuLabel) {
+                        preferences.window = window
+                        accessibility.activate(.windowSelector)
+                        onWindowChange(window)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(preferences.window.menuLabel)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            }
+            .focused($focusedControl, equals: .windowSelector)
+            .accessibilityFocusChrome(focusedControl == .windowSelector)
+            .accessibilityLabel("Window \(preferences.window.menuLabel)")
+            Button {
+                accessibility.activate(.settings)
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.plain)
+            .focused($focusedControl, equals: .settings)
+            .accessibilityFocusChrome(focusedControl == .settings)
+            .accessibilityLabel("Settings")
+            .accessibilityHint("Opens login, telemetry, diagnostics, reset, and update controls")
+        }
+    }
+
+    private func compactFilter(
+        title: String,
+        chips: [FilterChip],
+        axis: FilterAxis,
+        control: AccessibilityNavigation.Control
+    ) -> some View {
+        Menu {
+            ForEach(chips) { chip in
+                Button {
+                    accessibility.activate(control)
+                    apply(chip.action, on: axis)
+                } label: {
+                    if chip.isSelected {
+                        Label(chip.title, systemImage: "checkmark")
+                    } else {
+                        Text(chip.title)
+                    }
+                }
+            }
+        } label: {
+            HStack {
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .font(.caption)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3)))
+        }
+        .focused($focusedControl, equals: control)
+        .accessibilityFocusChrome(focusedControl == control)
+        .accessibilityLabel(axis == .agent ? "Agent filter menu" : "Model filter menu")
+        .frame(maxWidth: .infinity)
+    }
+
+    private func heroCard(title: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 28, weight: .semibold))
+                .monospacedDigit()
+            Text(unit)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    @ViewBuilder
+    private func summaryChart(_ projection: SummaryPopoverProjection) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let chart = trends?.outputThroughput {
+                CompactThroughputChartView(chart: chart)
+                .frame(height: 230)
+                .accessibilityIdentifier("summary-output-chart")
+            } else {
+                Text("Chart unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .onAppear { loadTrends(requestedFilter) }
+    }
+
+    private func smallMetric(title: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    @ViewBuilder
+    private func performanceBanner(_ projection: SummaryPopoverProjection) -> some View {
+        if projection.performance == .banner {
+            HStack(spacing: 8) {
+                Image(systemName: "chart.bar")
+                    .foregroundStyle(.tint)
+                Text(projection.performanceBannerText ?? "Performance metrics require Enhanced Telemetry")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button(projection.performanceActionText ?? "Enable") {
+                    accessibility.activate(.performanceEnable)
+                    telemetry.setEnabled(true)
+                }
+                .focused($focusedControl, equals: .performanceEnable)
+                .accessibilityFocusChrome(focusedControl == .performanceEnable)
+            }
+            .padding(10)
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.25)))
+        } else {
+            HStack(spacing: 8) {
+                compactPerf("TTFT", projection.compactTTFT)
+                compactPerf("E2E", projection.compactE2E)
+                compactPerf("Decode TPS", projection.compactDecode)
+            }
+        }
+    }
+
+    private func compactPerf(_ title: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value ?? "—").font(.caption.weight(.semibold)).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    private func qualityRow(_ projection: SummaryPopoverProjection) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                qualityExpanded.toggle()
+                accessibility.activate(.qualityDisclosure)
+            } label: {
+                HStack {
+                    Text(projection.qualityTitle)
+                        .font(.caption)
+                    Spacer()
+                    ForEach(projection.qualityBadges, id: \.self) { badge in
+                        Text(badge)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(badge == "Partial" ? Color.yellow.opacity(0.35) : Color.secondary.opacity(0.12), in: Capsule())
+                    }
+                    Image(systemName: qualityExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .focused($focusedControl, equals: .qualityDisclosure)
+            .accessibilityFocusChrome(focusedControl == .qualityDisclosure)
+            .accessibilityLabel(projection.qualityTitle)
+            if projection.showsQualityMetadata {
+                ForEach(projection.qualityMetadataLines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+    }
+
     private func kpi(title: String, value: String, unit: String) -> some View {
+
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()

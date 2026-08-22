@@ -156,6 +156,8 @@ public struct LiveSample: Sendable, Equatable {
 public struct OutputThroughputMetric: Sendable, Equatable {
     public var tokensPerSecond: Double?
     public var selectedOutputTokens: Int?
+    public var averageTokensPerSecond: Double?
+    public var activeSessionCount: Int
     public var windowSeconds: Int
     public var measurementQuality: MeasurementQuality
     public var dataState: DataState?

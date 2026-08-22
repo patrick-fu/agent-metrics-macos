@@ -143,10 +143,12 @@ public struct SourceObservationQueue: Sendable {
 public struct SnapshotSchedule: Sendable, Equatable {
     public var publishLight: Bool
     public var publishDetail: Bool
+    public var publishDisplay: Bool
 
-    public init(publishLight: Bool, publishDetail: Bool) {
+    public init(publishLight: Bool, publishDetail: Bool, publishDisplay: Bool = false) {
         self.publishLight = publishLight
         self.publishDetail = publishDetail
+        self.publishDisplay = publishDisplay
     }
 }
 
@@ -157,10 +159,14 @@ public struct SnapshotScheduler: Sendable {
     public static let detailInterval: TimeInterval = 0.25
 
     public private(set) var isPopoverVisible = false
+    public private(set) var displayCadence: DisplayCadence
     private var lastLightInterval: Int64?
     private var lastDetailInterval: Int64?
+    private var lastDisplayInterval: Int64?
 
-    public init() {}
+    public init(displayCadence: DisplayCadence = .default) {
+        self.displayCadence = displayCadence
+    }
 
     public mutating func setPopoverVisible(_ visible: Bool) {
         if visible && !isPopoverVisible {
@@ -169,14 +175,22 @@ public struct SnapshotScheduler: Sendable {
         isPopoverVisible = visible
     }
 
+    public mutating func setDisplayCadence(_ cadence: DisplayCadence) {
+        displayCadence = cadence
+        lastDisplayInterval = nil
+    }
+
     public mutating func tick(at date: Date) -> SnapshotSchedule {
         let lightInterval = interval(containing: date, duration: Self.lightInterval)
         let detailInterval = interval(containing: date, duration: Self.detailInterval)
+        let displayInterval = interval(containing: date, duration: displayCadence.seconds)
         let publishLight = lightInterval != lastLightInterval
         let publishDetail = isPopoverVisible && detailInterval != lastDetailInterval
+        let publishDisplay = displayInterval != lastDisplayInterval
         if publishLight { lastLightInterval = lightInterval }
         if publishDetail { lastDetailInterval = detailInterval }
-        return SnapshotSchedule(publishLight: publishLight, publishDetail: publishDetail)
+        if publishDisplay { lastDisplayInterval = displayInterval }
+        return SnapshotSchedule(publishLight: publishLight, publishDetail: publishDetail, publishDisplay: publishDisplay)
     }
 
     private func interval(containing date: Date, duration: TimeInterval) -> Int64 {

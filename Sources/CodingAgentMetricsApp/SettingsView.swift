@@ -1,3 +1,4 @@
+import CodingAgentMetricsCore
 import CodingAgentMetricsLifecycle
 import SwiftUI
 
@@ -7,6 +8,10 @@ struct SettingsView: View {
     let resetData: ResetDataController
     let diagnostics: DiagnosticActionController
     @ObservedObject var accessibility: AccessibilitySession
+    @Binding var selectedWindow: OutputThroughputWindow
+    @Binding var selectedCadence: DisplayCadence
+    var onWindowChange: (OutputThroughputWindow) -> Void
+    var onCadenceChange: (DisplayCadence) -> Void
     @FocusState private var focusedControl: AccessibilityNavigation.Control?
 
     init(
@@ -14,13 +19,21 @@ struct SettingsView: View {
         telemetry: EnhancedTelemetryController,
         resetData: ResetDataController,
         diagnostics: DiagnosticActionController,
-        accessibility: AccessibilitySession? = nil
+        accessibility: AccessibilitySession? = nil,
+        selectedWindow: Binding<OutputThroughputWindow> = .constant(.default),
+        selectedCadence: Binding<DisplayCadence> = .constant(.default),
+        onWindowChange: @escaping (OutputThroughputWindow) -> Void = { _ in },
+        onCadenceChange: @escaping (DisplayCadence) -> Void = { _ in }
     ) {
         self.lifecycleServices = lifecycleServices
         self.telemetry = telemetry
         self.resetData = resetData
         self.diagnostics = diagnostics
         self.accessibility = accessibility ?? AccessibilitySession()
+        _selectedWindow = selectedWindow
+        _selectedCadence = selectedCadence
+        self.onWindowChange = onWindowChange
+        self.onCadenceChange = onCadenceChange
     }
 
     var body: some View {
@@ -57,6 +70,29 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Divider()
+            Text("Display")
+                .font(.subheadline)
+            Picker("Aggregate window", selection: $selectedWindow) {
+                ForEach(OutputThroughputWindow.allCases, id: \.self) { window in
+                    Text(window.menuLabel).tag(window)
+                }
+            }
+            .focused($focusedControl, equals: .aggregateWindow)
+            .accessibilityFocusChrome(focusedControl == .aggregateWindow)
+            .onChange(of: selectedWindow) { _, window in
+                onWindowChange(window)
+            }
+            Picker("Menu bar cadence", selection: $selectedCadence) {
+                ForEach(DisplayCadence.allCases, id: \.self) { cadence in
+                    Text("\(Int(cadence.seconds))s").tag(cadence)
+                }
+            }
+            .focused($focusedControl, equals: .displayCadence)
+            .accessibilityFocusChrome(focusedControl == .displayCadence)
+            .onChange(of: selectedCadence) { _, cadence in
+                onCadenceChange(cadence)
+            }
             Divider()
             Toggle(
                 "Enhanced telemetry",
