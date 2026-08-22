@@ -23,7 +23,11 @@ final class AccessibilityPanelLifecycle {
     }
 
     func handleResignKey() {
-        if hasModalWindow() || isMenuTracking() { return }
+        handleExternalDismissRequest()
+    }
+
+    func handleExternalDismissRequest() {
+        if accessibility.isModalConfirmation || hasModalWindow() || isMenuTracking() { return }
         onDismiss()
     }
 

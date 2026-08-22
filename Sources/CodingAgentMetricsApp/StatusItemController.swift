@@ -35,6 +35,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let accessibility = AccessibilitySession()
     private var accessibilityObserver: AnyCancellable?
     private var panelLifecycle: AccessibilityPanelLifecycle!
+    private var isDismissingPanel = false
     private lazy var resetData: ResetDataController = {
         guard let runtime else { return ResetDataController() }
         return ResetDataController(reset: { [weak self, runtime] in
@@ -262,7 +263,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(panel.contentView)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            self?.dismissPanel()
+            self?.panelLifecycle.handleExternalDismissRequest()
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKey(event)
@@ -270,6 +271,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func dismissPanel() {
+        guard !isDismissingPanel else { return }
+        guard panel.isVisible || accessibility.isPanelVisible else { return }
+        isDismissingPanel = true
+        defer { isDismissingPanel = false }
         scheduler.setPopoverVisible(false)
         detailLoader.invalidate()
         if accessibility.isPanelVisible {

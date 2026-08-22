@@ -1,8 +1,130 @@
 import AppKit
+import Combine
 import Testing
 @testable import CodingAgentMetricsApp
 
 struct AccessibilityPanelLifecycleTests {
+    enum ExternalDismissBlocker: CaseIterable, Sendable {
+        case confirmation
+        case modalWindow
+        case menuTracking
+    }
+
+    @Test(arguments: ExternalDismissBlocker.allCases) @MainActor
+    func externalDismissIsIgnoredWhilePanelInteractionIsProtected(
+        blocker: ExternalDismissBlocker
+    ) {
+        let panel = KeyablePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let session = AccessibilitySession()
+        session.openPanel()
+        var hasModalWindow = false
+        var isMenuTracking = false
+        switch blocker {
+        case .confirmation:
+            session.activate(.settings)
+            session.activate(.diagnosticsCopy)
+        case .modalWindow:
+            hasModalWindow = true
+        case .menuTracking:
+            isMenuTracking = true
+        }
+        var dismissed = false
+        let lifecycle = AccessibilityPanelLifecycle(
+            panel: panel,
+            accessibility: session,
+            hasModalWindow: { hasModalWindow },
+            isMenuTracking: { isMenuTracking },
+            onDismiss: { dismissed = true }
+        )
+
+        lifecycle.handleExternalDismissRequest()
+
+        #expect(dismissed == false)
+    }
+
+    @Test(arguments: [
+        AccessibilityNavigation.Control.diagnosticsCopy,
+        .resetReview,
+    ]) @MainActor
+    func resignKeyDuringConfirmationKeepsParentPanelEvenBeforeModalWindowIsRegistered(
+        trigger: AccessibilityNavigation.Control
+    ) {
+        let panel = KeyablePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let session = AccessibilitySession()
+        session.openPanel()
+        session.activate(.settings)
+        session.activate(trigger)
+        var dismissed = false
+        let lifecycle = AccessibilityPanelLifecycle(
+            panel: panel,
+            accessibility: session,
+            hasModalWindow: { false },
+            isMenuTracking: { false },
+            onDismiss: { dismissed = true }
+        )
+
+        lifecycle.handleResignKey()
+
+        #expect(session.isModalConfirmation)
+        #expect(dismissed == false)
+    }
+
+    @Test @MainActor
+    func synchronousDismissalConsumerIsNotReentered() {
+        let session = AccessibilitySession()
+        var dismissNotifications = 0
+        var observesDismissals = false
+        let observer = session.$navigation.sink { navigation in
+            guard observesDismissals, navigation.surface == .dismissed else { return }
+            dismissNotifications += 1
+            if dismissNotifications == 1 {
+                session.dismissToStatusItem()
+            }
+        }
+
+        session.openPanel()
+        observesDismissals = true
+        session.dismissToStatusItem()
+
+        #expect(dismissNotifications == 1)
+        #expect(session.surface == .dismissed)
+        withExtendedLifetime(observer) {}
+    }
+
+    @Test @MainActor
+    func externalDismissClosesPanelWhenNoInteractionIsProtected() {
+        let panel = KeyablePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let session = AccessibilitySession()
+        session.openPanel()
+        var dismissed = false
+        let lifecycle = AccessibilityPanelLifecycle(
+            panel: panel,
+            accessibility: session,
+            hasModalWindow: { false },
+            isMenuTracking: { false },
+            onDismiss: { dismissed = true }
+        )
+
+        lifecycle.handleExternalDismissRequest()
+
+        #expect(dismissed)
+    }
+
     @Test @MainActor
     func resignKeyDuringModalKeepsPanelAndFinishRestoresKeyAndSaveFocus() {
         _ = NSApplication.shared

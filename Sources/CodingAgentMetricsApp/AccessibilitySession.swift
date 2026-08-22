@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class AccessibilitySession: ObservableObject {
     @Published private(set) var navigation = AccessibilityNavigation.closed
+    private var isDismissingToStatusItem = false
 
     var focusedControl: AccessibilityNavigation.Control { navigation.focusedControl }
     var surface: AccessibilityNavigation.Surface { navigation.surface }
@@ -21,6 +22,9 @@ final class AccessibilitySession: ObservableObject {
     }
 
     func dismissToStatusItem() {
+        guard !isDismissingToStatusItem, navigation.surface != .dismissed else { return }
+        isDismissingToStatusItem = true
+        defer { isDismissingToStatusItem = false }
         navigation = .closed
     }
 
