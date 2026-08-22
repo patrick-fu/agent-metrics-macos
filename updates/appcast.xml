@@ -6,6 +6,22 @@
         <description>Stable updates for Coding Agent Metrics.</description>
         <language>en</language>
         <item>
+            <title>0.1.3</title>
+            <pubDate>Sat, 22 Aug 2026 16:51:22 +0800</pubDate>
+            <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.3</link>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[This patch keeps the menu bar panel anchored below the status item while live metric updates change its content height.
+
+- Preserve the panel top edge across repeated growth and shrink cycles.
+- Clamp dynamic panel sizes to the active screen visible area.
+- Add an AppKit regression test for delayed snapshot resizing.
+]]></description>
+            <enclosure url="https://github.com/patrick-fu/coding-agent-metrics/releases/download/v0.1.3/CodingAgentMetrics-0.1.3.dmg" length="2574280" type="application/octet-stream" sparkle:edSignature="prseBNybwNu4pcTktuUfSar4iJpZ6eXaXPluQIuWH3n4hocQxEpnyRguROoLssEtZ5DBbipFAlSFHEhc1u07BQ=="/>
+        </item>
+        <item>
             <title>0.1.2</title>
             <pubDate>Sat, 22 Aug 2026 16:17:00 +0800</pubDate>
             <link>https://github.com/patrick-fu/coding-agent-metrics/releases/tag/v0.1.2</link>
