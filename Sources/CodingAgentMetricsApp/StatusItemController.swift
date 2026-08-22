@@ -191,9 +191,15 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func resizePanel() {
         if let content = panel.contentView {
             let fitting = content.fittingSize
-            var frame = panel.frame
-            frame.size = NSSize(width: AppIdentity.popoverWidth, height: max(fitting.height, 240))
-            panel.setFrame(frame, display: true)
+            let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? panel.frame
+            panel.setFrame(
+                PanelPlacement.resizedFrame(
+                    from: panel.frame,
+                    contentSize: NSSize(width: AppIdentity.popoverWidth, height: max(fitting.height, 240)),
+                    visibleFrame: visibleFrame
+                ),
+                display: true
+            )
         }
     }
 
