@@ -83,8 +83,9 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         working.parserVersion = ClaudeTranscriptParser.semanticVersion
         working.diagnosticCodes.removeAll { $0 == "SOURCE_OVERLOADED" }
 
-        let files = try discoverTranscripts()
-        let missingKnownFiles = !Set(working.files.keys).subtracting(files.map(\.identity)).isEmpty
+        let discovery = try discoverTranscripts()
+        let files = discovery.files
+        let missingKnownFiles = !Set(working.files.keys).subtracting(discovery.identities).isEmpty
         if files.isEmpty, !working.files.isEmpty {
             return SourceScan(
                 observations: [],
@@ -99,6 +100,9 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         var diagnostics: [SourceDiagnostic] = forceRebuild
             ? []
             : working.diagnosticCodes.map { SourceDiagnostic(code: $0, sourceID: sourceID) }
+        if discovery.isTruncated {
+            diagnostics.append(SourceDiagnostic(code: "SOURCE_OVERLOADED", sourceID: sourceID))
+        }
         var rebuiltFileIdentities: [String] = []
         var seen = Set<String>()
 
@@ -396,15 +400,19 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
         state.watermarks = state.watermarks.filter { key, _ in !key.hasPrefix("\(identity):") }
     }
 
-    private func discoverTranscripts() throws -> [DiscoveredClaudeTranscript] {
+    private func discoverTranscripts() throws -> ClaudeTranscriptDiscovery {
         let projects = home.appendingPathComponent("projects", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: projects.path) else { return [] }
+        guard FileManager.default.fileExists(atPath: projects.path) else {
+            return ClaudeTranscriptDiscovery(files: [], identities: [], isTruncated: false)
+        }
         let resolvedProjects = projects.resolvingSymlinksInPath().standardizedFileURL.path
         guard let enumerator = FileManager.default.enumerator(
             at: projects,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
-        ) else { return [] }
+        ) else {
+            return ClaudeTranscriptDiscovery(files: [], identities: [], isTruncated: false)
+        }
         var discovered: [String: DiscoveredClaudeTranscript] = [:]
         var entryCount = 0
         for case let url as URL in enumerator {
@@ -416,7 +424,11 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
                 enumerator.skipDescendants()
                 continue
             }
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            let values = try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .contentModificationDateKey,
+            ])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
             guard resolved.hasPrefix(resolvedProjects + "/") else {
@@ -426,15 +438,22 @@ public struct ClaudeTranscriptSourceAdapter: IncrementalSourceAdapter {
             let item = DiscoveredClaudeTranscript(
                 identity: identity,
                 locator: "projects/\(identity).jsonl",
-                url: url
+                url: url,
+                modifiedAt: values.contentModificationDate ?? .distantPast
             )
             guard discovered[identity] == nil else { throw ClaudeTranscriptAdapterError.identityCollision }
-            guard discovered.count < Self.maximumTranscriptFiles else {
-                throw ClaudeTranscriptAdapterError.discoveryLimitExceeded
-            }
             discovered[identity] = item
         }
-        return discovered.values.sorted { $0.locator < $1.locator }
+        let mostRecent = discovered.values.sorted { lhs, rhs in
+            if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt }
+            if lhs.identity != rhs.identity { return lhs.identity < rhs.identity }
+            return lhs.locator < rhs.locator
+        }
+        return ClaudeTranscriptDiscovery(
+            files: Array(mostRecent.prefix(Self.maximumTranscriptFiles)).sorted { $0.locator < $1.locator },
+            identities: Set(discovered.keys),
+            isTruncated: discovered.count > Self.maximumTranscriptFiles
+        )
     }
 
     private func cursorFingerprint(_ url: URL, upTo offset: Int64) throws -> String {
@@ -454,6 +473,13 @@ private struct DiscoveredClaudeTranscript {
     var identity: String
     var locator: String
     var url: URL
+    var modifiedAt: Date
+}
+
+private struct ClaudeTranscriptDiscovery {
+    var files: [DiscoveredClaudeTranscript]
+    var identities: Set<String>
+    var isTruncated: Bool
 }
 
 private struct ClaudeFileScanResult {

@@ -185,6 +185,50 @@ struct ClaudeTranscriptIngestTests {
         #expect(!scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
     }
 
+    @Test func scanKeepsNewestTranscriptsReachableWhenDiscoveryExceedsFileLimit() throws {
+        let home = try TempClaudeHome()
+        defer { home.tearDown() }
+        let limit = 256
+        let base = isoDate("2026-04-15T12:00:00Z")
+        var newestURL: URL?
+
+        for index in 0...limit {
+            let url = home.projectDirectory.appendingPathComponent("session-\(index).jsonl")
+            try [
+                userLine(),
+                assistantLine(
+                    uuid: "01900000-0000-7000-8000-\(String(format: "%012d", index))",
+                    outputTokens: index
+                ),
+            ].joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: base.addingTimeInterval(TimeInterval(index))],
+                ofItemAtPath: url.path
+            )
+            if index == limit { newestURL = url }
+        }
+
+        let adapter = ClaudeTranscriptSourceAdapter(home: home.root)
+        let first = try adapter.scan(clock: FixedClock(now: base), state: nil)
+
+        #expect(first.state.files.count == limit)
+        #expect(first.observations.contains { $0.outputTokens == limit })
+        #expect(first.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+        #expect(!first.health.isHealthy)
+        #expect(first.health.diagnosticCode == "SOURCE_OVERLOADED")
+
+        let stable = try adapter.scan(clock: FixedClock(now: base), state: first.state)
+        #expect(stable.state.files.keys.sorted() == first.state.files.keys.sorted())
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: base.addingTimeInterval(-1)],
+            ofItemAtPath: try #require(newestURL).path
+        )
+        let second = try adapter.scan(clock: FixedClock(now: base), state: stable.state)
+        #expect(second.health.diagnosticCode == "SOURCE_OVERLOADED")
+        #expect(!second.health.isHealthy)
+    }
+
     @Test func versionedClaudeTranscriptFixtureReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()

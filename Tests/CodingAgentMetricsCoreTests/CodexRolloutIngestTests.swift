@@ -296,6 +296,57 @@ struct CodexRolloutIngestTests {
         #expect(!scan.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
     }
 
+    @Test func scanKeepsNewestRolloutsReachableWhenDiscoveryExceedsFileLimit() throws {
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let base = isoDate("2026-04-15T12:00:00Z")
+        var newestURL: URL?
+
+        for index in 0...CodexRolloutSourceAdapter.maximumRolloutFiles {
+            let identity = String(format: "01900000-0000-7000-8000-%012d", index)
+            let url = home.activeDirectory.appendingPathComponent(
+                "rollout-2026-04-15T12-00-00-\(identity).jsonl"
+            )
+            try [
+                sessionMetaLine(),
+                turnContextLine(),
+                tokenCountLine(
+                    totalOutput: index,
+                    lastOutput: index,
+                    timestamp: "2026-04-15T12:00:10.000Z",
+                    ordinal: 3
+                ),
+            ].joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: base.addingTimeInterval(TimeInterval(index))],
+                ofItemAtPath: url.path
+            )
+            if index == CodexRolloutSourceAdapter.maximumRolloutFiles {
+                newestURL = url
+            }
+        }
+
+        let adapter = CodexRolloutSourceAdapter(sessionRoot: home.root)
+        let first = try adapter.scan(clock: FixedClock(now: base), state: nil)
+
+        #expect(first.state.files.count == CodexRolloutSourceAdapter.maximumRolloutFiles)
+        #expect(first.observations.contains { $0.outputTokens == CodexRolloutSourceAdapter.maximumRolloutFiles })
+        #expect(first.diagnostics.contains { $0.code == "SOURCE_OVERLOADED" })
+        #expect(!first.health.isHealthy)
+        #expect(first.health.diagnosticCode == "SOURCE_OVERLOADED")
+
+        let stable = try adapter.scan(clock: FixedClock(now: base), state: first.state)
+        #expect(stable.state.files.keys.sorted() == first.state.files.keys.sorted())
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: base.addingTimeInterval(-1)],
+            ofItemAtPath: try #require(newestURL).path
+        )
+        let second = try adapter.scan(clock: FixedClock(now: base), state: stable.state)
+        #expect(second.health.diagnosticCode == "SOURCE_OVERLOADED")
+        #expect(!second.health.isHealthy)
+    }
+
     @Test func versionedCodexRolloutWithoutCallIdentityReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()

@@ -89,13 +89,13 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         working.parserVersion = CodexRolloutParser.semanticVersion
 
         var observations: [UsageObservation] = []
-        var diagnostics: [SourceDiagnostic] = []
         var rebuiltFileIdentities: [String] = []
         var rebuildSource = false
         var seenIdentities = Set<String>()
 
-        let files = try discoverRollouts()
-        let missingKnownFiles = !Set(working.files.keys).subtracting(files.map(\.identity)).isEmpty
+        let discovery = try discoverRollouts()
+        let files = discovery.files
+        let missingKnownFiles = !Set(working.files.keys).subtracting(discovery.identities).isEmpty
         if files.isEmpty, !working.files.isEmpty {
             return SourceScan(
                 observations: [],
@@ -112,6 +112,9 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
             )
         }
 
+        var diagnostics: [SourceDiagnostic] = discovery.isTruncated
+            ? [SourceDiagnostic(code: "SOURCE_OVERLOADED", sourceID: sourceID)]
+            : []
         for file in files {
             let result = try scanFile(
                 file,
@@ -371,7 +374,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
         )
     }
 
-    private func discoverRollouts() throws -> [DiscoveredRollout] {
+    private func discoverRollouts() throws -> RolloutDiscovery {
         var discovered: [String: DiscoveredRollout] = [:]
         var entryCount = 0
         for subdirectory in ["archived_sessions", "sessions"] {
@@ -390,16 +393,31 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 let name = url.lastPathComponent
                 guard let identity = CodexRolloutParser.fileIdentity(fromFileName: name) else { continue }
                 let locator = relativeLocator(for: url)
-                let item = DiscoveredRollout(identity: identity, locator: locator, url: url)
+                let item = DiscoveredRollout(
+                    identity: identity,
+                    locator: locator,
+                    url: url,
+                    modifiedAt: modificationDate(for: url)
+                )
                 if subdirectory == "sessions" || discovered[identity] == nil {
-                    guard discovered[identity] != nil || discovered.count < Self.maximumRolloutFiles else {
-                        throw CodexRolloutAdapterError.discoveryLimitExceeded
-                    }
                     discovered[identity] = item
                 }
             }
         }
-        return discovered.values.sorted { $0.locator < $1.locator }
+        let mostRecent = discovered.values.sorted { lhs, rhs in
+            if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt }
+            if lhs.identity != rhs.identity { return lhs.identity < rhs.identity }
+            return lhs.locator < rhs.locator
+        }
+        return RolloutDiscovery(
+            files: Array(mostRecent.prefix(Self.maximumRolloutFiles)).sorted { $0.locator < $1.locator },
+            identities: Set(discovered.keys),
+            isTruncated: discovered.count > Self.maximumRolloutFiles
+        )
+    }
+
+    private func modificationDate(for url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
     }
 
     private func relativeLocator(for url: URL) -> String {
@@ -429,6 +447,13 @@ private struct DiscoveredRollout {
     var identity: String
     var locator: String
     var url: URL
+    var modifiedAt: Date
+}
+
+private struct RolloutDiscovery {
+    var files: [DiscoveredRollout]
+    var identities: Set<String>
+    var isTruncated: Bool
 }
 
 private struct FileScanResult {
