@@ -136,6 +136,128 @@ struct DegradedDataContractTests {
         #expect(snapshot.calls.dataState == .stale)
     }
 
+    @Test func currentFactsFromAnOverloadedSourceStayFreshWhileExposingPartialCoverage() {
+        let current = fact(id: "current", quality: .measured, observedAt: now.addingTimeInterval(-1), output: 180)
+        let health = SourceHealth(
+            sourceID: "source-a",
+            isHealthy: false,
+            diagnosticCode: "SOURCE_OVERLOADED",
+            impacts: [.usage],
+            impactedAgents: [.codex],
+            impactedChannels: [.synthetic]
+        )
+        let snapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [current], now: now),
+            allFacts: [current],
+            now: now,
+            sourceHealth: [health]
+        )
+
+        #expect(snapshot.outputThroughput.selectedOutputTokens == 180)
+        #expect(snapshot.outputThroughput.averageTokensPerSecond == 1)
+        #expect(snapshot.outputThroughput.activeSessionCount == 1)
+        #expect(snapshot.outputThroughput.dataState == nil)
+        #expect(snapshot.outputThroughput.coverage == .partial)
+        #expect(!snapshot.outputThroughput.freshness.isRetained)
+        #expect(snapshot.outputThroughput.unavailableReason == .sourceOverloaded)
+        #expect(snapshot.outputThroughput.recommendedAction == .updateSource)
+
+        #expect(snapshot.tokenBurn.selectedBurnTokens == 180)
+        #expect(snapshot.tokenBurn.dataState == nil)
+        #expect(snapshot.tokenBurn.coverage == .partial)
+        #expect(!snapshot.tokenBurn.freshness.isRetained)
+        #expect(snapshot.tokenBurn.unavailableReason == .sourceOverloaded)
+        #expect(snapshot.tokenBurn.recommendedAction == .updateSource)
+
+        #expect(snapshot.calls.selectedCallCount == 1)
+        #expect(snapshot.calls.dataState == nil)
+        #expect(snapshot.calls.coverage == .partial)
+        #expect(!snapshot.calls.freshness.isRetained)
+        #expect(snapshot.calls.unavailableReason == .sourceOverloaded)
+        #expect(snapshot.calls.recommendedAction == .updateSource)
+
+        let presentation = LightSnapshotPresentation(snapshot: snapshot)
+        #expect(presentation.valueText == "1")
+        #expect(presentation.averageValueText == "1")
+        #expect(presentation.menuBarTitleText == "1 t/s")
+    }
+
+    @Test func currentSourceExcludesAnotherSourcesRetainedFactsFromTheLiveAggregate() {
+        let oldSourceA = fact(
+            id: "old-source-a", quality: .measured, observedAt: now.addingTimeInterval(-601), output: 180,
+            sourceID: "source-a", agent: .codex
+        )
+        let currentSourceB = fact(
+            id: "current-source-b", quality: .measured, observedAt: now.addingTimeInterval(-1), output: 360,
+            sourceID: "source-b", agent: .claudeCode
+        )
+        let failedSourceA = SourceHealth(
+            sourceID: "source-a",
+            isHealthy: false,
+            diagnosticCode: "SOURCE_OVERLOADED",
+            impacts: [.usage],
+            impactedAgents: [.codex],
+            impactedChannels: [.synthetic]
+        )
+
+        let all = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [oldSourceA, currentSourceB], now: now),
+            allFacts: [oldSourceA, currentSourceB],
+            now: now,
+            sourceHealth: [failedSourceA]
+        )
+        #expect(all.outputThroughput.selectedOutputTokens == 360)
+        #expect(all.outputThroughput.averageTokensPerSecond == 2)
+        #expect(all.outputThroughput.activeSessionCount == 1)
+        #expect(all.outputThroughput.dataState == nil)
+        #expect(all.outputThroughput.coverage == .partial)
+        #expect(!all.outputThroughput.freshness.isRetained)
+        #expect(all.outputThroughput.unavailableReason == .sourceOverloaded)
+        #expect(all.outputThroughput.recommendedAction == .updateSource)
+        #expect(all.tokenBurn.selectedBurnTokens == 360)
+        #expect(all.tokenBurn.dataState == nil)
+        #expect(all.tokenBurn.coverage == .partial)
+        #expect(!all.tokenBurn.freshness.isRetained)
+        #expect(all.tokenBurn.unavailableReason == .sourceOverloaded)
+        #expect(all.tokenBurn.recommendedAction == .updateSource)
+        #expect(all.calls.selectedCallCount == 1)
+        #expect(all.calls.dataState == nil)
+        #expect(all.calls.coverage == .partial)
+        #expect(!all.calls.freshness.isRetained)
+        #expect(all.calls.unavailableReason == .sourceOverloaded)
+        #expect(all.calls.recommendedAction == .updateSource)
+        #expect(LightSnapshotPresentation(snapshot: all).valueText == "2")
+        #expect(LightSnapshotPresentation(snapshot: all).menuBarTitleText == "2 t/s")
+
+        var onlyAFilter = MetricFilter()
+        onlyAFilter.agents.toggle("codex")
+        let onlyA = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [oldSourceA, currentSourceB], filter: onlyAFilter, now: now),
+            allFacts: [oldSourceA, currentSourceB],
+            now: now,
+            sourceHealth: [failedSourceA],
+            filter: onlyAFilter
+        )
+        #expect(onlyA.outputThroughput.selectedOutputTokens == 180)
+        #expect(onlyA.outputThroughput.dataState == .stale)
+        #expect(onlyA.outputThroughput.freshness.isRetained)
+        #expect(LightSnapshotPresentation(snapshot: onlyA).menuBarTitleText == "—")
+
+        var onlyBFilter = MetricFilter()
+        onlyBFilter.agents.toggle("claude-code")
+        let onlyB = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [oldSourceA, currentSourceB], filter: onlyBFilter, now: now),
+            allFacts: [oldSourceA, currentSourceB],
+            now: now,
+            sourceHealth: [failedSourceA],
+            filter: onlyBFilter
+        )
+        #expect(onlyB.outputThroughput.selectedOutputTokens == 360)
+        #expect(onlyB.outputThroughput.dataState == nil)
+        #expect(onlyB.outputThroughput.coverage == .complete)
+        #expect(!onlyB.outputThroughput.freshness.isRetained)
+    }
+
     @Test func noFactsAndFilteredFactsExposeStableReasonsAndActions() {
         let empty = SnapshotBuilder().buildLightSnapshot(
             sample: LiveSampler().sample(facts: [], now: now), allFacts: [], now: now
@@ -365,9 +487,10 @@ struct DegradedDataContractTests {
         let combined = try runtime.lightSnapshot()
         #expect(runtime.sourceHealth.contains { $0.sourceID == "source-a" && !$0.isHealthy })
         #expect(try SQLiteFactStore(url: url).allFacts().map(\.sourceID).contains("source-a"))
-        #expect(combined.outputThroughput.selectedOutputTokens == 540)
-        #expect(combined.outputThroughput.dataState == .stale)
+        #expect(combined.outputThroughput.selectedOutputTokens == 360)
+        #expect(combined.outputThroughput.dataState == nil)
         #expect(combined.outputThroughput.coverage == .partial)
+        #expect(!combined.outputThroughput.freshness.isRetained)
 
         var onlyB = MetricFilter()
         onlyB.agents.toggle("claude-code")

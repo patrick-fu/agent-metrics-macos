@@ -91,12 +91,7 @@ public struct SnapshotBuilder: Sendable {
     ) -> OutputThroughputMetric {
         let current = sample.contributingFacts.filter { $0.measurementQuality != .unavailable }
         var contributing = current
-        var retained = retainMissingUnhealthySources(
-            in: &contributing,
-            from: allFacts,
-            sourceHealth: sourceHealth,
-            windowSeconds: sample.windowSeconds
-        )
+        var retained = false
         if contributing.isEmpty && !allFacts.isEmpty {
             contributing = lastGoodFacts(in: allFacts, windowSeconds: sample.windowSeconds)
                 .filter { $0.measurementQuality != .unavailable }
@@ -104,7 +99,6 @@ public struct SnapshotBuilder: Sendable {
         }
         let degraded = sourceHealth.filter { !$0.isHealthy }
         let retainedHealth = unhealthyHealth(degraded, affecting: contributing)
-        retained = retained || !retainedHealth.isEmpty
 
         guard !contributing.isEmpty else {
             let allSourcesUnavailable = !sourceHealth.isEmpty && sourceHealth.allSatisfy { !$0.isHealthy }
@@ -150,7 +144,7 @@ public struct SnapshotBuilder: Sendable {
             definitionVersion: OutputThroughputDefinition.version,
             sourceAuthority: authorityConflict ? "mixed" : (authority(in: contributing) ?? "unavailable"),
             scope: scope,
-            freshness: freshness(for: contributing, now: now, retained: retained, unhealthy: retainedHealth),
+            freshness: freshness(for: contributing, now: now, retained: retained, unhealthy: retained ? retainedHealth : []),
             sampleCount: contributing.count,
             unavailableReason: degradation?.0,
             recommendedAction: degradation?.1
@@ -166,16 +160,10 @@ public struct SnapshotBuilder: Sendable {
         scope: OutputThroughputScope,
         emptyReason: UnavailableReasonCode
     ) -> TokenBurnMetric {
-        var current = currentFacts
-        let retainedSources = retainMissingUnhealthySources(
-            in: &current,
-            from: facts,
-            sourceHealth: sourceHealth,
-            windowSeconds: TokenBurnDefinition.windowSeconds
-        )
-        var selection = retainedSources ? AuthorityCoalescing.select(current) : currentSelection
+        let current = currentFacts
+        var selection = currentSelection
         var authorityScoped = selection.facts
-        var retained = retainedSources
+        var retained = false
         if current.isEmpty && !facts.isEmpty {
             selection = AuthorityCoalescing.select(lastGoodFacts(in: facts, windowSeconds: TokenBurnDefinition.windowSeconds))
             authorityScoped = selection.facts
@@ -186,7 +174,6 @@ public struct SnapshotBuilder: Sendable {
         }
         let degraded = sourceHealth.filter { !$0.isHealthy }
         let retainedHealth = unhealthyHealth(degraded, affecting: capable.isEmpty ? authorityScoped : capable)
-        retained = retained || !retainedHealth.isEmpty
 
         guard !capable.isEmpty else {
             let state: DataState
@@ -236,7 +223,7 @@ public struct SnapshotBuilder: Sendable {
             definitionVersion: TokenBurnDefinition.version,
             sourceAuthority: selection.hasConflict ? "mixed" : (authority(in: capable) ?? "unavailable"),
             scope: scope,
-            freshness: freshness(for: capable, now: now, retained: retained, unhealthy: retainedHealth),
+            freshness: freshness(for: capable, now: now, retained: retained, unhealthy: retained ? retainedHealth : []),
             sampleCount: capable.count,
             unavailableReason: degradation?.0,
             recommendedAction: degradation?.1
@@ -252,20 +239,14 @@ public struct SnapshotBuilder: Sendable {
         scope: OutputThroughputScope,
         emptyReason: UnavailableReasonCode
     ) -> CallsMetric {
-        var current = currentFacts
-        let retainedSources = retainMissingUnhealthySources(
-            in: &current,
-            from: facts,
-            sourceHealth: sourceHealth,
-            windowSeconds: CallsDefinition.windowSeconds
-        )
+        let current = currentFacts
         var working = current
-        var retained = retainedSources
+        var retained = false
         if current.isEmpty && !facts.isEmpty {
             working = lastGoodFacts(in: facts, windowSeconds: CallsDefinition.windowSeconds)
             retained = !working.isEmpty
         }
-        let selection = retainedSources || current.isEmpty
+        let selection = current.isEmpty
             ? AuthorityCoalescing.select(working)
             : currentSelection
         let capabilityAvailable = working.contains { $0.modelCallCapability == .available }
@@ -274,7 +255,6 @@ public struct SnapshotBuilder: Sendable {
         }
         let degraded = sourceHealth.filter { !$0.isHealthy }
         let retainedHealth = unhealthyHealth(degraded, affecting: supported.isEmpty ? working : supported)
-        retained = retained || !retainedHealth.isEmpty
         let hasUnavailableSource = working.contains {
             $0.modelCallCapability == .unavailable || $0.measurementQuality == .unavailable
         }
@@ -295,7 +275,7 @@ public struct SnapshotBuilder: Sendable {
                 metric.unavailableReason = firstDegradation(in: degraded)?.0 ?? .stableModelCallIdentityUnavailable
             }
             metric.recommendedAction = MetricAction.recommended(for: metric.unavailableReason)
-            metric.freshness = freshness(for: working, now: now, retained: retained, unhealthy: retainedHealth)
+            metric.freshness = freshness(for: working, now: now, retained: retained, unhealthy: retained ? retainedHealth : [])
             return metric
         }
 
@@ -318,7 +298,7 @@ public struct SnapshotBuilder: Sendable {
             for: supported.isEmpty ? working : supported,
             now: now,
             retained: retained,
-            unhealthy: retainedHealth
+            unhealthy: retained ? retainedHealth : []
         )
         metric.sampleCount = Set(identities).count
         let degradation = firstDegradation(in: degraded)
@@ -354,25 +334,6 @@ public struct SnapshotBuilder: Sendable {
         guard let last = facts.map(\.observedAt).max() else { return [] }
         let start = last.addingTimeInterval(-TimeInterval(windowSeconds))
         return facts.filter { $0.observedAt >= start && $0.observedAt <= last }
-    }
-
-    @discardableResult
-    private func retainMissingUnhealthySources(
-        in current: inout [UsageFact],
-        from allFacts: [UsageFact],
-        sourceHealth: [SourceHealth],
-        windowSeconds: Int
-    ) -> Bool {
-        var retained = false
-        for health in sourceHealth where !health.isHealthy {
-            guard !current.contains(where: { Self.matches(health, fact: $0) }) else { continue }
-            let sourceFacts = allFacts.filter { Self.matches(health, fact: $0) }
-            let lastGood = lastGoodFacts(in: sourceFacts, windowSeconds: windowSeconds)
-            let existing = Set(current.map(\.id))
-            current.append(contentsOf: lastGood.filter { !existing.contains($0.id) })
-            retained = retained || !lastGood.isEmpty
-        }
-        return retained
     }
 
     private func freshness(
