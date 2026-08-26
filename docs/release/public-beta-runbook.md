@@ -9,14 +9,36 @@ updates an app.
 1. Run `swift test`, `swift build`, and `scripts/build-app.sh`.
 2. Run `scripts/release-check.sh`. Its only mode is `--dry-run`.
 3. Require `result=PASS`, all seven ordered stages, and `publication=not-attempted`.
-4. Treat `production-gate=BLOCKED issue=#27 reason=missing-or-invalid-SUPublicEDKey` as the accurate state of
-   the current production `Info.plist`. Do not put synthetic or real key material in that file for
-   this ticket. If the key is later present, the checker reports `MANUAL`, never automatic readiness;
-   #27 must validate it without copying key material into output.
+4. Treat `production-gate=MANUAL issue=#27 reason=validate-SUPublicEDKey-locally` as the accurate
+   current state: the production key is configured, but #27 must still validate it locally. A missing
+   or invalid key remains `BLOCKED`; a present key never means automatic readiness. Do not copy key
+   material into output.
 
-The dry run uses only `Fixtures/release/public-beta`. Its URLs use the reserved `.invalid` domain,
-and all signing/notarization/public-download observations are synthetic booleans. Passing it proves
-the metadata and ordering contract, not Apple trust, a cryptographic signature, or network reachability.
+The dry run uses only `Fixtures/release/public-beta`. Its inspection and appcast use the same reserved
+`.invalid` URL and `AgentMetrics-<version>.dmg` filename, while all signing/notarization/public-download
+observations are synthetic booleans. The checker never accesses the URL. Passing proves metadata and
+ordering only, not Apple trust, a cryptographic signature, or network reachability.
+
+The public product and DMG are named **Agent Metrics** / `AgentMetrics-<short-version>.dmg`. The
+reverse-DNS identity remains `dev.codingagentmetrics.app`, internal Swift modules and executable names
+may remain `CodingAgentMetrics*`, and the Sparkle public key is frozen. These technical identifiers
+preserve installed-data ownership and updater trust. The production feed remains
+`https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml`; its enclosure must point to
+the public release in `patrick-fu/agent-metrics-macos` so old clients remain upgradeable.
+
+### Repository migration order
+
+1. Back up the deployed legacy Pages content and current stable appcast, including signatures and
+   version/build/length evidence, before changing either repository.
+2. Rename the primary repository to `patrick-fu/agent-metrics-macos`.
+3. Immediately create the public `patrick-fu/coding-agent-metrics` legacy Pages repository. Reusing
+   the old name sacrifices GitHub's automatic repository redirect; this is an
+   intentional trade-off to keep old clients upgradeable through their frozen feed URL.
+4. Deploy the backed-up feed as real XML at `updates/appcast.xml`, not an HTML redirect, from the new
+   legacy repository.
+5. Point every enclosure to the matching public Release asset in `agent-metrics-macos`.
+6. Require an unauthenticated HTTP 200 response for the legacy feed and every enclosure before
+   declaring the migration complete.
 
 ## Required manual order
 
@@ -29,7 +51,7 @@ first failed check. Never update the stable appcast early.
    the production Sparkle public-key gate separately without copying key material into logs or notes.
 2. **Sign, notarize, and staple the DMG.** Run the `codesign`, Apple Notary Service, and `stapler`
    command families manually with maintainer-controlled local configuration. Require every check to
-   succeed. The DMG name must be `CodingAgentMetrics-<short-version>.dmg`; record its byte length.
+   succeed. The DMG name must be `AgentMetrics-<short-version>.dmg`; record its byte length.
 3. **Create a draft release.** Manually create, but do not publish, the GitHub Release whose tag is
    `v<short-version>` and whose version/build metadata matches the app and DMG.
 4. **Upload and verify the public DMG.** Manually upload the DMG to the draft, then verify the final

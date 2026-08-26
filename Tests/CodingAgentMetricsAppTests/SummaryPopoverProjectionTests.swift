@@ -22,7 +22,7 @@ struct SummaryPopoverProjectionTests {
             telemetryEnabled: false
         )
 
-        #expect(projection.title == "Coding Agent Metrics")
+        #expect(projection.title == "Agent Metrics")
         #expect(projection.totalValueText == "20")
         #expect(projection.averageValueText == "10")
         #expect(projection.activeSessionsText == "2 active sessions")

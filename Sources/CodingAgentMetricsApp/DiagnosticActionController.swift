@@ -131,7 +131,7 @@ final class DiagnosticActionController {
         do {
             let diagnostic = String(decoding: try generate(), as: UTF8.self)
             preparedPublicIssueText = """
-            ## Coding Agent Metrics diagnostics
+            ## Agent Metrics diagnostics
 
             Review the privacy-safe diagnostic payload below, then paste this text into a public issue yourself. Nothing was submitted or uploaded.
 

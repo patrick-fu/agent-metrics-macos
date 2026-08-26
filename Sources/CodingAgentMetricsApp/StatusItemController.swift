@@ -86,8 +86,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         },
         userSelectedSave: { data in
             let panel = NSSavePanel()
-            panel.title = "Save Privacy-Safe Diagnostics"
-            panel.nameFieldStringValue = "coding-agent-metrics-diagnostics.json"
+            panel.title = "Save Agent Metrics Diagnostics"
+            panel.nameFieldStringValue = "agent-metrics-diagnostics.json"
             panel.allowedContentTypes = [.json]
             panel.canCreateDirectories = true
             guard panel.runModal() == .OK, let url = panel.url else { return false }
@@ -162,13 +162,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         button.image = NSImage(
             systemSymbolName: "gauge.with.dots.needle.67percent",
-            accessibilityDescription: "Coding Agent Metrics"
+            accessibilityDescription: "Agent Metrics"
         )
         button.imagePosition = .imageLeading
         button.title = "—"
         button.target = self
         button.action = #selector(togglePanel)
-        button.setAccessibilityLabel("Coding Agent Metrics")
+        button.setAccessibilityLabel("Agent Metrics")
         button.setAccessibilityRole(.button)
         button.setAccessibilityIdentifier("status-item")
     }
@@ -292,7 +292,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let presentation = snapshot.map { LightSnapshotPresentation(snapshot: $0) }
         button.title = presentation?.menuBarTitleText ?? "—"
         button.imagePosition = .imageLeading
-        button.setAccessibilityLabel(presentation?.menuBarAccessibilityLabel ?? "Coding Agent Metrics")
+        button.setAccessibilityLabel(presentation?.menuBarAccessibilityLabel ?? "Agent Metrics")
     }
 
     private func requestDetailSnapshot(filter requestedFilter: MetricFilter? = nil) {

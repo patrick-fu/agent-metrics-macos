@@ -1,4 +1,4 @@
-# Coding Agent Metrics
+# Agent Metrics
 
 This context describes how the product observes and compares the performance and token activity of local coding agents without treating unlike measurements as equivalent.
 

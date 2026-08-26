@@ -104,6 +104,33 @@ struct ReleaseRepositorySafetyTests {
         #expect(!script.contains("cp -R \"$core_bundle\" \"$bundle/$core_bundle\""))
     }
 
+    @Test func appBuilderCreatesARealPublicBundleWithCompatibleMetadataAndResources() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-metrics-build-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let outputDirectory = temporaryDirectory.appendingPathComponent("output", isDirectory: true)
+        let scratchDirectory = temporaryDirectory.appendingPathComponent("scratch", isDirectory: true)
+        let build = try Self.runBuildScript(
+            outputDirectory: outputDirectory,
+            scratchDirectory: scratchDirectory
+        )
+        #expect(build.status == 0, "build-app.sh failed: \(build.output)")
+
+        let bundle = outputDirectory.appendingPathComponent("release/Agent Metrics.app", isDirectory: true)
+        let plist = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+            format: nil
+        ) as? [String: Any]
+
+        #expect(FileManager.default.isExecutableFile(atPath: bundle.appendingPathComponent("Contents/MacOS/CodingAgentMetrics").path))
+        #expect(FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Frameworks/Sparkle.framework").path))
+        #expect(FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Resources/CodingAgentMetrics_CodingAgentMetricsCore.bundle").path))
+        #expect(plist?["CFBundleName"] as? String == "Agent Metrics")
+        #expect(plist?["CFBundleExecutable"] as? String == "CodingAgentMetrics")
+        #expect(plist?["CFBundleIdentifier"] as? String == "dev.codingagentmetrics.app")
+        #expect(plist?["SUFeedURL"] as? String == "https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml")
+    }
+
     private static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -114,5 +141,34 @@ struct ReleaseRepositorySafetyTests {
             contentsOf: root.appendingPathComponent(relativePath),
             encoding: .utf8
         )
+    }
+
+    private static func runBuildScript(
+        outputDirectory: URL,
+        scratchDirectory: URL
+    ) throws -> (status: Int32, output: String) {
+        let temporaryDirectory = outputDirectory.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        let logURL = temporaryDirectory.appendingPathComponent("build.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: logURL)
+        defer { try? output.close() }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["scripts/build-app.sh"]
+        process.currentDirectoryURL = root
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODING_AGENT_METRICS_SWIFT_BUILD_SCRATCH_PATH"] = scratchDirectory.path
+        environment["CODING_AGENT_METRICS_BUILD_DIR"] = outputDirectory.path
+        process.environment = environment
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        try output.synchronize()
+        return (process.terminationStatus, try String(contentsOf: logURL, encoding: .utf8))
     }
 }

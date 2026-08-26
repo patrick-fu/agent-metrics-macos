@@ -7,7 +7,7 @@ struct AppcastReleaseContractTests {
         let release = try AppcastReleaseContract.validate(
             Self.appcastXML(
                 version: "2",
-                enclosureURL: "https://example.invalid/CodingAgentMetrics-2.dmg",
+                enclosureURL: "https://example.invalid/AgentMetrics-2.dmg",
                 length: "42",
                 edSignature: "synthetic-ed25519-signature"
             ),

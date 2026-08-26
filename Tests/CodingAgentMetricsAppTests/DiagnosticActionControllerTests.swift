@@ -71,7 +71,7 @@ struct DiagnosticActionControllerTests {
         controller.confirmPreparePublicIssue()
         #expect(controller.outcome == .publicIssuePrepared)
         #expect(controller.preparedPublicIssueText == """
-        ## Coding Agent Metrics diagnostics
+        ## Agent Metrics diagnostics
 
         Review the privacy-safe diagnostic payload below, then paste this text into a public issue yourself. Nothing was submitted or uploaded.
 

@@ -250,7 +250,7 @@ public struct ReleasePipelineContract: Equatable, Sendable {
         case let (.signNotarizeAndStapleDMG, .dmg(value)):
             guard let app,
                   value.identity == app.identity,
-                  value.filename == "CodingAgentMetrics-\(app.identity.shortVersion).dmg",
+                  value.filename == "AgentMetrics-\(app.identity.shortVersion).dmg",
                   value.byteLength > 0,
                   value.isSigned,
                   value.isNotarized,

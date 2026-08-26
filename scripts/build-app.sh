@@ -4,10 +4,19 @@ set -euo pipefail
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$root"
 
-swift build -c release --product CodingAgentMetricsApp --arch arm64
-bin_dir="$(swift build -c release --show-bin-path --arch arm64)"
+swift_build() {
+  if [ -n "${CODING_AGENT_METRICS_SWIFT_BUILD_SCRATCH_PATH:-}" ]; then
+    swift build "$@" --scratch-path "$CODING_AGENT_METRICS_SWIFT_BUILD_SCRATCH_PATH"
+  else
+    swift build "$@"
+  fi
+}
+
+swift_build -c release --product CodingAgentMetricsApp --arch arm64
+bin_dir="$(swift_build -c release --show-bin-path --arch arm64)"
 binary="$bin_dir/CodingAgentMetricsApp"
-bundle="$root/.build/release/CodingAgentMetrics.app"
+build_dir="${CODING_AGENT_METRICS_BUILD_DIR:-$root/.build}"
+bundle="$build_dir/release/Agent Metrics.app"
 
 if [ -e "$bundle" ]; then
   /bin/rm -rf "$bundle"

@@ -2,5 +2,5 @@
 <sparkle:version>2</sparkle:version>
 <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-<enclosure url="https://downloads.example.invalid/CodingAgentMetrics-0.1.1.dmg" length="42" sparkle:edSignature="synthetic-signature" />
+<enclosure url="https://downloads.example.invalid/AgentMetrics-0.1.1.dmg" length="42" sparkle:edSignature="synthetic-signature" />
 </item></channel></rss>

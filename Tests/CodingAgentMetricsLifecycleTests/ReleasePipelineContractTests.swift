@@ -110,7 +110,7 @@ struct ReleasePipelineContractTests {
 
     @Test(arguments: [
         ReleasePublicArtifactEvidence(identity: ReleaseIdentity(bundleIdentifier: identity.bundleIdentifier, shortVersion: "0.1.2", build: 2, minimumSystemVersion: "14.0"), url: publicArtifact.url, filename: publicArtifact.filename, byteLength: 42, uploadVerified: true),
-        ReleasePublicArtifactEvidence(identity: identity, url: URL(string: "http://downloads.example.invalid/CodingAgentMetrics-0.1.1.dmg")!, filename: publicArtifact.filename, byteLength: 42, uploadVerified: true),
+        ReleasePublicArtifactEvidence(identity: identity, url: URL(string: "http://downloads.example.invalid/AgentMetrics-0.1.1.dmg")!, filename: publicArtifact.filename, byteLength: 42, uploadVerified: true),
         ReleasePublicArtifactEvidence(identity: identity, url: URL(string: "https://downloads.example.invalid/wrong-name.dmg")!, filename: publicArtifact.filename, byteLength: 42, uploadVerified: true),
         ReleasePublicArtifactEvidence(identity: identity, url: publicArtifact.url, filename: "wrong-name.dmg", byteLength: 42, uploadVerified: true),
         ReleasePublicArtifactEvidence(identity: identity, url: publicArtifact.url, filename: publicArtifact.filename, byteLength: 43, uploadVerified: true),
@@ -146,7 +146,7 @@ struct ReleasePipelineContractTests {
         validAppcast.replacingOccurrences(of: "<sparkle:version>2", with: "<sparkle:version>3"),
         validAppcast.replacingOccurrences(of: "<sparkle:shortVersionString>0.1.1", with: "<sparkle:shortVersionString>0.1.2"),
         validAppcast.replacingOccurrences(of: "<sparkle:minimumSystemVersion>14.0", with: "<sparkle:minimumSystemVersion>13.0"),
-        validAppcast.replacingOccurrences(of: "CodingAgentMetrics-0.1.1.dmg", with: "wrong-name.dmg"),
+        validAppcast.replacingOccurrences(of: "AgentMetrics-0.1.1.dmg", with: "wrong-name.dmg"),
         validAppcast.replacingOccurrences(of: "length=\"42\"", with: "length=\"43\""),
         validAppcast.replacingOccurrences(of: "<sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>\n", with: ""),
         validAppcast.replacingOccurrences(of: "<sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>\n", with: ""),
@@ -205,7 +205,7 @@ struct ReleasePipelineContractTests {
     )
     private static let dmg = ReleaseDMGEvidence(
         identity: identity,
-        filename: "CodingAgentMetrics-0.1.1.dmg",
+        filename: "AgentMetrics-0.1.1.dmg",
         byteLength: 42,
         isSigned: true,
         isNotarized: true,
@@ -218,8 +218,8 @@ struct ReleasePipelineContractTests {
     )
     private static let publicArtifact = ReleasePublicArtifactEvidence(
         identity: identity,
-        url: URL(string: "https://downloads.example.invalid/CodingAgentMetrics-0.1.1.dmg")!,
-        filename: "CodingAgentMetrics-0.1.1.dmg",
+        url: URL(string: "https://downloads.example.invalid/AgentMetrics-0.1.1.dmg")!,
+        filename: "AgentMetrics-0.1.1.dmg",
         byteLength: 42,
         uploadVerified: true
     )
@@ -234,7 +234,7 @@ struct ReleasePipelineContractTests {
     private static let updater = ReleaseUpdaterEvidence(
         identity: identity,
         feedURL: URL(string: "https://updates.example.invalid/stable/appcast.xml")!,
-        artifactURL: URL(string: "https://downloads.example.invalid/CodingAgentMetrics-0.1.1.dmg")!,
+        artifactURL: URL(string: "https://downloads.example.invalid/AgentMetrics-0.1.1.dmg")!,
         signatureAccepted: true,
         userApprovedInstallation: true
     )
@@ -275,7 +275,7 @@ struct ReleasePipelineContractTests {
     <sparkle:version>2</sparkle:version>
     <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
     <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-    <enclosure url="https://downloads.example.invalid/CodingAgentMetrics-0.1.1.dmg" length="42" sparkle:edSignature="synthetic-signature" />
+    <enclosure url="https://downloads.example.invalid/AgentMetrics-0.1.1.dmg" length="42" sparkle:edSignature="synthetic-signature" />
     </item></channel></rss>
     """
 }

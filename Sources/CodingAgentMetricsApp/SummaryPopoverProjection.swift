@@ -58,7 +58,7 @@ struct SummaryPopoverProjection: Equatable {
         let badges = qualityBadges(from: presentation)
         let chart = trends?.outputThroughput
         return SummaryPopoverProjection(
-            title: "Coding Agent Metrics",
+            title: "Agent Metrics",
             windowLabel: presentation?.windowLabel ?? "3m",
             isLive: isLive,
             agentMenuTitle: menuTitle(prefix: "All agents", chips: presentation?.agentChips ?? [], selectedCount: presentation?.agentActiveCount ?? 0),
