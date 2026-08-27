@@ -173,6 +173,24 @@ struct PagesSiteContractTests {
         #expect(primaryPush.lowerBound < legacyPush.lowerBound)
     }
 
+    @Test func publishDeduplicatesRepeatedDMGLinksButRejectsDifferentURLs() throws {
+        let source = try String(contentsOf: Self.projectRoot.appendingPathComponent("scripts/deploy-pages.sh"), encoding: .utf8)
+
+        #expect(source.contains("| sort -u)"))
+        #expect(source.contains("release_url_count"))
+        #expect(source.contains("if [ \"$release_url_count\" -ne 1 ]; then"))
+
+        let repeated = Set([
+            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0.dmg",
+            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0.dmg",
+        ])
+        let conflicting = repeated.union([
+            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0-alt.dmg",
+        ])
+        #expect(repeated.count == 1)
+        #expect(conflicting.count == 2)
+    }
+
     private static let projectRoot = URL(fileURLWithPath: #filePath)
         .resolvingSymlinksInPath()
         .deletingLastPathComponent()

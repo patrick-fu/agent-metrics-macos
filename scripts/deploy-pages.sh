@@ -117,7 +117,7 @@ trap cleanup EXIT HUP INT TERM
 "$root/scripts/build-site.sh" "$site"
 
 if [ "$publish" = true ]; then
-    release_urls="$(sed -n 's#.*href="\(https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0\.2\.0/[^" ]*\.dmg\)".*#\1#p' "$site/index.html")"
+    release_urls="$(sed -n 's#.*href="\(https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0\.2\.0/[^" ]*\.dmg\)".*#\1#p' "$site/index.html" | sort -u)"
     release_url_count="$(printf '%s\n' "$release_urls" | awk 'NF { count += 1 } END { print count + 0 }')"
     if [ "$release_url_count" -ne 1 ]; then
         echo "deploy-pages: could not find the unique v0.2.0 DMG URL in website/index.html" >&2
