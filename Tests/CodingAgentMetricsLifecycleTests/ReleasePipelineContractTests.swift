@@ -37,6 +37,29 @@ struct ReleasePipelineContractTests {
         #expect(pipeline.state == .updaterVerified)
     }
 
+    @Test func stableFeedValidatesNewestReleaseAndPreservesDescendingHistory() throws {
+        var pipeline = try Self.pipelineThroughPublishedRelease()
+        let feed = Self.appcastFeedXML([
+            Self.itemXML(version: "2", shortVersion: "0.1.1"),
+            Self.itemXML(version: "1", shortVersion: "0.1.0"),
+        ])
+
+        try pipeline.complete(.publishStableAppcast, evidence: .appcast(feed))
+        #expect(pipeline.state == .stableAppcastPublished)
+    }
+
+    @Test func stableFeedRejectsLatestSignatureThatDiffersFromVerifiedArtifact() throws {
+        var pipeline = try Self.pipelineThroughPublicDMGWithSignature("verified-signature")
+        let feed = Self.appcastFeedXML([
+            Self.itemXML(version: "2", shortVersion: "0.1.1", edSignature: "different-signature"),
+            Self.itemXML(version: "1", shortVersion: "0.1.0"),
+        ])
+
+        #expect(throws: ReleasePipelineContractError.invalidAppcastMetadata) {
+            try pipeline.complete(.publishStableAppcast, evidence: .appcast(feed))
+        }
+    }
+
     @Test func stableBuildRollbackFailsClosed() {
         var pipeline = ReleasePipelineContract(currentStableBuild: 2)
 
@@ -264,6 +287,21 @@ struct ReleasePipelineContractTests {
         return pipeline
     }
 
+    private static func pipelineThroughPublicDMGWithSignature(_ signature: String) throws -> ReleasePipelineContract {
+        var pipeline = try pipelineThroughDraft()
+        let artifact = ReleasePublicArtifactEvidence(
+            identity: identity,
+            url: publicArtifact.url,
+            filename: publicArtifact.filename,
+            byteLength: publicArtifact.byteLength,
+            edDSASignature: signature,
+            uploadVerified: true
+        )
+        try pipeline.complete(.uploadAndVerifyPublicDMG, evidence: .publicArtifact(artifact))
+        try pipeline.complete(.publishRelease, evidence: .release(publication))
+        return pipeline
+    }
+
     private static func pipelineThroughStableAppcast() throws -> ReleasePipelineContract {
         var pipeline = try pipelineThroughPublishedRelease()
         try pipeline.complete(.publishStableAppcast, evidence: .appcast(validAppcast))
@@ -278,4 +316,18 @@ struct ReleasePipelineContractTests {
     <enclosure url="https://downloads.example.invalid/AgentMetrics-0.1.1.dmg" length="42" sparkle:edSignature="synthetic-signature" />
     </item></channel></rss>
     """
+
+    private static func appcastFeedXML(_ items: [String]) -> String {
+        "<rss xmlns:sparkle=\"https://sparkle.example.invalid/xml-namespaces/sparkle\"><channel>\(items.joined())</channel></rss>"
+    }
+
+    private static func itemXML(
+        version: String,
+        shortVersion: String,
+        edSignature: String = "synthetic-signature"
+    ) -> String {
+        """
+        <item><sparkle:version>\(version)</sparkle:version><sparkle:shortVersionString>\(shortVersion)</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url=\"https://downloads.example.invalid/AgentMetrics-\(shortVersion).dmg\" length=\"42\" sparkle:edSignature=\"\(edSignature)\" /></item>
+        """
+    }
 }

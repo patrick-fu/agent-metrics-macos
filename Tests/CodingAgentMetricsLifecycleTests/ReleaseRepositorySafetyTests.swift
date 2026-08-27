@@ -75,8 +75,8 @@ struct ReleaseRepositorySafetyTests {
     @Test func runbookKeepsStableFeedAfterPublicVerificationAndDocumentsRecovery() throws {
         let runbook = try Self.contents("docs/release/public-beta-runbook.md")
         let orderedMarkers = [
-            "**Validate the app.**",
-            "**Sign, notarize, and staple the DMG.**",
+            "**Validate and sign the app.**",
+            "**Package, sign, notarize, and staple the DMG.**",
             "**Create a draft release.**",
             "**Upload and verify the public DMG.**",
             "**Publish the release.**",
@@ -129,6 +129,28 @@ struct ReleaseRepositorySafetyTests {
         #expect(plist?["CFBundleExecutable"] as? String == "CodingAgentMetrics")
         #expect(plist?["CFBundleIdentifier"] as? String == "dev.codingagentmetrics.app")
         #expect(plist?["SUFeedURL"] as? String == "https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml")
+    }
+
+    @Test func localDMGBuilderHasNoCredentialOrPublicationExecutionSeam() throws {
+        let script = try Self.contents("scripts/build-dmg.sh")
+        let forbiddenOperations = [
+            "codesign ", "notarytool ", "stapler ", "gh release", "gh api",
+            "generate_appcast", "sign_update", "curl ", "wget ", "URLSession", "Process(",
+        ]
+        let sensitivePatterns = [
+            #"/Users/"#,
+            #"/Volumes/"#,
+            #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+            #"-----BEGIN [^-]*(?:PRIVATE|PUBLIC) KEY-----"#,
+            #"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"#,
+        ]
+
+        for operation in forbiddenOperations {
+            #expect(!script.contains(operation))
+        }
+        for pattern in sensitivePatterns {
+            #expect(script.range(of: pattern, options: .regularExpression) == nil)
+        }
     }
 
     private static let root = URL(fileURLWithPath: #filePath)

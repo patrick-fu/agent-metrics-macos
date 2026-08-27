@@ -86,6 +86,9 @@ public struct ReleasePublicArtifactEvidence: Equatable, Sendable {
     public let url: URL
     public let filename: String
     public let byteLength: UInt64
+    /// Sparkle EdDSA signature recorded when the public artifact was verified.
+    /// Nil preserves compatibility with older synthetic evidence that predates signature capture.
+    public let edDSASignature: String?
     public let uploadVerified: Bool
 
     public init(
@@ -93,12 +96,14 @@ public struct ReleasePublicArtifactEvidence: Equatable, Sendable {
         url: URL,
         filename: String,
         byteLength: UInt64,
+        edDSASignature: String? = nil,
         uploadVerified: Bool
     ) {
         self.identity = identity
         self.url = url
         self.filename = filename
         self.byteLength = byteLength
+        self.edDSASignature = edDSASignature
         self.uploadVerified = uploadVerified
     }
 }
@@ -297,7 +302,7 @@ public struct ReleasePipelineContract: Equatable, Sendable {
             }
             state = .releasePublished
         case let (.publishStableAppcast, .appcast(xml)):
-            let release = try AppcastReleaseContract.validate(xml, currentBuild: currentStableBuild)
+            let release = try AppcastReleaseContract.validateFeed(xml, currentBuild: currentStableBuild)
             guard let app,
                   let publicArtifact,
                   release.version == app.identity.build,
@@ -305,7 +310,10 @@ public struct ReleasePipelineContract: Equatable, Sendable {
                   release.minimumSystemVersion == app.identity.minimumSystemVersion,
                   release.archiveURL == publicArtifact.url,
                   release.archiveURL.lastPathComponent == publicArtifact.filename,
-                  release.archiveLength == publicArtifact.byteLength else {
+                  release.archiveLength == publicArtifact.byteLength,
+                  Self.latestEdDSASignature(in: xml).map({ signature in
+                      publicArtifact.edDSASignature.map { $0 == signature } ?? true
+                  }) ?? false else {
                 throw ReleasePipelineContractError.invalidAppcastMetadata
             }
             state = .stableAppcastPublished
@@ -346,5 +354,42 @@ public struct ReleasePipelineContract: Equatable, Sendable {
             && value.hasSparklePublicKey
             && value.automaticChecksEnabled
             && !value.automaticInstallationEnabled
+    }
+
+    private static func latestEdDSASignature(in xml: String) -> String? {
+        guard let data = xml.data(using: .utf8) else { return nil }
+        let parser = LatestAppcastSignatureParser()
+        guard parser.parse(data) else { return nil }
+        return parser.signature
+    }
+}
+
+private final class LatestAppcastSignatureParser: NSObject, XMLParserDelegate {
+    private(set) var signature: String?
+    private var insideFirstItem = false
+    private var foundFirstItem = false
+
+    func parse(_ data: Data) -> Bool {
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        _ = parser.parse()
+        return signature != nil
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let localName = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
+        if localName == "item", !(qName ?? elementName).contains(":"), !foundFirstItem {
+            foundFirstItem = true
+            insideFirstItem = true
+        } else if localName == "enclosure", insideFirstItem {
+            signature = attributeDict["sparkle:edSignature"] ?? attributeDict["edSignature"]
+            parser.abortParsing()
+        }
     }
 }

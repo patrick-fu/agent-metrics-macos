@@ -28,6 +28,7 @@ public enum AppcastReleaseContractError: Error, Equatable, Sendable {
     case invalidArchiveLength
     case insecureEnclosureURL
     case nonStableChannel
+    case nonIncreasingBuilds
 }
 
 /// Pure release-contract validation for synthetic appcasts. It validates metadata only and never
@@ -77,6 +78,180 @@ public enum AppcastReleaseContract {
             archiveSigning: .sparkleEdDSA,
             codeSigning: .developerIDRequired
         )
+    }
+
+    /// Validates a stable Sparkle feed and returns its highest-build release. Items must be in
+    /// strictly descending build order; historical builds are permitted beneath the newest item.
+    public static func validateFeed(
+        _ appcastXML: String,
+        currentBuild: Int
+    ) throws -> ValidatedAppcastRelease {
+        let parser = AppcastFeedParser()
+        guard parser.parse(appcastXML), !parser.items.isEmpty else {
+            throw parser.contractError ?? .invalidAppcast
+        }
+
+        let releases = try parser.items.map(validatedRelease)
+        guard releases[0].version > currentBuild else {
+            throw AppcastReleaseContractError.versionRollback
+        }
+        guard zip(releases, releases.dropFirst()).allSatisfy({ earlier, later in
+            earlier.version > later.version
+        }) else {
+            throw AppcastReleaseContractError.nonIncreasingBuilds
+        }
+        return releases[0]
+    }
+
+    private static func validatedRelease(
+        _ item: ParsedAppcastItem
+    ) throws -> ValidatedAppcastRelease {
+        guard let versionText = item.version else {
+            throw AppcastReleaseContractError.missingVersion
+        }
+        guard let version = Int(versionText), version > 0 else {
+            throw AppcastReleaseContractError.invalidVersion
+        }
+        guard item.channel == nil else {
+            throw AppcastReleaseContractError.nonStableChannel
+        }
+        guard let enclosureURL = item.enclosureURL,
+              enclosureURL.scheme?.lowercased() == "https",
+              enclosureURL.host != nil else {
+            throw AppcastReleaseContractError.insecureEnclosureURL
+        }
+        guard let archiveLength = item.archiveLength, archiveLength > 0 else {
+            throw AppcastReleaseContractError.invalidArchiveLength
+        }
+        guard let edSignature = item.edSignature,
+              !edSignature.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AppcastReleaseContractError.missingEdDSASignature
+        }
+        return ValidatedAppcastRelease(
+            version: version,
+            shortVersion: item.shortVersion,
+            minimumSystemVersion: item.minimumSystemVersion,
+            archiveURL: enclosureURL,
+            archiveLength: archiveLength,
+            archiveSigning: .sparkleEdDSA,
+            codeSigning: .developerIDRequired
+        )
+    }
+}
+
+private struct ParsedAppcastItem: Sendable {
+    var version: String?
+    var shortVersion: String?
+    var minimumSystemVersion: String?
+    var channel: String?
+    var enclosureURL: URL?
+    var archiveLength: UInt64?
+    var edSignature: String?
+    var hasEnclosure = false
+}
+
+private final class AppcastFeedParser: NSObject, XMLParserDelegate {
+    private(set) var items: [ParsedAppcastItem] = []
+    private(set) var contractError: AppcastReleaseContractError?
+    private var currentItem: ParsedAppcastItem?
+    private var activeElement: String?
+    private var activeText = ""
+    private var seenMetadataElements: Set<String> = []
+
+    func parse(_ xml: String) -> Bool {
+        guard let data = xml.data(using: .utf8) else { return false }
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        return parser.parse()
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let qualifiedName = qName ?? elementName
+        let localName = Self.localName(qualifiedName)
+        if localName == "item", !qualifiedName.contains(":") {
+            guard currentItem == nil else {
+                fail(parser)
+                return
+            }
+            currentItem = ParsedAppcastItem()
+            seenMetadataElements = []
+            return
+        }
+        guard var item = currentItem else { return }
+        switch localName {
+        case "enclosure":
+            guard !item.hasEnclosure else {
+                fail(parser)
+                return
+            }
+            item.hasEnclosure = true
+            item.enclosureURL = attributeDict["url"].flatMap(URL.init(string:))
+            item.archiveLength = attributeDict["length"].flatMap(UInt64.init)
+            item.edSignature = attributeDict["sparkle:edSignature"] ?? attributeDict["edSignature"]
+            currentItem = item
+        case "version" where qualifiedName.hasPrefix("sparkle:"),
+             "shortVersionString" where qualifiedName.hasPrefix("sparkle:"),
+             "minimumSystemVersion" where qualifiedName.hasPrefix("sparkle:"),
+             "channel" where qualifiedName.hasPrefix("sparkle:"):
+            guard seenMetadataElements.insert(localName).inserted else {
+                fail(parser)
+                return
+            }
+            activeElement = localName
+            activeText = ""
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        activeText += string
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        let qualifiedName = qName ?? elementName
+        let localName = Self.localName(qualifiedName)
+        if localName == "item", !qualifiedName.contains(":"), let item = currentItem {
+            items.append(item)
+            currentItem = nil
+            activeElement = nil
+            return
+        }
+        guard var item = currentItem, activeElement == localName else { return }
+        let value = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch localName {
+        case "version": item.version = value
+        case "shortVersionString": item.shortVersion = value
+        case "minimumSystemVersion": item.minimumSystemVersion = value
+        case "channel": item.channel = value.isEmpty ? nil : value
+        default: break
+        }
+        currentItem = item
+        activeElement = nil
+    }
+
+    func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
+        if contractError == nil { contractError = .invalidAppcast }
+    }
+
+    private func fail(_ parser: XMLParser) {
+        contractError = .invalidAppcast
+        parser.abortParsing()
+    }
+
+    private static func localName(_ name: String) -> String {
+        name.split(separator: ":").last.map(String.init) ?? name
     }
 }
 
