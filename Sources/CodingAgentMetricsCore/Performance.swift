@@ -386,10 +386,7 @@ public struct OTLPReceiverConfiguration: Sendable, Equatable {
     public let endpoint: URL
 
     public init() {
-        isEnabled = false
-        host = Self.fixedHost
-        port = Self.fixedPort
-        endpoint = URL(string: "http://\(Self.fixedHost):\(Self.fixedPort)/v1/traces")!
+        self.init(isEnabled: false, host: Self.fixedHost, port: Self.fixedPort)
     }
 
     public init(enabled: Bool, host: String = OTLPReceiverConfiguration.fixedHost, port: UInt16 = OTLPReceiverConfiguration.fixedPort) throws {
@@ -397,10 +394,22 @@ public struct OTLPReceiverConfiguration: Sendable, Equatable {
             throw OTLPReceiverConfigurationError.nonLoopbackHost(host)
         }
         guard port == Self.fixedPort else { throw OTLPReceiverConfigurationError.nonFixedPort(port) }
-        isEnabled = enabled
-        self.host = Self.fixedHost
-        self.port = Self.fixedPort
-        endpoint = URL(string: "http://\(Self.fixedHost):\(Self.fixedPort)/v1/traces")!
+        self.init(isEnabled: enabled, host: Self.fixedHost, port: Self.fixedPort)
+    }
+
+    /// Isolated loopback listener for tests. Host stays 127.0.0.1; port must not be 0 or 4318.
+    static func testingLoopback(port: UInt16, enabled: Bool = true) throws -> OTLPReceiverConfiguration {
+        guard port != 0, port != Self.fixedPort else {
+            throw OTLPReceiverConfigurationError.nonFixedPort(port)
+        }
+        return OTLPReceiverConfiguration(isEnabled: enabled, host: Self.fixedHost, port: port)
+    }
+
+    private init(isEnabled: Bool, host: String, port: UInt16) {
+        self.isEnabled = isEnabled
+        self.host = host
+        self.port = port
+        endpoint = URL(string: "http://\(host):\(port)/v1/traces")!
     }
 }
 

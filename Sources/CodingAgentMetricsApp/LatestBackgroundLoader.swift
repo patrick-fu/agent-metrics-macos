@@ -5,7 +5,7 @@ import Foundation
 /// and publishes only if no newer request has superseded the result.
 @MainActor
 final class LatestBackgroundLoader<Input: Sendable & Equatable, Output: Sendable> {
-    typealias Completion = @MainActor @Sendable (Output) -> Void
+    typealias Completion = @MainActor @Sendable (Output?) -> Void
 
     private struct Request: Sendable {
         var generation: UInt64
@@ -67,12 +67,14 @@ final class LatestBackgroundLoader<Input: Sendable & Equatable, Output: Sendable
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlight = nil
-                if request.generation == self.generation,
-                   request.input == self.selectedInput,
-                   let output {
+                let isCurrent = request.generation == self.generation && request.input == self.selectedInput
+                if isCurrent {
                     request.completion(output)
                 }
-                if self.pending?.startWhenCurrentFinishes == true {
+                let startPending = self.pending.map { pending in
+                    pending.startWhenCurrentFinishes || (isCurrent && output == nil)
+                } ?? false
+                if startPending {
                     self.startNextIfNeeded()
                 }
             }

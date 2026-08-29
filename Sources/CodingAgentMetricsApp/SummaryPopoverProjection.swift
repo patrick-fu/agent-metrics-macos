@@ -2,6 +2,22 @@ import CodingAgentMetricsCore
 import Foundation
 
 struct SummaryPopoverProjection: Equatable {
+    enum DataStatus: Equatable {
+        case live
+        case partial
+        case stale
+        case unavailable
+
+        var label: String {
+            switch self {
+            case .live: "Live"
+            case .partial: "Partial"
+            case .stale: "Stale"
+            case .unavailable: "Unavailable"
+            }
+        }
+    }
+
     enum PerformancePresentation: Equatable {
         case banner
         case compact
@@ -10,6 +26,7 @@ struct SummaryPopoverProjection: Equatable {
     var title: String
     var windowLabel: String
     var isLive: Bool
+    var dataStatus: DataStatus
     var agentMenuTitle: String
     var modelMenuTitle: String
     var totalValueText: String
@@ -61,6 +78,7 @@ struct SummaryPopoverProjection: Equatable {
             title: "Agent Metrics",
             windowLabel: presentation?.windowLabel ?? "3m",
             isLive: isLive,
+            dataStatus: dataStatus(snapshot: snapshot, presentation: presentation, isLive: isLive),
             agentMenuTitle: menuTitle(prefix: "All agents", chips: presentation?.agentChips ?? [], selectedCount: presentation?.agentActiveCount ?? 0),
             modelMenuTitle: menuTitle(prefix: "All models", chips: presentation?.modelChips ?? [], selectedCount: presentation?.modelActiveCount ?? 0),
             totalValueText: presentation?.valueText ?? "—",
@@ -129,6 +147,26 @@ struct SummaryPopoverProjection: Equatable {
             badges.append("\(limited.count) sources limited")
         }
         return badges
+    }
+
+    private static func dataStatus(
+        snapshot: LightSnapshot?,
+        presentation: LightSnapshotPresentation?,
+        isLive: Bool
+    ) -> DataStatus {
+        guard let snapshot, let presentation else { return .unavailable }
+        switch snapshot.outputThroughput.dataState {
+        case .stale:
+            return .stale
+        case .absent, .unavailable:
+            return .unavailable
+        default:
+            break
+        }
+        if presentation.coverageText == "Partial" || snapshot.sourceHealth.contains(where: { !$0.isHealthy }) {
+            return .partial
+        }
+        return isLive ? .live : .unavailable
     }
 
     private static func metadataLines(_ presentation: LightSnapshotPresentation?) -> [String] {

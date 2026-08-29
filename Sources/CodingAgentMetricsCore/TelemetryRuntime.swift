@@ -118,6 +118,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
         windowSeconds: Int = OutputThroughputDefinition.windowSeconds
     ) throws -> LightSnapshot {
         try storeQueue.sync {
+            try prepareWritableStore()
             let status = try enforceRetention()
             if status.ingestionPaused {
                 applyCapacityHealth(status)
@@ -139,8 +140,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
         windowSeconds: Int = OutputThroughputDefinition.windowSeconds
     ) throws -> LightSnapshot {
         try storeQueue.sync {
+            let recovered = try prepareWritableStore()
             let status = try enforceRetention()
-            if status.ingestionPaused { applyCapacityHealth(status) }
+            if status.ingestionPaused {
+                applyCapacityHealth(status)
+                return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
+            }
+            if recovered {
+                return try refresh(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
+            }
             return try snapshotFromStore(filter: filter, performanceRange: performanceRange, windowSeconds: windowSeconds)
         }
     }
@@ -152,6 +160,10 @@ public final class TelemetryRuntime: @unchecked Sendable {
         windowSeconds: Int = OutputThroughputDefinition.windowSeconds
     ) throws -> TrendSnapshot {
         try storeQueue.sync {
+            let recovered = try prepareWritableStore()
+            if recovered {
+                _ = try refresh(filter: filter, performanceRange: .oneHour, windowSeconds: windowSeconds)
+            }
             let status = try enforceRetention()
             if status.ingestionPaused { applyCapacityHealth(status) }
             let bucketSeconds = 30.0
@@ -209,6 +221,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
 
     public func ingestPerformance(_ facts: [PerformanceFact]) throws {
         try storeQueue.sync {
+            try prepareWritableStore()
             let status = try enforceRetention()
             if status.ingestionPaused {
                 throw TelemetryRuntimeError.ingestionPaused(
@@ -224,6 +237,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
     @discardableResult
     public func retentionTick() throws -> RetentionResult {
         try storeQueue.sync {
+            try prepareWritableStore()
             let status = try enforceRetention()
             if status.ingestionPaused { applyCapacityHealth(status) }
             return status
@@ -231,7 +245,10 @@ public final class TelemetryRuntime: @unchecked Sendable {
     }
 
     func storedPerformanceFactCountForTesting() throws -> Int {
-        try storeQueue.sync { try store.allPerformanceFacts().count }
+        try storeQueue.sync {
+            try prepareWritableStore()
+            return try store.allPerformanceFacts().count
+        }
     }
 
     /// Starts or stops only this app-owned loopback listener.  It never alters
@@ -252,6 +269,7 @@ public final class TelemetryRuntime: @unchecked Sendable {
         let result: TelemetryResetResult
         do {
             result = try storeQueue.sync {
+                try prepareWritableStore()
                 let result = try store.resetTelemetryData(at: clock.now)
                 observationQueue = SourceObservationQueue()
                 pendingIncrementalScans.removeAll()
@@ -271,6 +289,15 @@ public final class TelemetryRuntime: @unchecked Sendable {
         return result
     }
 
+    private static func enabledReceiverConfiguration(
+        from stored: OTLPReceiverConfiguration
+    ) throws -> OTLPReceiverConfiguration {
+        if stored.port != OTLPReceiverConfiguration.fixedPort {
+            return try OTLPReceiverConfiguration.testingLoopback(port: stored.port)
+        }
+        return try OTLPReceiverConfiguration(enabled: true)
+    }
+
     private func setEnhancedTelemetryEnabledLocked(_ enabled: Bool) throws {
         if !enabled {
             let toStop = storeQueue.sync { () -> OTLPHTTPReceiver? in
@@ -287,13 +314,14 @@ public final class TelemetryRuntime: @unchecked Sendable {
 
         var created: OTLPHTTPReceiver?
         do {
-            let configuration = try OTLPReceiverConfiguration(enabled: true)
+            let configuration = try Self.enabledReceiverConfiguration(from: receiverConfiguration)
             let token = UUID()
             let next = OTLPHTTPReceiver(configuration: configuration) { [weak self] facts in
                 guard let self else { return }
                 self.beforePersistingPerformance?()
                 try self.storeQueue.sync {
                     guard self.activeReceiverToken == token else { return }
+                    try self.prepareWritableStore()
                     let status = try self.enforceRetention()
                     guard !status.ingestionPaused else {
                         throw TelemetryRuntimeError.ingestionPaused(
@@ -702,6 +730,17 @@ public final class TelemetryRuntime: @unchecked Sendable {
             return ownership.health(isHealthy: false, diagnosticCode: "SOURCE_FAILURE")
         }
         return ownership.health(isHealthy: receiver.isRunning)
+    }
+
+    @discardableResult
+    private func prepareWritableStore() throws -> Bool {
+        guard try store.recoverUnlinkedStoreIfNeeded() else { return false }
+        observationQueue = SourceObservationQueue()
+        pendingIncrementalScans.removeAll()
+        incrementalReplays.removeAll()
+        sourceHealth.removeAll()
+        lastRetentionResult = nil
+        return true
     }
 
     private func enforceRetention() throws -> RetentionResult {

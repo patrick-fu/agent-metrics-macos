@@ -44,6 +44,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var accessibilityObserver: AnyCancellable?
     private var panelLifecycle: AccessibilityPanelLifecycle!
     private var isDismissingPanel = false
+    private var lastResizedSurface: AccessibilityNavigation.Surface?
     private lazy var resetData: ResetDataController = {
         guard let runtime else { return ResetDataController() }
         return ResetDataController(reset: { [weak self, runtime] in
@@ -197,24 +198,23 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }, onCadenceChange: { [weak self] cadence in
             self?.applyCadence(cadence)
         })
-        .frame(width: AppIdentity.popoverWidth)
-        panel.contentView = NSHostingView(rootView: root)
+        panel.installMetricsHostingView(NSHostingView(rootView: root))
         resizePanel()
     }
 
     private func resizePanel() {
-        if let content = panel.contentView {
-            let fitting = content.fittingSize
-            let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? panel.frame
-            panel.setFrame(
-                PanelPlacement.resizedFrame(
-                    from: panel.frame,
-                    contentSize: NSSize(width: AppIdentity.popoverWidth, height: max(fitting.height, 240)),
-                    visibleFrame: visibleFrame
-                ),
-                display: true
-            )
-        }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.applyMetricsPopoverContract()
+        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? panel.frame
+        panel.setFrame(
+            PanelPlacement.resizedFrame(
+                from: panel.frame,
+                contentSize: PanelPlacement.metricsContentSize(fittingHeight: panel.metricsFittingSize.height),
+                visibleFrame: visibleFrame
+            ),
+            display: true
+        )
+        panel.applyMetricsPopoverContract()
     }
 
     private func startRefreshTimer() {
@@ -236,12 +236,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let requestedWindow = displayPreferences.window.seconds
         heroPublication.noteRequested(publishHero: publishHero)
         lightLoader.submit(.ingest(requestedFilter, requestedRange, requestedWindow)) { [weak self] light in
-            guard let self, self.filter == requestedFilter, self.performanceRange == requestedRange else { return }
-            self.latestLight = light
-            if self.heroPublication.shouldPublishHero(forThisCompletion: publishHero) {
-                self.publish(light)
-            }
-            self.resizePanelSoon()
+            self?.finishLightLoad(light, expectedFilter: requestedFilter, expectedRange: requestedRange, publishHero: publishHero)
         }
     }
 
@@ -254,13 +249,23 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let requestedWindow = displayPreferences.window.seconds
         heroPublication.noteRequested(publishHero: publishHero)
         lightLoader.submit(.stored(newFilter, performanceRange, requestedWindow)) { [weak self] light in
-            guard let self, self.filter == newFilter, self.performanceRange == performanceRange else { return }
-            self.latestLight = light
-            if self.heroPublication.shouldPublishHero(forThisCompletion: publishHero) {
-                self.publish(light)
-            }
-            self.resizePanelSoon()
+            self?.finishLightLoad(light, expectedFilter: newFilter, expectedRange: performanceRange, publishHero: publishHero)
         }
+    }
+
+    private func finishLightLoad(
+        _ light: LightSnapshot?,
+        expectedFilter: MetricFilter,
+        expectedRange: PerformanceRange,
+        publishHero: Bool
+    ) {
+        guard filter == expectedFilter, performanceRange == expectedRange else { return }
+        let update = heroPublication.complete(output: light, publishHero: publishHero, latest: latestLight)
+        latestLight = update.latest
+        if let hero = update.hero {
+            publish(hero)
+        }
+        resizePanelSoon()
     }
 
     private func publishDisplayedHero() {
@@ -303,8 +308,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         if isUserRequest, detailFilter == requestedFilter, snapshots.detail != nil { return }
         detailLoader.submit(DetailLoad(filter: requestedFilter, windowSeconds: displayPreferences.window.seconds)) { [weak self] detail in
             guard let self, self.panel.isVisible, self.filter == requestedFilter else { return }
-            self.detailFilter = requestedFilter
-            self.snapshots.detail = detail
+            if let detail {
+                self.detailFilter = requestedFilter
+                self.snapshots.detail = detail
+            }
             self.resizePanelSoon()
         }
     }
@@ -325,7 +332,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let y = buttonRect.minY - panelSize.height - 6
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(panel.contentView)
+        panel.makeFirstResponder(panel.metricsHostingView ?? panel.contentView)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.panelLifecycle.handleExternalDismissRequest()
         }
@@ -359,8 +366,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func observeAccessibility() {
         accessibilityObserver = accessibility.$navigation.sink { [weak self] navigation in
             guard let self else { return }
-            if navigation.surface == .dismissed, self.panel.isVisible {
-                self.dismissPanel()
+            if navigation.surface == .dismissed {
+                self.lastResizedSurface = nil
+                if self.panel.isVisible {
+                    self.dismissPanel()
+                }
+                return
+            }
+            if self.panel.isVisible, self.lastResizedSurface != navigation.surface {
+                self.lastResizedSurface = navigation.surface
+                self.resizePanelSoon()
             }
         }
     }

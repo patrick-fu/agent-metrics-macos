@@ -23,6 +23,7 @@ struct SummaryPopoverProjectionTests {
         )
 
         #expect(projection.title == "Agent Metrics")
+        #expect(projection.dataStatus == .live)
         #expect(projection.totalValueText == "20")
         #expect(projection.averageValueText == "10")
         #expect(projection.activeSessionsText == "2 active sessions")
@@ -95,8 +96,38 @@ struct SummaryPopoverProjectionTests {
             now: now
         )
         #expect(expanded.totalValueText == "—")
+        #expect(expanded.dataStatus == .stale)
         #expect(expanded.qualityMetadataLines.contains(where: { $0.contains("Last known 10") }))
         #expect(expanded.qualityMetadataLines.contains(where: { $0.contains("Retained") || $0.contains("Stale") }))
+    }
+
+    @Test @MainActor
+    func projectionUsesPartialAndUnavailableStatusSemantics() {
+        let now = Date(timeIntervalSince1970: 1_771_202)
+        let liveFact = fact(sessionID: "s1", tokens: 1_800, observedAt: now.addingTimeInterval(-10))
+        let partialSnapshot = SnapshotBuilder().buildLightSnapshot(
+            sample: LiveSampler().sample(facts: [liveFact], now: now),
+            allFacts: [liveFact],
+            now: now,
+            sourceHealth: [SourceHealth(sourceID: "limited-source", isHealthy: false, diagnosticCode: "SOURCE_UNAVAILABLE")]
+        )
+        let partial = SummaryPopoverProjection.make(
+            snapshot: partialSnapshot,
+            trends: nil,
+            qualityExpanded: false,
+            telemetryEnabled: false,
+            now: now
+        )
+        let unavailable = SummaryPopoverProjection.make(
+            snapshot: nil,
+            trends: nil,
+            qualityExpanded: false,
+            telemetryEnabled: false,
+            now: now
+        )
+
+        #expect(partial.dataStatus == .partial)
+        #expect(unavailable.dataStatus == .unavailable)
     }
 
     @Test @MainActor

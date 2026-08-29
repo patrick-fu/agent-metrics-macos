@@ -66,7 +66,7 @@ struct LatestBackgroundLoaderTests {
             decision.noteRequested(publishHero: publishHero)
             let publishHero = publishHero
             loader.submit(7) { output in
-                if decision.shouldPublishHero(forThisCompletion: publishHero) {
+                if let output, decision.shouldPublishHero(forThisCompletion: publishHero) {
                     published.append(output)
                 }
             }
@@ -97,11 +97,11 @@ struct LatestBackgroundLoaderTests {
         )
 
         let values = AsyncStream<Int> { continuation in
-            loader.submit(1) { continuation.yield($0) }
+            loader.submit(1) { if let value = $0 { continuation.yield(value) } }
             #expect(firstEntered.wait(timeout: .now() + 1) == .success)
 
             loader.submit(2) {
-                continuation.yield($0)
+                if let value = $0 { continuation.yield(value) }
                 continuation.finish()
             }
             releaseFirst.signal()

@@ -14,4 +14,16 @@ struct LightSnapshotPublishDecision: Equatable, Sendable {
         pendingHeroPromotion = false
         return shouldPublish
     }
+
+    /// Keep the last good snapshot when a load returns nil, but still consume a
+    /// pending hero tick so cadence display is not blocked by a failed ingest.
+    mutating func complete<Snapshot>(
+        output: Snapshot?,
+        publishHero: Bool,
+        latest: Snapshot?
+    ) -> (latest: Snapshot?, hero: Snapshot?) {
+        let nextLatest = output ?? latest
+        let hero = shouldPublishHero(forThisCompletion: publishHero) ? nextLatest : nil
+        return (nextLatest, hero)
+    }
 }

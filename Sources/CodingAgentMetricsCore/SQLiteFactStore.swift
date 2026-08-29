@@ -67,14 +67,104 @@ public final class SQLiteFactStore: @unchecked Sendable {
         capacityReclaimProbe: (() -> Void)? = nil,
         migrationOperations: DatabaseMigrationOperations = .live
     ) throws {
+        self.resetCleanupOperations = resetCleanupOperations
+        self.capacityReclaimProbe = capacityReclaimProbe
+        try Self.ensureParentDirectory(for: url)
         let location = try PinnedDatabaseLocation(databaseURL: url)
+        databaseURL = location.databaseURL
+        try connectAndInitialize(location: location, migrationOperations: migrationOperations)
+    }
+
+    /// Recreates the parent path and a writable database after the on-disk
+    /// store is unlinked. The abandoned connection's facts are not copied;
+    /// callers must rebuild from source.
+    ///
+    /// Detects both a missing path and a live handle whose inode was replaced
+    /// (path exists again, open fd `nlink=0` / `SQLITE_IOERR`). Sidecars are
+    /// removed only when the main database file is gone, so a replacement
+    /// store's WAL is not deleted.
+    @discardableResult
+    func recoverUnlinkedStoreIfNeeded() throws -> Bool {
+        let pathExists = FileManager.default.fileExists(atPath: databaseURL.path)
+        if pathExists && !openHandleCannotRead() {
+            return false
+        }
+        closeDatabaseIgnoringErrors()
+        try Self.ensureParentDirectory(for: databaseURL)
+        if !FileManager.default.fileExists(atPath: databaseURL.path) {
+            try Self.removeOrphanSidecars(for: databaseURL)
+        }
+        let location = try PinnedDatabaseLocation(databaseURL: databaseURL)
+        try connectAndInitialize(location: location, migrationOperations: .live)
+        return true
+    }
+
+    private func openHandleCannotRead() -> Bool {
+        guard let database else { return true }
+        var statement: OpaquePointer?
+        let prepare = sqlite3_prepare_v2(
+            database,
+            "SELECT 1 FROM sqlite_schema LIMIT 1;",
+            -1,
+            &statement,
+            nil
+        )
+        defer { sqlite3_finalize(statement) }
+        if prepare != SQLITE_OK {
+            return isLostStoreStatus(sqlite3_errcode(database))
+        }
+        let step = sqlite3_step(statement)
+        if step == SQLITE_ROW || step == SQLITE_DONE {
+            return false
+        }
+        return isLostStoreStatus(step) || isLostStoreStatus(sqlite3_errcode(database))
+    }
+
+    private func isLostStoreStatus(_ status: Int32) -> Bool {
+        switch status & 0xFF {
+        case SQLITE_IOERR, SQLITE_CANTOPEN, SQLITE_CORRUPT, SQLITE_NOTADB:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func removeOrphanSidecars(for databaseURL: URL) throws {
+        let fm = FileManager.default
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: databaseURL.path + suffix)
+            guard fm.fileExists(atPath: sidecar.path) else { continue }
+            try fm.removeItem(at: sidecar)
+        }
+    }
+
+    private static func ensureParentDirectory(for databaseURL: URL) throws {
+        let name = databaseURL.lastPathComponent
+        guard !name.isEmpty, name != ".", name != ".." else {
+            throw StoreError.openFailed(SQLITE_CANTOPEN)
+        }
+        let parent = databaseURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        var info = stat()
+        guard lstat(parent.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+            throw StoreError.openFailed(SQLITE_CANTOPEN)
+        }
+    }
+
+    private func closeDatabaseIgnoringErrors() {
+        guard let handle = database else { return }
+        database = nil
+        _ = sqlite3_close_v2(handle)
+    }
+
+    private func connectAndInitialize(
+        location: PinnedDatabaseLocation,
+        migrationOperations: DatabaseMigrationOperations
+    ) throws {
         _ = try DatabaseMigrationPreflight.inspect(at: location)
         try migrationOperations.checkpoint(.initialPreflightCompleted)
         let upgradeLock = try DatabaseUpgradeLock.acquire(for: location)
         defer { upgradeLock.release() }
-        databaseURL = location.databaseURL
-        self.resetCleanupOperations = resetCleanupOperations
-        self.capacityReclaimProbe = capacityReclaimProbe
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
             | SQLITE_OPEN_NOFOLLOW
         let status = sqlite3_open_v2(location.databaseURL.path, &database, flags, nil)

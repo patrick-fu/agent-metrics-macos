@@ -6,6 +6,11 @@ import Testing
 @Suite(.serialized)
 struct PerformanceTelemetryTests {
     private let now = Date(timeIntervalSince1970: 1_771_200)
+    private static let testingIsolationPort: UInt16 = 14_318
+
+    private func testingReceiverConfiguration(enabled: Bool = true) throws -> OTLPReceiverConfiguration {
+        try OTLPReceiverConfiguration.testingLoopback(port: Self.testingIsolationPort, enabled: enabled)
+    }
 
     @Test func receiverDefaultsOffAndOnlyAllowsLoopback() throws {
         #expect(!OTLPReceiverConfiguration().isEnabled)
@@ -25,6 +30,17 @@ struct PerformanceTelemetryTests {
         }
         #expect(throws: OTLPReceiverConfigurationError.nonFixedPort(4319)) {
             try OTLPReceiverConfiguration(enabled: true, port: 4319)
+        }
+        let testing = try OTLPReceiverConfiguration.testingLoopback(port: 4319)
+        #expect(testing.host == "127.0.0.1")
+        #expect(testing.port == 4319)
+        #expect(testing.isEnabled)
+        #expect(testing.endpoint.absoluteString == "http://127.0.0.1:4319/v1/traces")
+        #expect(throws: OTLPReceiverConfigurationError.nonFixedPort(4318)) {
+            try OTLPReceiverConfiguration.testingLoopback(port: 4318)
+        }
+        #expect(throws: OTLPReceiverConfigurationError.nonFixedPort(0)) {
+            try OTLPReceiverConfiguration.testingLoopback(port: 0)
         }
     }
 
@@ -239,7 +255,7 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func receiverReturnsHTTPStatusForAcceptedAndFailedPersistence() async throws {
-        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let configuration = try testingReceiverConfiguration()
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
         try receiver.start()
         defer { receiver.stop() }
@@ -262,7 +278,7 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func receiverSynchronizesRepeatedStartStatusAndStop() throws {
-        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let configuration = try testingReceiverConfiguration()
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
         defer { receiver.stop() }
         for _ in 0..<20 {
@@ -273,7 +289,7 @@ struct PerformanceTelemetryTests {
                 _ = receiver.boundPort
             }
             #expect(receiver.state == .running)
-            #expect(receiver.boundPort == 4318)
+            #expect(receiver.boundPort == configuration.port)
             receiver.stop()
             #expect(receiver.state == .stopped)
             #expect(receiver.boundPort == nil)
@@ -282,7 +298,7 @@ struct PerformanceTelemetryTests {
             let next = OTLPHTTPReceiver(configuration: configuration) { _ in }
             try next.start()
             #expect(next.state == .running)
-            #expect(next.boundPort == 4318)
+            #expect(next.boundPort == configuration.port)
             next.stop()
             #expect(next.state == .stopped)
             #expect(next.boundPort == nil)
@@ -295,6 +311,7 @@ struct PerformanceTelemetryTests {
         let runtime = try TelemetryRuntime(
             storeURL: temporaryURL(),
             sourceAdapters: [],
+            receiverConfiguration: try testingReceiverConfiguration(enabled: false),
             beforePersistingPerformance: {
                 enteredConsume.set()
                 _ = releaseConsume.wait(timeout: .now() + 1)
@@ -334,7 +351,11 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func runtimePersistsTheFirstPostAfterEnable() async throws {
-        let runtime = try TelemetryRuntime(storeURL: temporaryURL(), sourceAdapters: [])
+        let runtime = try TelemetryRuntime(
+            storeURL: temporaryURL(),
+            sourceAdapters: [],
+            receiverConfiguration: try testingReceiverConfiguration(enabled: false)
+        )
         for index in 0..<20 {
             try runtime.setEnhancedTelemetryEnabled(true)
             #expect(runtime.receiverState == .running)
@@ -348,7 +369,11 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func runtimeEnableDuringInFlightDisableDoesNotBindUntilStopReleases() throws {
-        let runtime = try TelemetryRuntime(storeURL: temporaryURL(), sourceAdapters: [])
+        let runtime = try TelemetryRuntime(
+            storeURL: temporaryURL(),
+            sourceAdapters: [],
+            receiverConfiguration: try testingReceiverConfiguration(enabled: false)
+        )
         for _ in 0..<20 {
             try runtime.setEnhancedTelemetryEnabled(true)
             #expect(runtime.receiverState == .running)
@@ -370,7 +395,7 @@ struct PerformanceTelemetryTests {
     @Test func receiverStopReleasesPortWhileConsumeBlocksLongerThanOneSecond() async throws {
         let enteredConsume = LockedFlag()
         let releaseConsume = DispatchSemaphore(value: 0)
-        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let configuration = try testingReceiverConfiguration()
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in
             enteredConsume.set()
             _ = releaseConsume.wait(timeout: .now() + 2)
@@ -392,13 +417,13 @@ struct PerformanceTelemetryTests {
         #expect(receiver.state == .stopped)
         try receiver.start()
         #expect(receiver.state == .running)
-        #expect(receiver.boundPort == 4318)
+        #expect(receiver.boundPort == configuration.port)
         releaseConsume.signal()
         _ = await response
     }
 
     @Test func receiverStopDoesNotTimeoutWhileNextStartIsParkedBeforeListenerStart() throws {
-        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let configuration = try testingReceiverConfiguration()
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
         try receiver.start()
         defer {
@@ -426,7 +451,7 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func receiverStartDoesNotAdoptWhileStopInstallsPendingRelease() throws {
-        let configuration = try OTLPReceiverConfiguration(enabled: true)
+        let configuration = try testingReceiverConfiguration()
         let receiver = OTLPHTTPReceiver(configuration: configuration) { _ in }
         try receiver.start()
         defer {
@@ -499,9 +524,14 @@ struct PerformanceTelemetryTests {
     }
 
     @Test func runtimeCanEnableAndDisableOnlyItsOwnStableReceiver() async throws {
-        let runtime = try TelemetryRuntime(storeURL: temporaryURL(), sourceAdapters: [])
+        let configuration = try testingReceiverConfiguration(enabled: false)
+        let runtime = try TelemetryRuntime(
+            storeURL: temporaryURL(),
+            sourceAdapters: [],
+            receiverConfiguration: configuration
+        )
         #expect(runtime.receiverState == .stopped)
-        #expect(runtime.receiverEndpoint.absoluteString == "http://127.0.0.1:4318/v1/traces")
+        #expect(runtime.receiverEndpoint == configuration.endpoint)
         try runtime.setEnhancedTelemetryEnabled(true)
         let deadline = Date().addingTimeInterval(1)
         while runtime.receiverState == .starting && Date() < deadline {

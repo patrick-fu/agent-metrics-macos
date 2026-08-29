@@ -80,6 +80,13 @@ struct SummaryPopoverView: View {
                 summary
             }
         }
+        .frame(
+            minWidth: AppIdentity.popoverWidth,
+            idealWidth: AppIdentity.popoverWidth,
+            maxWidth: AppIdentity.popoverWidth,
+            alignment: .leading
+        )
+        .fixedSize(horizontal: true, vertical: false)
         .onAppear { syncFocus(); now = clock.now }
         .onChange(of: accessibility.navigation.focusedControl) { _, _ in syncFocus() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
@@ -108,12 +115,12 @@ struct SummaryPopoverView: View {
                     ], axis: .model, control: .modelFilter)
                 }
                 HStack(spacing: 8) {
-                    heroCard(title: "TOTAL OUTPUT", value: projection.totalValueText, unit: projection.unitText)
-                    heroCard(title: "AVG / SESSION", value: projection.averageValueText, unit: projection.unitText)
+                    heroCard(title: "TOTAL", value: projection.totalValueText, unit: projection.unitText, isPrimary: true)
+                    heroCard(title: "AVG / SESSION", value: projection.averageValueText, unit: projection.unitText, isPrimary: false)
                 }
                 Label(projection.activeSessionsText, systemImage: "person.2")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.7))
                     .accessibilityLabel(projection.activeSessionsText)
                 summaryChart(projection)
                 HStack(spacing: 8) {
@@ -128,10 +135,13 @@ struct SummaryPopoverView: View {
                         .foregroundStyle(.orange)
                         .accessibilityLabel(capacityText)
                 }
-                HStack {
-                    Text(projection.footerUpdatedText)
-                        .font(.caption)
+                HStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
+                    Text(projection.footerUpdatedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary.opacity(0.68))
                     Spacer()
                     Button(projection.detailsTitle) {
                         accessibility.activate(.viewTrends)
@@ -144,7 +154,12 @@ struct SummaryPopoverView: View {
             }
             .padding(14)
         }
-        .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .frame(
+            minWidth: AppIdentity.popoverWidth,
+            idealWidth: AppIdentity.popoverWidth,
+            maxWidth: AppIdentity.popoverWidth,
+            alignment: .leading
+        )
         .frame(maxHeight: 720)
         .background(.regularMaterial)
         .onAppear { accessibility.setShowsPerformanceEnable(projection.performance == .banner) }
@@ -175,7 +190,12 @@ struct SummaryPopoverView: View {
             )
         }
         .padding(14)
-        .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .frame(
+            minWidth: AppIdentity.popoverWidth,
+            idealWidth: AppIdentity.popoverWidth,
+            maxWidth: AppIdentity.popoverWidth,
+            alignment: .leading
+        )
         .background(.regularMaterial)
     }
 
@@ -216,7 +236,12 @@ struct SummaryPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: AppIdentity.popoverWidth, alignment: .leading)
+        .frame(
+            minWidth: AppIdentity.popoverWidth,
+            idealWidth: AppIdentity.popoverWidth,
+            maxWidth: AppIdentity.popoverWidth,
+            alignment: .leading
+        )
         .background(.regularMaterial)
     }
 
@@ -228,6 +253,7 @@ struct SummaryPopoverView: View {
                 Spacer()
                 Text(aggregate).font(.caption).monospacedDigit().foregroundStyle(.secondary)
             }
+            statusPill(status(fromDataState: presentation.dataStateText, coverage: presentation.coverageText))
             Text("\(presentation.qualityText) · \(presentation.dataStateText) · \(presentation.coverageText) · \(presentation.sampleCountText)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -284,10 +310,7 @@ struct SummaryPopoverView: View {
                 .font(.headline)
                 .accessibilityIdentifier("summary-title")
             Spacer()
-            Circle()
-                .fill(projection.isLive ? Color.green : Color.secondary.opacity(0.45))
-                .frame(width: 8, height: 8)
-                .accessibilityLabel(projection.isLive ? "Live" : "Not live")
+            statusPill(projection.dataStatus)
             Menu {
                 ForEach(OutputThroughputWindow.allCases, id: \.self) { window in
                     Button(window.menuLabel) {
@@ -302,10 +325,10 @@ struct SummaryPopoverView: View {
                     Image(systemName: "chevron.down")
                         .font(.caption2)
                 }
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
             .focused($focusedControl, equals: .windowSelector)
             .accessibilityFocusChrome(focusedControl == .windowSelector)
@@ -353,7 +376,7 @@ struct SummaryPopoverView: View {
             .font(.caption)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3)))
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
         }
         .focused($focusedControl, equals: control)
         .accessibilityFocusChrome(focusedControl == control)
@@ -361,21 +384,25 @@ struct SummaryPopoverView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func heroCard(title: String, value: String, unit: String) -> some View {
+    private func heroCard(title: String, value: String, unit: String, isPrimary: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isPrimary ? Color.accentColor : .secondary)
             Text(value)
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: isPrimary ? 36 : 30, weight: .bold, design: .rounded))
                 .monospacedDigit()
             Text(unit)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(
+            isPrimary ? Color.accentColor.opacity(0.11) : Color.primary.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
     }
 
     @ViewBuilder
@@ -392,8 +419,8 @@ struct SummaryPopoverView: View {
                     .frame(maxWidth: .infinity, minHeight: 120, alignment: .leading)
             }
         }
-        .padding(10)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .padding(11)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
         .onAppear { loadTrends(requestedFilter) }
     }
 
@@ -415,7 +442,7 @@ struct SummaryPopoverView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -436,8 +463,7 @@ struct SummaryPopoverView: View {
                 .accessibilityFocusChrome(focusedControl == .performanceEnable)
             }
             .padding(10)
-            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.25)))
+            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
         } else {
             HStack(spacing: 8) {
                 compactPerf("TTFT", projection.compactTTFT)
@@ -454,7 +480,7 @@ struct SummaryPopoverView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func qualityRow(_ projection: SummaryPopoverProjection) -> some View {
@@ -468,11 +494,7 @@ struct SummaryPopoverView: View {
                         .font(.caption)
                     Spacer()
                     ForEach(projection.qualityBadges, id: \.self) { badge in
-                        Text(badge)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(badge == "Partial" ? Color.yellow.opacity(0.35) : Color.secondary.opacity(0.12), in: Capsule())
+                        qualityPill(badge)
                     }
                     Image(systemName: qualityExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
@@ -492,7 +514,54 @@ struct SummaryPopoverView: View {
             }
         }
         .padding(10)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func statusPill(_ status: SummaryPopoverProjection.DataStatus) -> some View {
+        Label(status.label, systemImage: statusIcon(for: status))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(statusColor(for: status))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(statusColor(for: status).opacity(0.12), in: Capsule())
+            .accessibilityLabel(status.label)
+    }
+
+    private func qualityPill(_ badge: String) -> some View {
+        let status: SummaryPopoverProjection.DataStatus = badge == "Stale" ? .stale : .partial
+        return Label(badge, systemImage: statusIcon(for: status))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(statusColor(for: status))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(statusColor(for: status).opacity(0.12), in: Capsule())
+            .accessibilityLabel(badge)
+    }
+
+    private func status(fromDataState dataState: String, coverage: String) -> SummaryPopoverProjection.DataStatus {
+        switch dataState {
+        case "Stale": .stale
+        case "Unavailable", "Absent": .unavailable
+        default: coverage == "Partial" ? .partial : .live
+        }
+    }
+
+    private func statusColor(for status: SummaryPopoverProjection.DataStatus) -> Color {
+        switch status {
+        case .live: .green
+        case .partial: .orange
+        case .stale: .yellow
+        case .unavailable: .red
+        }
+    }
+
+    private func statusIcon(for status: SummaryPopoverProjection.DataStatus) -> String {
+        switch status {
+        case .live: "circle.fill"
+        case .partial: "exclamationmark.triangle.fill"
+        case .stale: "clock.fill"
+        case .unavailable: "xmark.circle.fill"
+        }
     }
 
     private func kpi(title: String, value: String, unit: String) -> some View {

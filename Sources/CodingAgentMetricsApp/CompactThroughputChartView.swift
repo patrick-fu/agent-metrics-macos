@@ -32,20 +32,23 @@ struct CompactThroughputChartView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Output throughput")
                     .font(.subheadline.weight(.medium))
                 Spacer()
-                legend
+                Text("5s buckets")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
+            legend
             HStack(alignment: .top, spacing: 7) {
                 VStack(alignment: .trailing, spacing: 0) {
                     ForEach(Array((0...4).reversed()), id: \.self) { index in
                         Text(valueLabel(Double(index) / 4 * maximum))
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(height: 38, alignment: .topTrailing)
+                            .foregroundStyle(.primary.opacity(0.62))
+                            .frame(height: 35, alignment: .topTrailing)
                     }
                 }
                 .frame(width: 30)
@@ -55,7 +58,7 @@ struct CompactThroughputChartView: View {
                         draw(series, in: &context, size: size)
                     }
                 }
-                .frame(height: 164)
+                .frame(height: 150)
                 .accessibilityLabel("Output throughput trend")
             }
             HStack(spacing: 0) {
@@ -63,7 +66,7 @@ struct CompactThroughputChartView: View {
                 ForEach(axisTicks) { tick in
                     Text(tick.label)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.62))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -73,9 +76,9 @@ struct CompactThroughputChartView: View {
     }
 
     private var legend: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(stride(from: 0, to: renderPlan.series.count, by: 2)), id: \.self) { start in
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     ForEach(renderPlan.series[start..<min(start + 2, renderPlan.series.count)]) { series in
                         legendItem(series)
                     }
@@ -98,7 +101,7 @@ struct CompactThroughputChartView: View {
             }
             .frame(width: 14, height: 8)
             Text(series.title)
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .lineLimit(1)
         }
         .accessibilityLabel(series.legendLabel)
@@ -110,14 +113,14 @@ struct CompactThroughputChartView: View {
             var line = Path()
             line.move(to: CGPoint(x: 0, y: y))
             line.addLine(to: CGPoint(x: size.width, y: y))
-            context.stroke(line, with: .color(.secondary.opacity(0.16)), lineWidth: 1)
+            context.stroke(line, with: .color(.secondary.opacity(0.22)), lineWidth: 1)
         }
         for index in 0...6 {
             let x = size.width * CGFloat(index) / 6
             var line = Path()
             line.move(to: CGPoint(x: x, y: 0))
             line.addLine(to: CGPoint(x: x, y: size.height))
-            context.stroke(line, with: .color(.secondary.opacity(0.11)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            context.stroke(line, with: .color(.secondary.opacity(0.15)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
     }
 
