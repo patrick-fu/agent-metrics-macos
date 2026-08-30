@@ -15,6 +15,7 @@ public struct ValidatedAppcastRelease: Equatable, Sendable {
     public let minimumSystemVersion: String?
     public let archiveURL: URL
     public let archiveLength: UInt64
+    let edSignature: String
     public let archiveSigning: ArchiveSigning
     public let codeSigning: CodeSigning
 }
@@ -75,6 +76,7 @@ public enum AppcastReleaseContract {
             minimumSystemVersion: parser.minimumSystemVersion,
             archiveURL: enclosureURL,
             archiveLength: archiveLength,
+            edSignature: edSignature,
             archiveSigning: .sparkleEdDSA,
             codeSigning: .developerIDRequired
         )
@@ -133,6 +135,7 @@ public enum AppcastReleaseContract {
             minimumSystemVersion: item.minimumSystemVersion,
             archiveURL: enclosureURL,
             archiveLength: archiveLength,
+            edSignature: edSignature,
             archiveSigning: .sparkleEdDSA,
             codeSigning: .developerIDRequired
         )
@@ -150,19 +153,77 @@ private struct ParsedAppcastItem: Sendable {
     var hasEnclosure = false
 }
 
+private let sparkleNamespaceURI = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+
+private enum SparkleAttribute {
+    case missing
+    case value(String)
+    case conflicting
+}
+
+private final class XMLNamespaceContext {
+    private var mappings: [String: [String]] = [:]
+
+    func startMapping(prefix: String, uri: String) {
+        mappings[prefix, default: []].append(uri)
+    }
+
+    func endMapping(prefix: String) {
+        guard var values = mappings[prefix] else { return }
+        values.removeLast()
+        mappings[prefix] = values.isEmpty ? nil : values
+    }
+
+    func sparkleAttribute(named expectedLocalName: String, in attributes: [String: String]) -> SparkleAttribute {
+        let matchingValues = attributes.compactMap { qualifiedName, value -> String? in
+            let components = qualifiedName.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard components.count == 2,
+                  String(components[1]) == expectedLocalName,
+                  mappings[String(components[0])]?.last == sparkleNamespaceURI else {
+                return nil
+            }
+            return value
+        }
+        switch matchingValues.count {
+        case 0: return .missing
+        case 1: return .value(matchingValues[0])
+        default: return .conflicting
+        }
+    }
+}
+
+private func isSparkleMetadata(_ localName: String, namespaceURI: String?) -> Bool {
+    namespaceURI == sparkleNamespaceURI && ["version", "shortVersionString", "minimumSystemVersion", "channel"].contains(localName)
+}
+
+private func isUnnamespaced(_ namespaceURI: String?) -> Bool {
+    namespaceURI == nil || namespaceURI?.isEmpty == true
+}
+
 private final class AppcastFeedParser: NSObject, XMLParserDelegate {
     private(set) var items: [ParsedAppcastItem] = []
     private(set) var contractError: AppcastReleaseContractError?
     private var currentItem: ParsedAppcastItem?
-    private var activeElement: String?
+    private var activeMetadataName: String?
     private var activeText = ""
     private var seenMetadataElements: Set<String> = []
+    private let namespaces = XMLNamespaceContext()
 
     func parse(_ xml: String) -> Bool {
         guard let data = xml.data(using: .utf8) else { return false }
         let parser = XMLParser(data: data)
+        parser.shouldProcessNamespaces = true
+        parser.shouldReportNamespacePrefixes = true
         parser.delegate = self
         return parser.parse()
+    }
+
+    func parser(_ parser: XMLParser, didStartMappingPrefix prefix: String, toURI namespaceURI: String) {
+        namespaces.startMapping(prefix: prefix, uri: namespaceURI)
+    }
+
+    func parser(_ parser: XMLParser, didEndMappingPrefix prefix: String) {
+        namespaces.endMapping(prefix: prefix)
     }
 
     func parser(
@@ -172,9 +233,7 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        let qualifiedName = qName ?? elementName
-        let localName = Self.localName(qualifiedName)
-        if localName == "item", !qualifiedName.contains(":") {
+        if elementName == "item", isUnnamespaced(namespaceURI) {
             guard currentItem == nil else {
                 fail(parser)
                 return
@@ -184,8 +243,7 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
             return
         }
         guard var item = currentItem else { return }
-        switch localName {
-        case "enclosure":
+        if elementName == "enclosure", isUnnamespaced(namespaceURI) {
             guard !item.hasEnclosure else {
                 fail(parser)
                 return
@@ -193,25 +251,30 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
             item.hasEnclosure = true
             item.enclosureURL = attributeDict["url"].flatMap(URL.init(string:))
             item.archiveLength = attributeDict["length"].flatMap(UInt64.init)
-            item.edSignature = attributeDict["sparkle:edSignature"] ?? attributeDict["edSignature"]
-            currentItem = item
-        case "version" where qualifiedName.hasPrefix("sparkle:"),
-             "shortVersionString" where qualifiedName.hasPrefix("sparkle:"),
-             "minimumSystemVersion" where qualifiedName.hasPrefix("sparkle:"),
-             "channel" where qualifiedName.hasPrefix("sparkle:"):
-            guard seenMetadataElements.insert(localName).inserted else {
+            switch namespaces.sparkleAttribute(named: "edSignature", in: attributeDict) {
+            case .missing:
+                break
+            case let .value(signature):
+                item.edSignature = signature
+            case .conflicting:
                 fail(parser)
                 return
             }
-            activeElement = localName
+            currentItem = item
+        } else if isSparkleMetadata(elementName, namespaceURI: namespaceURI) {
+            guard seenMetadataElements.insert(elementName).inserted else {
+                fail(parser)
+                return
+            }
+            activeMetadataName = elementName
             activeText = ""
-        default:
-            break
         }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        activeText += string
+        if activeMetadataName != nil {
+            activeText += string
+        }
     }
 
     func parser(
@@ -220,17 +283,17 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
-        let qualifiedName = qName ?? elementName
-        let localName = Self.localName(qualifiedName)
-        if localName == "item", !qualifiedName.contains(":"), let item = currentItem {
+        if elementName == "item", isUnnamespaced(namespaceURI), let item = currentItem {
             items.append(item)
             currentItem = nil
-            activeElement = nil
+            activeMetadataName = nil
             return
         }
-        guard var item = currentItem, activeElement == localName else { return }
+        guard var item = currentItem,
+              activeMetadataName == elementName,
+              isSparkleMetadata(elementName, namespaceURI: namespaceURI) else { return }
         let value = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch localName {
+        switch elementName {
         case "version": item.version = value
         case "shortVersionString": item.shortVersion = value
         case "minimumSystemVersion": item.minimumSystemVersion = value
@@ -238,7 +301,7 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
         default: break
         }
         currentItem = item
-        activeElement = nil
+        activeMetadataName = nil
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
@@ -248,10 +311,6 @@ private final class AppcastFeedParser: NSObject, XMLParserDelegate {
     private func fail(_ parser: XMLParser) {
         contractError = .invalidAppcast
         parser.abortParsing()
-    }
-
-    private static func localName(_ name: String) -> String {
-        name.split(separator: ":").last.map(String.init) ?? name
     }
 }
 
@@ -266,16 +325,27 @@ private final class AppcastParser: NSObject, XMLParserDelegate {
     private(set) var contractError: AppcastReleaseContractError?
     private(set) var itemCount = 0
     private(set) var completedItem = false
-    private var activeElement: String?
+    private var activeMetadataName: String?
     private var activeText = ""
     private var insideItem = false
     private var seenMetadataElements: Set<String> = []
+    private let namespaces = XMLNamespaceContext()
 
     func parse(_ xml: String) -> Bool {
         guard let data = xml.data(using: .utf8) else { return false }
         let parser = XMLParser(data: data)
+        parser.shouldProcessNamespaces = true
+        parser.shouldReportNamespacePrefixes = true
         parser.delegate = self
         return parser.parse()
+    }
+
+    func parser(_ parser: XMLParser, didStartMappingPrefix prefix: String, toURI namespaceURI: String) {
+        namespaces.startMapping(prefix: prefix, uri: namespaceURI)
+    }
+
+    func parser(_ parser: XMLParser, didEndMappingPrefix prefix: String) {
+        namespaces.endMapping(prefix: prefix)
     }
 
     func parser(
@@ -285,47 +355,46 @@ private final class AppcastParser: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        let qualifiedName = qName ?? elementName
-        let localName = Self.localName(qualifiedName)
-        if localName == "item", !qualifiedName.contains(":") {
+        if elementName == "item", isUnnamespaced(namespaceURI) {
             itemCount += 1
             guard itemCount == 1 else {
-                contractError = .invalidAppcast
-                parser.abortParsing()
+                fail(parser)
                 return
             }
             insideItem = true
             return
         }
         guard insideItem else { return }
-        switch localName {
-        case "enclosure":
+        if elementName == "enclosure", isUnnamespaced(namespaceURI) {
             guard enclosureURL == nil else {
-                contractError = .invalidAppcast
-                parser.abortParsing()
+                fail(parser)
                 return
             }
             enclosureURL = attributeDict["url"].flatMap(URL.init(string:))
             archiveLength = attributeDict["length"].flatMap(UInt64.init)
-            edSignature = attributeDict["sparkle:edSignature"] ?? attributeDict["edSignature"]
-        case "version" where qualifiedName.hasPrefix("sparkle:"),
-             "shortVersionString" where qualifiedName.hasPrefix("sparkle:"),
-             "minimumSystemVersion" where qualifiedName.hasPrefix("sparkle:"),
-             "channel" where qualifiedName.hasPrefix("sparkle:"):
-            guard seenMetadataElements.insert(localName).inserted else {
-                contractError = .invalidAppcast
-                parser.abortParsing()
+            switch namespaces.sparkleAttribute(named: "edSignature", in: attributeDict) {
+            case .missing:
+                break
+            case let .value(signature):
+                edSignature = signature
+            case .conflicting:
+                fail(parser)
                 return
             }
-            activeElement = localName
+        } else if isSparkleMetadata(elementName, namespaceURI: namespaceURI) {
+            guard seenMetadataElements.insert(elementName).inserted else {
+                fail(parser)
+                return
+            }
+            activeMetadataName = elementName
             activeText = ""
-        default:
-            break
         }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        activeText += string
+        if activeMetadataName != nil {
+            activeText += string
+        }
     }
 
     func parser(
@@ -334,37 +403,32 @@ private final class AppcastParser: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
-        let qualifiedName = qName ?? elementName
-        let localName = Self.localName(qualifiedName)
-        if localName == "item", !qualifiedName.contains(":"), insideItem {
+        if elementName == "item", isUnnamespaced(namespaceURI), insideItem {
             completedItem = true
             insideItem = false
-            activeElement = nil
+            activeMetadataName = nil
             return
         }
-        guard insideItem else { return }
-        guard activeElement == localName else { return }
+        guard insideItem,
+              activeMetadataName == elementName,
+              isSparkleMetadata(elementName, namespaceURI: namespaceURI) else { return }
         let value = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch localName {
-        case "version":
-            if version == nil { version = value }
-        case "shortVersionString":
-            if shortVersion == nil { shortVersion = value }
-        case "minimumSystemVersion":
-            if minimumSystemVersion == nil { minimumSystemVersion = value }
-        case "channel":
-            channel = value.isEmpty ? nil : value
-        default:
-            break
+        switch elementName {
+        case "version": version = value
+        case "shortVersionString": shortVersion = value
+        case "minimumSystemVersion": minimumSystemVersion = value
+        case "channel": channel = value.isEmpty ? nil : value
+        default: break
         }
-        activeElement = nil
+        activeMetadataName = nil
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
         if contractError == nil { contractError = .invalidAppcast }
     }
 
-    private static func localName(_ name: String) -> String {
-        name.split(separator: ":").last.map(String.init) ?? name
+    private func fail(_ parser: XMLParser) {
+        contractError = .invalidAppcast
+        parser.abortParsing()
     }
 }

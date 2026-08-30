@@ -183,6 +183,82 @@ struct PerformanceTelemetryTests {
         #expect(result.facts[0].isRetry)
     }
 
+    @Test func decoderRejectsOversizedModelAndRequestIdentityWithoutPersisting() throws {
+        let store = try temporaryStore()
+        let oversized = String(repeating: "A", count: 257)
+        let modelJSON = officialTraceJSON().replacingOccurrences(
+            of: "\"key\":\"model\",\"value\":{\"stringValue\":\"claude-opus\"}",
+            with: "\"key\":\"model\",\"value\":{\"stringValue\":\"\(oversized)\"}"
+        )
+        let modelResult = OTLPHTTPJSONDecoder().decode(Data(modelJSON.utf8), receivedAt: now)
+        #expect(modelResult.facts.isEmpty)
+        #expect(modelResult.diagnostics.map(\.code) == ["REJECTED_FIELD_VALUE"])
+        try store.upsertPerformanceFacts(modelResult.facts)
+
+        let requestJSON = officialTraceJSON().replacingOccurrences(
+            of: "\"key\":\"request_id\",\"value\":{\"stringValue\":\"request-1\"}",
+            with: "\"key\":\"request_id\",\"value\":{\"stringValue\":\"\(oversized)\"}"
+        )
+        let requestResult = OTLPHTTPJSONDecoder().decode(Data(requestJSON.utf8), receivedAt: now)
+        #expect(requestResult.facts.isEmpty)
+        #expect(requestResult.diagnostics.map(\.code) == ["REJECTED_FIELD_VALUE"])
+        try store.upsertPerformanceFacts(requestResult.facts)
+        #expect(try store.allPerformanceFacts().isEmpty)
+    }
+
+    @Test func decoderRejectsControlCharactersInPersistedIdentityWithoutPersisting() throws {
+        let store = try temporaryStore()
+        let poisonedRequest = officialTraceJSON().replacingOccurrences(
+            of: "\"key\":\"request_id\",\"value\":{\"stringValue\":\"request-1\"}",
+            with: "\"key\":\"request_id\",\"value\":{\"stringValue\":\"request-1\\u0000\"}"
+        )
+        let requestResult = OTLPHTTPJSONDecoder().decode(Data(poisonedRequest.utf8), receivedAt: now)
+        #expect(requestResult.facts.isEmpty)
+        #expect(requestResult.diagnostics.map(\.code) == ["REJECTED_FIELD_VALUE"])
+        try store.upsertPerformanceFacts(requestResult.facts)
+
+        let poisonedModel = officialTraceJSON().replacingOccurrences(
+            of: "\"key\":\"model\",\"value\":{\"stringValue\":\"claude-opus\"}",
+            with: "\"key\":\"model\",\"value\":{\"stringValue\":\"claude\\nopus\"}"
+        )
+        let modelResult = OTLPHTTPJSONDecoder().decode(Data(poisonedModel.utf8), receivedAt: now)
+        #expect(modelResult.facts.isEmpty)
+        #expect(modelResult.diagnostics.map(\.code) == ["REJECTED_FIELD_VALUE"])
+        try store.upsertPerformanceFacts(modelResult.facts)
+        #expect(try store.allPerformanceFacts().isEmpty)
+    }
+
+    @Test func decoderRejectsOversizedTargetSpanBatchWithoutPersisting() throws {
+        let store = try temporaryStore()
+        let result = OTLPHTTPJSONDecoder().decode(
+            Data(mergedOfficialTraces((1...33).map { officialTraceJSON().replacingOccurrences(of: "request-1", with: "request-\($0)") }).utf8),
+            receivedAt: now
+        )
+        #expect(result.facts.isEmpty)
+        #expect(result.diagnostics.map(\.code) == ["REJECTED_BATCH_SIZE"])
+        try store.upsertPerformanceFacts(result.facts)
+        #expect(try store.allPerformanceFacts().isEmpty)
+    }
+
+    @Test func decoderRejectsEntireBatchWhenAnyPersistedIdentityIsUnbounded() throws {
+        let store = try temporaryStore()
+        let oversized = String(repeating: "A", count: 257)
+        let poisoned = officialTraceJSON()
+            .replacingOccurrences(of: "request-1", with: "request-2")
+            .replacingOccurrences(
+                of: "\"key\":\"model\",\"value\":{\"stringValue\":\"claude-opus\"}",
+                with: "\"key\":\"model\",\"value\":{\"stringValue\":\"\(oversized)\"}"
+            )
+        let result = OTLPHTTPJSONDecoder().decode(
+            Data(mergedOfficialTraces([officialTraceJSON(), poisoned]).utf8),
+            receivedAt: now
+        )
+        #expect(result.facts.isEmpty)
+        #expect(result.diagnostics.map(\.code) == ["REJECTED_FIELD_VALUE"])
+        try store.upsertPerformanceFacts(result.facts)
+        #expect(try store.allPerformanceFacts().isEmpty)
+    }
+
     @Test func stableIdentityDeduplicatesAndEnhancedReplacesFallback() throws {
         let store = try temporaryStore()
         var fallback = fact("request-1")
@@ -645,6 +721,15 @@ struct PerformanceTelemetryTests {
         return """
         {"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"claude-code"}}]},"scopeSpans":[{"spans":[{"name":"claude_code.llm_request","startTimeUnixNano":"1771200000000000000","endTimeUnixNano":"1771200001000000000","attributes":[{"key":"request.id","value":{"stringValue":"request-1"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus"}},{"key":"ttft_ms","value":{"doubleValue":100}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10"}},{"key":"retry_count","value":{"intValue":"0"}}\(optional)]}]}]}]}
         """
+    }
+
+    private func mergedOfficialTraces(_ documents: [String]) -> String {
+        let prefix = "{\"resourceSpans\":["
+        let suffix = "]}"
+        let resources = documents.map { document in
+            String(document.dropFirst(prefix.count).dropLast(suffix.count))
+        }
+        return prefix + resources.joined(separator: ",") + suffix
     }
 
     private func officialTraceJSON(

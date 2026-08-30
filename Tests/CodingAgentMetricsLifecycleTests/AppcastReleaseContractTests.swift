@@ -115,6 +115,60 @@ struct AppcastReleaseContractTests {
         #expect(release.codeSigning == .developerIDRequired)
     }
 
+    @Test func acceptsOfficialSparkleMetadataWithAnArbitraryNamespacePrefix() throws {
+        let xml = """
+        <rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
+        <s:version>2</s:version>
+        <s:shortVersionString>0.2.0</s:shortVersionString>
+        <enclosure url="https://example.invalid/AgentMetrics-2.dmg" length="42" s:edSignature="synthetic-ed25519-signature" />
+        </item></channel></rss>
+        """
+
+        let release = try AppcastReleaseContract.validate(xml, currentBuild: 1)
+
+        #expect(release.version == 2)
+        #expect(release.shortVersion == "0.2.0")
+    }
+
+    @Test func rejectsAChannelInTheOfficialSparkleNamespaceRegardlessOfPrefix() {
+        let xml = """
+        <rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
+        <s:version>2</s:version><s:channel>beta</s:channel>
+        <enclosure url="https://example.invalid/AgentMetrics-2.dmg" length="42" s:edSignature="synthetic-ed25519-signature" />
+        </item></channel></rss>
+        """
+
+        #expect(throws: AppcastReleaseContractError.nonStableChannel) {
+            try AppcastReleaseContract.validate(xml, currentBuild: 1)
+        }
+    }
+
+    @Test func feedRejectsAChannelInTheOfficialSparkleNamespaceRegardlessOfPrefix() {
+        let xml = """
+        <rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>
+        <item><s:version>3</s:version><s:shortVersionString>0.2.1</s:shortVersionString><s:channel>beta</s:channel><enclosure url="https://example.invalid/AgentMetrics-3.dmg" length="42" s:edSignature="synthetic-ed25519-signature" /></item>
+        <item><s:version>2</s:version><s:shortVersionString>0.2.0</s:shortVersionString><enclosure url="https://example.invalid/AgentMetrics-2.dmg" length="42" s:edSignature="synthetic-ed25519-signature" /></item>
+        </channel></rss>
+        """
+
+        #expect(throws: AppcastReleaseContractError.nonStableChannel) {
+            try AppcastReleaseContract.validateFeed(xml, currentBuild: 1)
+        }
+    }
+
+    @Test func rejectsSparklePrefixesBoundToAnUnofficialNamespace() {
+        let xml = """
+        <rss xmlns:sparkle="https://example.invalid/not-sparkle"><channel><item>
+        <sparkle:version>2</sparkle:version>
+        <enclosure url="https://example.invalid/AgentMetrics-2.dmg" length="42" sparkle:edSignature="synthetic-ed25519-signature" />
+        </item></channel></rss>
+        """
+
+        #expect(throws: AppcastReleaseContractError.missingVersion) {
+            try AppcastReleaseContract.validate(xml, currentBuild: 1)
+        }
+    }
+
     @Test(arguments: [
         ("missing EdDSA signature", appcastXML(version: "2", enclosureURL: "https://example.invalid/update.dmg", length: "42", edSignature: nil), AppcastReleaseContractError.missingEdDSASignature),
         ("zero length", appcastXML(version: "2", enclosureURL: "https://example.invalid/update.dmg", length: "0", edSignature: "synthetic"), AppcastReleaseContractError.invalidArchiveLength),
@@ -185,7 +239,7 @@ struct AppcastReleaseContractTests {
         let signature = edSignature.map { "sparkle:edSignature=\"\($0)\"" } ?? ""
         let channelElement = channel.map { "<sparkle:channel>\($0)</sparkle:channel>" } ?? ""
         return """
-        <rss xmlns:sparkle="https://sparkle.example.invalid/xml-namespaces/sparkle"><channel><item>
+        <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
         <sparkle:version>\(version)</sparkle:version>\(channelElement)
         <enclosure url="\(enclosureURL)" length="\(length)" \(signature) />
         </item></channel></rss>
@@ -205,6 +259,6 @@ struct AppcastReleaseContractTests {
     }
 
     private static func appcastFeedXML(_ items: [String]) -> String {
-        "<rss xmlns:sparkle=\"https://sparkle.example.invalid/xml-namespaces/sparkle\"><channel>\(items.joined())</channel></rss>"
+        "<rss xmlns:sparkle=\"http://www.andymatuschak.org/xml-namespaces/sparkle\"><channel>\(items.joined())</channel></rss>"
     }
 }

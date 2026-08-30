@@ -27,6 +27,7 @@ struct AccessibilityPanelLifecycleTests {
         switch blocker {
         case .confirmation:
             session.activate(.settings)
+            session.activate(.openDataDiagnostics)
             session.activate(.diagnosticsCopy)
         case .modalWindow:
             hasModalWindow = true
@@ -63,6 +64,7 @@ struct AccessibilityPanelLifecycleTests {
         let session = AccessibilitySession()
         session.openPanel()
         session.activate(.settings)
+        session.activate(.openDataDiagnostics)
         session.activate(trigger)
         var dismissed = false
         let lifecycle = AccessibilityPanelLifecycle(
@@ -141,6 +143,7 @@ struct AccessibilityPanelLifecycleTests {
         let session = AccessibilitySession()
         session.openPanel()
         session.activate(.settings)
+        session.activate(.openDataDiagnostics)
         session.activate(.diagnosticsSave)
         let confirmation = session.navigation
         var dismissed = false
@@ -164,7 +167,7 @@ struct AccessibilityPanelLifecycleTests {
         #expect(panel.isVisible)
         #expect(panel.isKeyWindow || panel.canBecomeKey)
         #expect(panel.firstResponder === view || panel.makeFirstResponder(view))
-        #expect(session.surface == .settings)
+        #expect(session.surface == .dataDiagnostics)
         #expect(session.focusedControl == .diagnosticsSave)
         #expect(dismissed == false)
         panel.orderOut(nil)

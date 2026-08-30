@@ -413,6 +413,13 @@ public struct OTLPReceiverConfiguration: Sendable, Equatable {
     }
 }
 
+/// Unauthenticated loopback ingest trusts every local process. These bounds
+/// only reject oversized identity values and oversized target-span batches.
+public enum OTLPIngestLimits {
+    public static let maxIdentityUTF8Bytes = 256
+    public static let maxTargetSpansPerBatch = 32
+}
+
 public struct PerformanceIngestionDiagnostic: Sendable, Equatable {
     public var code: String
     public init(code: String) { self.code = code }
@@ -457,12 +464,17 @@ public struct OTLPHTTPJSONDecoder: Sendable {
         guard let resources = object["resourceSpans"] as? [[String: Any]] else { return failure("INVALID_OTLP_JSON") }
         if containsSensitiveAttribute(in: object) { return failure("REJECTED_CONTENT_FIELD") }
         var facts: [PerformanceFact] = []
+        var targetSpanCount = 0
         for resource in resources {
             guard let scopes = resource["scopeSpans"] as? [[String: Any]] else { return failure("UNSUPPORTED_REQUEST_TRACE") }
             for scope in scopes {
                 guard let spans = scope["spans"] as? [[String: Any]] else { return failure("UNSUPPORTED_REQUEST_TRACE") }
                 for span in spans {
                     guard span["name"] as? String == "claude_code.llm_request" else { continue }
+                    targetSpanCount += 1
+                    if targetSpanCount > OTLPIngestLimits.maxTargetSpansPerBatch {
+                        return failure("REJECTED_BATCH_SIZE")
+                    }
                     guard let attributes = span["attributes"] as? [[String: Any]] else { return failure("INVALID_REQUEST_FIELDS") }
                     if let failure = targetAttributeFailure(attributes) { return failure }
                     var values: [String: Any] = [:]
@@ -481,6 +493,9 @@ public struct OTLPHTTPJSONDecoder: Sendable {
                           let output = integer(values["output_tokens"] ?? values["gen_ai.usage.output_tokens"]), output >= 0,
                           let attempt = integer(values["attempt"]), attempt >= 1 else {
                         return failure("INVALID_REQUEST_FIELDS")
+                    }
+                    if !isBoundedIdentity(requestID) || !isBoundedIdentity(model) {
+                        return failure("REJECTED_FIELD_VALUE")
                     }
                     let end = nanoseconds(span["endTimeUnixNano"])
                     let observedAt = end.map { Date(timeIntervalSince1970: Double($0) / 1_000_000_000) } ?? receivedAt
@@ -540,6 +555,13 @@ public struct OTLPHTTPJSONDecoder: Sendable {
                     .replacingOccurrences(of: ".", with: "_")
                     .replacingOccurrences(of: " ", with: "_")
             )
+        }
+    }
+
+    private func isBoundedIdentity(_ value: String) -> Bool {
+        guard value.utf8.count <= OTLPIngestLimits.maxIdentityUTF8Bytes else { return false }
+        return value.unicodeScalars.allSatisfy { scalar in
+            scalar.value >= 0x20 && scalar.value != 0x7F
         }
     }
 

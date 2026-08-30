@@ -309,7 +309,7 @@ struct ReleasePipelineContractTests {
     }
 
     private static let validAppcast = """
-    <rss xmlns:sparkle="https://sparkle.example.invalid/xml-namespaces/sparkle"><channel><item>
+    <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
     <sparkle:version>2</sparkle:version>
     <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
     <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
@@ -318,7 +318,7 @@ struct ReleasePipelineContractTests {
     """
 
     private static func appcastFeedXML(_ items: [String]) -> String {
-        "<rss xmlns:sparkle=\"https://sparkle.example.invalid/xml-namespaces/sparkle\"><channel>\(items.joined())</channel></rss>"
+        "<rss xmlns:sparkle=\"http://www.andymatuschak.org/xml-namespaces/sparkle\"><channel>\(items.joined())</channel></rss>"
     }
 
     private static func itemXML(

@@ -1,0 +1,9 @@
+{
+  "name": "Agent Metrics",
+  "short_name": "Agent Metrics",
+  "start_url": "/agent-metrics-macos/",
+  "display": "browser",
+  "background_color": "#f6f7fb",
+  "theme_color": "#0b63ce",
+  "icons": [{ "src": "assets/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

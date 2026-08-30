@@ -101,4 +101,56 @@ struct DiagnosticActionControllerTests {
         #expect(controller.outcome == .saveCancelled)
         #expect(controller.pendingConfirmation == nil)
     }
+
+    @Test @MainActor
+    func clearingEphemeralStateRestoresIdlePreviewIssueAndPendingConfirmation() {
+        let controller = DiagnosticActionController(
+            generate: { Data(#"{"schema":"diagnostic-v1"}"#.utf8) },
+            copy: { _ in },
+            userSelectedSave: { _ in true }
+        )
+
+        controller.preview()
+        controller.requestPreparePublicIssue()
+        controller.confirmPreparePublicIssue()
+        controller.requestCopy()
+        #expect(controller.previewText != nil)
+        #expect(controller.preparedPublicIssueText != nil)
+        #expect(controller.pendingConfirmation == .copy)
+        #expect(controller.outcome == .publicIssuePrepared)
+
+        controller.clearEphemeralState()
+
+        #expect(controller.previewText == nil)
+        #expect(controller.preparedPublicIssueText == nil)
+        #expect(controller.pendingConfirmation == nil)
+        #expect(controller.outcome == .idle)
+    }
+
+    @Test @MainActor
+    func cancelAndFailedActionsLeaveEphemeralDiagnosticsInPlace() {
+        let controller = DiagnosticActionController(
+            generate: { Data(#"{"schema":"diagnostic-v1"}"#.utf8) },
+            copy: { _ in throw DiagnosticActionError.pasteboardWriteFailed },
+            userSelectedSave: { _ in false }
+        )
+
+        controller.preview()
+        let preview = controller.previewText
+        controller.requestCopy()
+        controller.cancel(.copy)
+        #expect(controller.previewText == preview)
+        #expect(controller.outcome == .previewed)
+
+        controller.requestCopy()
+        controller.confirmCopy()
+        #expect(controller.outcome == .failed(String(describing: DiagnosticActionError.pasteboardWriteFailed)))
+        #expect(controller.previewText == preview)
+
+        controller.requestSave()
+        controller.confirmSave()
+        #expect(controller.outcome == .saveCancelled)
+        #expect(controller.previewText == preview)
+        #expect(controller.preparedPublicIssueText == nil)
+    }
 }

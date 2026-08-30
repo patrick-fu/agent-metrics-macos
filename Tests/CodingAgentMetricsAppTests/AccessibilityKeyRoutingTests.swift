@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CodingAgentMetricsApp
 
@@ -28,6 +29,47 @@ struct AccessibilityKeyRoutingTests {
         #expect(routing.decision(for: .savePanelEscape) == .ignore)
         routing.menuDidBeginTracking()
         #expect(routing.decision(for: .modalEscape) == .ignore)
+    }
+
+    @Test func nativeConfirmationMergesIntoModalWindowAndDoesNotSwallowTabOrEscape() {
+        let routing = AccessibilityKeyRouting()
+        let confirmationEscape = AccessibilityKeyEvent(
+            isFromPanel: true,
+            hasModalWindow: false,
+            isModalConfirmation: true,
+            isEscape: true,
+            isTab: false,
+            shiftPressed: false
+        )
+        let confirmationTab = AccessibilityKeyEvent(
+            isFromPanel: true,
+            hasModalWindow: false,
+            isModalConfirmation: true,
+            isEscape: false,
+            isTab: true,
+            shiftPressed: false
+        )
+
+        #expect(confirmationEscape.hasModalWindow)
+        #expect(confirmationTab.hasModalWindow)
+        #expect(routing.decision(for: confirmationEscape) == .ignore)
+        #expect(routing.decision(for: confirmationTab) == .ignore)
+        #expect(routing.decision(for: .panelEscape) == .handleEscape)
+        #expect(routing.decision(for: .panelTab) == .handleTab(shift: false))
+    }
+
+    @Test
+    func statusItemKeyRoutingPassesModalConfirmationIntoTheEvent() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/CodingAgentMetricsApp/StatusItemController.swift"),
+            encoding: .utf8
+        )
+        #expect(source.contains("isModalConfirmation: accessibility.isModalConfirmation"))
+        #expect(source.contains("hasModalWindow: NSApp.modalWindow != nil"))
     }
 }
 

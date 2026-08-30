@@ -161,7 +161,7 @@ struct ReleaseDryRunCheckerTests {
     )
 
     private static let appcastXML = """
-    <rss xmlns:sparkle="https://sparkle.example.invalid/xml-namespaces/sparkle"><channel><item>
+    <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
     <sparkle:version>2</sparkle:version>
     <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
     <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>

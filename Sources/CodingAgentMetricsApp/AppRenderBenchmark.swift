@@ -8,6 +8,8 @@ enum AppLaunchMode: Equatable {
     case application
     case renderBenchmark(sampleCount: Int)
     case snapshotSummary(outputPath: String, mutateOnePixel: Bool)
+    case snapshotSurface(surface: SnapshotSurface, appearance: SnapshotAppearance, outputPath: String, mutateOnePixel: Bool)
+    case snapshotContactSheet(appearance: SnapshotAppearance, outputPath: String)
     case invalidBenchmarkArguments
     case invalidSnapshotArguments
 }
@@ -26,6 +28,25 @@ enum AppCommandLine {
                 outputPath: arguments[1],
                 mutateOnePixel: arguments.contains("--mutate-one-pixel")
             )
+        case "--snapshot-surface":
+            guard arguments.count == 4 || arguments.count == 5,
+                  let surface = SnapshotSurface(rawValue: arguments[1]),
+                  let appearance = SnapshotAppearance(rawValue: arguments[2]),
+                  arguments.count == 4 || arguments[4] == "--mutate-one-pixel" else {
+                return .invalidSnapshotArguments
+            }
+            return .snapshotSurface(
+                surface: surface,
+                appearance: appearance,
+                outputPath: arguments[3],
+                mutateOnePixel: arguments.contains("--mutate-one-pixel")
+            )
+        case "--snapshot-contact-sheet":
+            guard arguments.count == 3,
+                  let appearance = SnapshotAppearance(rawValue: arguments[1]) else {
+                return .invalidSnapshotArguments
+            }
+            return .snapshotContactSheet(appearance: appearance, outputPath: arguments[2])
         default:
             return .application
         }

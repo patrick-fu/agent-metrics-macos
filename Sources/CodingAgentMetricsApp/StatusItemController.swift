@@ -45,15 +45,14 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var panelLifecycle: AccessibilityPanelLifecycle!
     private var isDismissingPanel = false
     private var lastResizedSurface: AccessibilityNavigation.Surface?
+    private var detailLoad = DetailSnapshotLoadGate()
     private lazy var resetData: ResetDataController = {
         guard let runtime else { return ResetDataController() }
         return ResetDataController(reset: { [weak self, runtime] in
             self?.lightLoader.invalidate()
-            self?.detailLoader.invalidate()
+            self?.invalidateDetailSnapshot(clearSnapshot: true)
             let result = try runtime.resetData()
             self?.snapshots.light = nil
-            self?.snapshots.detail = nil
-            self?.detailFilter = nil
             return result
         })
     }()
@@ -243,9 +242,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func requestStoredLightSnapshot(filter newFilter: MetricFilter, performanceRange: PerformanceRange, publishHero: Bool) {
         filter = newFilter
         self.performanceRange = performanceRange
-        detailFilter = nil
-        snapshots.detail = nil
-        detailLoader.invalidate()
+        invalidateDetailSnapshot(clearSnapshot: true)
         let requestedWindow = displayPreferences.window.seconds
         heroPublication.noteRequested(publishHero: publishHero)
         lightLoader.submit(.stored(newFilter, performanceRange, requestedWindow)) { [weak self] light in
@@ -306,13 +303,27 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let requestedFilter = requestedFilter ?? filter
         guard requestedFilter == filter else { return }
         if isUserRequest, detailFilter == requestedFilter, snapshots.detail != nil { return }
+        let generation = detailLoad.beginRequest()
+        snapshots.isDetailLoading = detailLoad.isLoading
         detailLoader.submit(DetailLoad(filter: requestedFilter, windowSeconds: displayPreferences.window.seconds)) { [weak self] detail in
             guard let self, self.panel.isVisible, self.filter == requestedFilter else { return }
+            guard self.detailLoad.finish(generation: generation) else { return }
+            self.snapshots.isDetailLoading = self.detailLoad.isLoading
             if let detail {
                 self.detailFilter = requestedFilter
                 self.snapshots.detail = detail
             }
             self.resizePanelSoon()
+        }
+    }
+
+    private func invalidateDetailSnapshot(clearSnapshot: Bool = false) {
+        detailLoad.invalidate()
+        detailLoader.invalidate()
+        snapshots.isDetailLoading = false
+        if clearSnapshot {
+            snapshots.detail = nil
+            detailFilter = nil
         }
     }
 
@@ -347,7 +358,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         isDismissingPanel = true
         defer { isDismissingPanel = false }
         scheduler.setPopoverVisible(false)
-        detailLoader.invalidate()
+        invalidateDetailSnapshot()
         if accessibility.isPanelVisible {
             accessibility.dismissToStatusItem()
         }
@@ -405,7 +416,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let routed = AccessibilityKeyEvent(
             event: event,
             panel: panel,
-            hasModalWindow: NSApp.modalWindow != nil
+            hasModalWindow: NSApp.modalWindow != nil,
+            isModalConfirmation: accessibility.isModalConfirmation
         )
         switch keyRouting.decision(for: routed) {
         case .handleEscape:

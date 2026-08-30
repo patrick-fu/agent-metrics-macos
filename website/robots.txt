@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://patrick-fu.github.io/agent-metrics-macos/sitemap.xml

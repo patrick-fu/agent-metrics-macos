@@ -26,6 +26,20 @@ preserve installed-data ownership and updater trust. The production feed remains
 `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml`; its enclosure must point to
 the public release in `patrick-fu/agent-metrics-macos` so old clients remain upgradeable.
 
+### Public Beta channel boundary
+
+The public website calls these builds **Public Beta** and may link to a GitHub prerelease, provided the
+website, GitHub release, DMG name, short version, and build all describe the same artifact. This
+release-label choice does not create a second Sparkle channel: the Pages appcast remains the production
+updater channel and must contain only production-ready, EdDSA-signed items. Never add a prerelease to
+the production feed merely because the website presents it as Public Beta.
+
+For `0.2.1 (6)`, do not edit the appcast until the final signed, notarized, stapled DMG has a recorded
+post-staple byte length and generated EdDSA signature. After publishing the matching GitHub release,
+run `scripts/deploy-pages.sh --legacy-repo PATH --publish`; it builds the site, reads the newest built
+appcast item, anonymously downloads its unique enclosure to the system temporary directory, and requires
+HTTP success, final filename, and byte length to match the feed before either Pages branch is pushed.
+
 ### Local DMG artifact boundary
 
 `scripts/build-dmg.sh` builds the local `AgentMetrics-<short-version>.dmg` artifact from the real
@@ -81,6 +95,15 @@ first failed check. Never update the stable appcast early.
 7. **Verify the updater.** From the last-good build, manually check the stable feed, signature
    acceptance, expected version/artifact selection, visible user approval, and successful launch of
    the updated app. Silent installation is not accepted.
+
+### 0.2.1 (6) release stop line
+
+Do not publish, link, or advertise `0.2.1 (6)` as a completed Public Beta release if any of the
+following is missing: the final post-staple DMG length, the matching EdDSA signature, a GitHub release
+whose wording agrees with the website's Public Beta label, an anonymous download that preserves the
+expected `AgentMetrics-0.2.1.dmg` filename and byte length, or an appcast item that exactly matches
+those final values. Until all are present, leave the production appcast on `0.2.0 (5)` and stop the
+release sequence.
 
 ### Failure stop points
 

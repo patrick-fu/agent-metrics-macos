@@ -1,0 +1,14 @@
+# source destination
+assets/favicon.svg assets/favicon.svg
+assets/og-image.png assets/og-image.png
+assets/secondary-surfaces-contact-sheet-dark-2x.png assets/secondary-surfaces-contact-sheet-dark-2x.png
+assets/secondary-surfaces-contact-sheet-light-2x.png assets/secondary-surfaces-contact-sheet-light-2x.png
+assets/summary-popover-2x.png assets/summary-popover-2x.png
+index.html.in index.html
+zh.html.in zh.html
+styles.css styles.css
+robots.txt robots.txt
+sitemap.xml.in sitemap.xml
+site.webmanifest site.webmanifest
+og-card.html og-card.html
+updates/appcast.xml updates/appcast.xml

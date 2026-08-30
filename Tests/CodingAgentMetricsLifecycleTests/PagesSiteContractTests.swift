@@ -12,6 +12,7 @@ struct PagesSiteContractTests {
 
         #expect(result.status == 0, Comment(rawValue: result.output))
         #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("index.html").path))
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("zh.html").path))
         #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent(".nojekyll").path))
         #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("updates/appcast.xml").path))
 
@@ -28,10 +29,18 @@ struct PagesSiteContractTests {
         #expect(Set(files) == [
             ".nojekyll",
             "assets/favicon.svg",
+            "assets/og-image.png",
+            "assets/secondary-surfaces-contact-sheet-dark-2x.png",
+            "assets/secondary-surfaces-contact-sheet-light-2x.png",
             "assets/summary-popover-2x.png",
             "index.html",
+            "og-card.html",
+            "robots.txt",
+            "site.webmanifest",
+            "sitemap.xml",
             "styles.css",
             "updates/appcast.xml",
+            "zh.html",
         ])
     }
 
@@ -50,30 +59,58 @@ struct PagesSiteContractTests {
             #"name="viewport" content="width=device-width, initial-scale=1""#,
             #"name="description""#,
             #"rel="canonical" href="https://patrick-fu.github.io/agent-metrics-macos/""#,
+            #"rel="alternate" hreflang="zh-CN" href="https://patrick-fu.github.io/agent-metrics-macos/zh.html""#,
+            #"name="twitter:card" content="summary_large_image""#,
+            #"application/ld+json"#,
             "<header", "<nav", "<main", "<footer", "<h1",
-            #"id="metrics""#, #"id="agents""#, #"id="privacy""#,
+            #"id="metrics""#, #"id="surfaces""#, #"id="agents""#, #"id="privacy""#,
             #"id="install""#, #"id="faq""#,
             "Output Throughput", "Decode TPS", "Token Burn",
             "Codex", "Claude Code", "macOS 14", "Apple silicon",
-            "stays on your Mac", "0.2.0", "build 5",
+            "3, 5, or 10 minute", "600-second", "stable Model Call IDs",
+            "Enhanced Telemetry", "loopback", "unauthenticated", "7-day",
             #"src="assets/summary-popover-2x.png""#,
+            #"src="assets/secondary-surfaces-contact-sheet-light-2x.png""#,
+            #"srcset="assets/secondary-surfaces-contact-sheet-dark-2x.png""#,
+            #"width="1760" height="2574""#,
+            #"width="880" height="1438""#,
             #"alt="Agent Metrics menu bar summary showing an output throughput chart, token burn, active sessions, and data quality""#,
         ] {
             #expect(html.contains(fragment), "Missing page contract: \(fragment)")
         }
 
-        let downloadURL = "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0.dmg"
+        let release = Self.latestRelease()
+        let downloadURL = release.url
         #expect(html.contains(#"href="\#(downloadURL)""#))
+        #expect(html.contains("Version \(release.version) · build \(release.build)"))
         #expect(html.contains(#"href="https://github.com/patrick-fu/agent-metrics-macos""#))
         #expect(html.contains(#"href="styles.css""#))
-        #expect(!html.contains("<script"))
+        #expect(!html.contains("<script src"))
+        #expect(!html.contains("application/javascript"))
         #expect(!html.contains("cdn."))
         #expect(!html.contains("/Users/"))
         #expect(!html.contains("patrickfu@"))
+        #expect(!html.contains("{{LATEST_"))
+
+        let zh = try String(contentsOf: output.appendingPathComponent("zh.html"), encoding: .utf8)
+        for fragment in [
+            #"<html lang="zh-CN">"#,
+            #"rel="canonical" href="https://patrick-fu.github.io/agent-metrics-macos/zh.html""#,
+            #"rel="alternate" hreflang="en" href="https://patrick-fu.github.io/agent-metrics-macos/""#,
+            #"id="metrics""#, #"id="surfaces""#, #"id="agents""#, #"id="privacy""#, #"id="install""#, #"id="faq""#,
+            "输出吞吐", "解码 TPS", "Token Burn", "增强遥测", "回环", "未鉴权",
+        ] {
+            #expect(zh.contains(fragment), "Missing Chinese page contract: \(fragment)")
+        }
+        #expect(zh.contains(#"href="\#(downloadURL)""#))
+        #expect(zh.contains("版本 \(release.version) · build \(release.build)"))
+        #expect(!zh.contains("{{LATEST_"))
 
         #expect(css.contains("@media (max-width:"))
+        #expect(css.contains("@media (prefers-color-scheme: dark)"))
         #expect(css.contains("@media (prefers-reduced-motion: reduce)"))
         #expect(css.contains(":focus-visible"))
+        #expect(css.contains("img { display:block; max-width:100%; height:auto; }"))
     }
 
     @Test func builtSitePublishesTheRealScreenshotAndProductionFeedHistory() throws {
@@ -146,49 +183,75 @@ struct PagesSiteContractTests {
 
     @Test func buildUsesAFileAllowlistAndRejectsUnexpectedWebsiteFiles() throws {
         let source = try String(contentsOf: Self.projectRoot.appendingPathComponent("scripts/build-site.sh"), encoding: .utf8)
+        let manifest = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/site-manifest.txt"), encoding: .utf8)
 
         #expect(source.contains("website contains non-allowlisted files"))
-        #expect(source.contains("assets/favicon.svg|assets/summary-popover-2x.png|index.html|styles.css|updates/appcast.xml"))
-        #expect(source.contains("cp \"$root/website/index.html\""))
+        #expect(source.contains("site-manifest.txt"))
+        #expect(source.contains("is_safe_source"))
+        #expect(source.contains("is_safe_relative_path"))
+        #expect(source.contains("LATEST_VERSION"))
+        #expect(source.contains(#"gsub(/&/, "\\\\&", rendered_url)"#))
+        #expect(manifest.contains("index.html.in index.html"))
+        #expect(manifest.contains("zh.html.in zh.html"))
+        #expect(manifest.contains("updates/appcast.xml updates/appcast.xml"))
+        #expect(manifest.contains("assets/og-image.png assets/og-image.png"))
+        #expect(manifest.contains("assets/secondary-surfaces-contact-sheet-light-2x.png assets/secondary-surfaces-contact-sheet-light-2x.png"))
+        #expect(manifest.contains("assets/secondary-surfaces-contact-sheet-dark-2x.png assets/secondary-surfaces-contact-sheet-dark-2x.png"))
         #expect(!source.contains("cp -R \"$root/website/.\""))
     }
 
     @Test func releaseNoteUsesAAContrastColor() throws {
         let css = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/styles.css"), encoding: .utf8)
 
-        #expect(css.contains(".release-note {"))
-        #expect(css.contains("color: #5f6368"))
+        #expect(css.contains(".release-note,.section-note,.quality-note"))
+        #expect(css.contains("--muted:#596170"))
+        #expect(css.contains(":focus-visible { outline-color:var(--accent); }"))
+        #expect(css.contains(".button { color:#0c1017; }"))
     }
 
-    @Test func publishPreflightsTheReleaseDMGAndPushesPrimaryBeforeLegacy() throws {
+    @Test func socialMetadataReservesALandscapeOGArtifactWithoutTreatingThePortraitAppShotAsOne() throws {
+        let english = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/index.html.in"), encoding: .utf8)
+        let chinese = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/zh.html.in"), encoding: .utf8)
+        let cardSource = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/og-card.html"), encoding: .utf8)
+        let styles = try String(contentsOf: Self.projectRoot.appendingPathComponent("website/styles.css"), encoding: .utf8)
+
+        for page in [english, chinese] {
+            #expect(page.contains("assets/og-image.png"))
+            #expect(!page.contains("og:image\" content=\"https://patrick-fu.github.io/agent-metrics-macos/assets/summary-popover-2x.png"))
+        }
+        // The rendered 1200×630 PNG is produced by the release owner and deliberately
+        // is not fabricated by the source build or substituted with the portrait screenshot.
+        #expect(cardSource.contains("width=1200"))
+        #expect(cardSource.contains(#"src="assets/summary-popover-2x.png""#))
+        #expect(styles.contains(".og-card-page { display:grid; width:1200px; height:630px;"))
+    }
+
+    @Test func publishDerivesAndPreflightsTheLatestReleaseDMGBeforePushingPrimaryThenLegacy() throws {
         let source = try String(contentsOf: Self.projectRoot.appendingPathComponent("scripts/deploy-pages.sh"), encoding: .utf8)
 
-        #expect(source.contains("release_urls=\"$(sed -n"))
-        #expect(source.contains("release_url_count"))
-        #expect(source.contains("curl -L -sS -o /dev/null -w '%{http_code}' \"$release_url\""))
-        #expect(source.contains("2??"))
+        #expect(source.contains("latest_item"))
+        #expect(source.contains("latest appcast item"))
+        #expect(source.contains("expected_filename=\"AgentMetrics-${short_version}.dmg\""))
+        #expect(source.contains("validate-appcast.sh"))
+        #expect(source.contains("AppcastReleaseContract.swift"))
+        #expect(source.contains("curl -q -L -sS -D \"$headers\" -O -J"))
+        #expect(source.contains("byte length mismatch"))
+        #expect(source.contains("--preflight-site PATH"))
 
         let primaryPush = try #require(source.range(of: "git -C \"$primary_worktree\" push origin gh-pages:gh-pages"))
         let legacyPush = try #require(source.range(of: "git -C \"$legacy_worktree\" push origin gh-pages:gh-pages"))
         #expect(primaryPush.lowerBound < legacyPush.lowerBound)
     }
 
-    @Test func publishDeduplicatesRepeatedDMGLinksButRejectsDifferentURLs() throws {
+    @Test func releasePreflightReadsOneNewestAppcastItemInsteadOfHardcodingARelease() throws {
         let source = try String(contentsOf: Self.projectRoot.appendingPathComponent("scripts/deploy-pages.sh"), encoding: .utf8)
 
-        #expect(source.contains("| sort -u)"))
-        #expect(source.contains("release_url_count"))
-        #expect(source.contains("if [ \"$release_url_count\" -ne 1 ]; then"))
-
-        let repeated = Set([
-            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0.dmg",
-            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0.dmg",
-        ])
-        let conflicting = repeated.union([
-            "https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.0/AgentMetrics-0.2.0-alt.dmg",
-        ])
-        #expect(repeated.count == 1)
-        #expect(conflicting.count == 2)
+        #expect(source.contains("single_value"))
+        #expect(source.contains("latest appcast item must contain exactly one $label"))
+        #expect(source.contains("enclosure URL"))
+        #expect(source.contains("latest appcast URL mismatch"))
+        #expect(!source.contains("AgentMetrics-0.2.0.dmg"))
+        #expect(!source.contains("v0.2.0"))
     }
 
     private static let projectRoot = URL(fileURLWithPath: #filePath)
@@ -211,5 +274,21 @@ struct PagesSiteContractTests {
         process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    private static func latestRelease() -> (version: String, build: String, url: String) {
+        let appcast = try! String(contentsOf: projectRoot.appendingPathComponent("website/updates/appcast.xml"), encoding: .utf8)
+        let firstItem = appcast.components(separatedBy: "<item>")[1].components(separatedBy: "</item>")[0]
+        func value(_ pattern: String) -> String {
+            let expression = try! NSRegularExpression(pattern: pattern)
+            let range = NSRange(firstItem.startIndex..., in: firstItem)
+            let match = expression.firstMatch(in: firstItem, range: range)!
+            return String(firstItem[Range(match.range(at: 1), in: firstItem)!])
+        }
+        return (
+            value(#"<sparkle:shortVersionString>([^<]+)</sparkle:shortVersionString>"#),
+            value(#"<sparkle:version>([^<]+)</sparkle:version>"#),
+            value(#"<enclosure url="([^"]+)""#)
+        )
     }
 }

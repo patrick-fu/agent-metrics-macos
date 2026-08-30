@@ -105,6 +105,13 @@ final class DiagnosticActionController {
         pendingConfirmation = nil
     }
 
+    func clearEphemeralState() {
+        pendingConfirmation = nil
+        previewText = nil
+        preparedPublicIssueText = nil
+        outcome = .idle
+    }
+
     func confirmCopy() {
         guard consume(.copy) else { return }
         do {

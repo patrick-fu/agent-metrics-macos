@@ -24,36 +24,14 @@ enum BurnPartPatternRenderer {
         return NSImage(cgImage: cgImage, size: size)
     }
 
-    static func distinctColorCount(in image: NSImage) -> Int {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return 0 }
-        let width = cgImage.width
-        let height = cgImage.height
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return 0 }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        var colors = Set<UInt32>()
-        for index in stride(from: 0, to: pixels.count, by: 4) {
-            let packed = (UInt32(pixels[index]) << 16) | (UInt32(pixels[index + 1]) << 8) | UInt32(pixels[index + 2])
-            colors.insert(packed)
-        }
-        return colors.count
-    }
-
     static func draw(textureName: String, color: CGColor, in context: CGContext, size: CGSize) {
         let bounds = CGRect(origin: .zero, size: size)
-        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
-        context.fill(bounds)
         context.setStrokeColor(color)
         context.setFillColor(color)
         context.setLineWidth(1)
+        // The ground stays untouched and each stroke lands on whole pixels, so the tile is either
+        // pattern ink or fully transparent and whatever is behind the bar keeps showing through.
+        context.setShouldAntialias(false)
 
         switch textureName {
         case "grid":

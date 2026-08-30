@@ -4,6 +4,7 @@ set -eu
 usage() {
     cat <<'USAGE'
 usage: scripts/deploy-pages.sh --legacy-repo PATH [--publish]
+       scripts/deploy-pages.sh --preflight-site PATH
 
 Builds the canonical website from main into temporary local worktrees.
 Without --publish, stages and reports both Pages diffs without committing or pushing.
@@ -14,12 +15,15 @@ Required:
 
 Options:
   --publish           Commit and push both gh-pages branches.
+  --preflight-site PATH
+                      Verify the newest built appcast artifact is publicly downloadable.
   --help              Show this help.
 USAGE
 }
 
 legacy_repo=""
 publish=false
+preflight_site=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --legacy-repo)
@@ -30,6 +34,11 @@ while [ "$#" -gt 0 ]; do
         --publish)
             publish=true
             shift
+            ;;
+        --preflight-site)
+            [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+            preflight_site="$2"
+            shift 2
             ;;
         --help|-h)
             usage
@@ -42,9 +51,131 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$legacy_repo" ] || { usage >&2; exit 2; }
+if [ -n "$preflight_site" ]; then
+    if [ -n "$legacy_repo" ] || [ "$publish" = true ]; then
+        usage >&2
+        exit 2
+    fi
+elif [ -z "$legacy_repo" ]; then
+    usage >&2
+    exit 2
+fi
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+fail_preflight() {
+    echo "deploy-pages: $1" >&2
+    exit 2
+}
+
+single_value() {
+    values="$1"
+    label="$2"
+    count="$(printf '%s\n' "$values" | awk 'NF { count += 1 } END { print count + 0 }')"
+    [ "$count" -eq 1 ] || fail_preflight "latest appcast item must contain exactly one $label"
+    printf '%s\n' "$values" | awk 'NF { print; exit }'
+}
+
+attribute_value() {
+    attribute="$1"
+    input="$2"
+    printf '%s\n' "$input" | sed -n "s/.* ${attribute}=\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+preflight_release_artifact() {
+    site_dir="$1"
+    appcast="$site_dir/updates/appcast.xml"
+    [ -f "$appcast" ] || fail_preflight "built site is missing updates/appcast.xml"
+    if ! /bin/sh "$root/scripts/validate-appcast.sh" "$appcast"; then
+        fail_preflight "production update contract rejected"
+    fi
+
+    latest_item="$(awk '
+        /<item[ >]/ { in_item = 1 }
+        in_item { print }
+        in_item && /<\/item>/ { exit }
+    ' "$appcast")"
+    [ -n "$latest_item" ] || fail_preflight "built appcast has no item"
+
+    enclosure="$(single_value "$(printf '%s\n' "$latest_item" | sed -n '/<enclosure[ >]/p')" enclosure)"
+    release_url="$(single_value "$(attribute_value url "$enclosure")" enclosure URL)"
+    archive_length="$(single_value "$(attribute_value length "$enclosure")" enclosure length)"
+    short_version="$(single_value "$(printf '%s\n' "$latest_item" | sed -n 's#.*<sparkle:shortVersionString>\([^<]*\)</sparkle:shortVersionString>.*#\1#p')" short version)"
+    build="$(single_value "$(printf '%s\n' "$latest_item" | sed -n 's#.*<sparkle:version>\([^<]*\)</sparkle:version>.*#\1#p')" build)"
+    minimum_system_versions="$(printf '%s\n' "$latest_item" | sed -n 's#.*<sparkle:minimumSystemVersion>\([^<]*\)</sparkle:minimumSystemVersion>.*#\1#p')"
+    minimum_system_version_count="$(printf '%s\n' "$minimum_system_versions" | awk 'NF { count += 1 } END { print count + 0 }')"
+    [ "$minimum_system_version_count" -eq 1 ] || fail_preflight "latest appcast minimum macOS mismatch (expected 14.0, got missing)"
+    minimum_system_version="$(printf '%s\n' "$minimum_system_versions" | awk 'NF { print; exit }')"
+
+    case "$release_url" in
+        https://*) ;;
+        *) fail_preflight "latest appcast enclosure URL must use HTTPS" ;;
+    esac
+    case "$archive_length" in
+        ''|*[!0-9]*) fail_preflight "latest appcast enclosure length must be a positive integer" ;;
+    esac
+    [ "$archive_length" -gt 0 ] || fail_preflight "latest appcast enclosure length must be a positive integer"
+    case "$build" in
+        ''|*[!0-9]*) fail_preflight "latest appcast build must be a positive integer" ;;
+    esac
+    [ "$build" -gt 0 ] || fail_preflight "latest appcast build must be a positive integer"
+    [ "$minimum_system_version" = "14.0" ] || fail_preflight "latest appcast minimum macOS mismatch (expected 14.0, got ${minimum_system_version:-missing})"
+    case "$short_version" in
+        ''|*[!0-9.]*|.*|*.|*..*) fail_preflight "latest appcast short version is invalid" ;;
+    esac
+
+    expected_filename="AgentMetrics-${short_version}.dmg"
+    expected_url="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v${short_version}/${expected_filename}"
+    [ "$release_url" = "$expected_url" ] || fail_preflight "latest appcast URL mismatch (expected $expected_url, got $release_url)"
+
+    preflight_directory="$(mktemp -d "${TMPDIR:-/tmp}/agent-metrics-pages-preflight.XXXXXX")" || fail_preflight "could not create temporary download directory"
+    headers="$preflight_directory/headers"
+    transfer="$preflight_directory/transfer"
+    if ! (
+        cd "$preflight_directory"
+        curl -q -L -sS -D "$headers" -O -J -w '%{http_code}\n%{size_download}\n' "$release_url" > "$transfer"
+    ); then
+        /bin/rm -rf -- "$preflight_directory"
+        fail_preflight "could not download latest appcast DMG"
+    fi
+
+    http_status="$(sed -n '1p' "$transfer")"
+    downloaded_size="$(sed -n '2p' "$transfer")"
+    case "$http_status" in
+        2??) ;;
+        *)
+            /bin/rm -rf -- "$preflight_directory"
+            fail_preflight "latest appcast DMG preflight failed (HTTP ${http_status:-unknown})"
+            ;;
+    esac
+
+    downloaded_files="$(find "$preflight_directory" -type f ! -name headers ! -name transfer -print)"
+    downloaded_file="$(single_value "$downloaded_files" downloaded DMG)"
+    downloaded_filename="$(basename "$downloaded_file")"
+    if [ "$downloaded_filename" != "$expected_filename" ]; then
+        /bin/rm -rf -- "$preflight_directory"
+        fail_preflight "latest appcast DMG final filename mismatch (expected $expected_filename, got $downloaded_filename)"
+    fi
+
+    actual_size="$(wc -c < "$downloaded_file" | tr -d ' ')"
+    if [ "$downloaded_size" != "$archive_length" ] || [ "$actual_size" != "$archive_length" ]; then
+        /bin/rm -rf -- "$preflight_directory"
+        fail_preflight "latest appcast DMG byte length mismatch (expected $archive_length, curl ${downloaded_size:-unknown}, file $actual_size)"
+    fi
+    if ! /bin/sh "$root/scripts/validate-appcast.sh" --verify-archive "$appcast" "$downloaded_file" "$root/Sources/CodingAgentMetricsApp/Info.plist"; then
+        /bin/rm -rf -- "$preflight_directory"
+        fail_preflight "latest appcast DMG signature verification failed"
+    fi
+
+    /bin/rm -rf -- "$preflight_directory"
+    echo "deploy-pages: release preflight passed: $short_version ($build), $expected_filename, $archive_length bytes"
+}
+
+if [ -n "$preflight_site" ]; then
+    preflight_release_artifact "$preflight_site"
+    exit 0
+fi
+
 legacy_repo="$(CDPATH= cd -- "$legacy_repo" && pwd)"
 
 require_origin() {
@@ -69,11 +200,12 @@ if [ "$(git -C "$root" branch --show-current)" != "main" ]; then
     echo "deploy-pages: canonical website must be deployed from main" >&2
     exit 2
 fi
-if ! git -C "$root" diff --quiet HEAD -- website scripts/build-site.sh scripts/deploy-pages.sh; then
+release_contract_paths="website scripts/build-site.sh scripts/deploy-pages.sh scripts/validate-appcast.sh Sources/CodingAgentMetricsAppcastValidator/main.swift Sources/CodingAgentMetricsLifecycle/AppcastReleaseContract.swift"
+if ! git -C "$root" diff --quiet HEAD -- $release_contract_paths; then
     echo "deploy-pages: commit website and deployment changes before deploying" >&2
     exit 2
 fi
-if [ -n "$(git -C "$root" ls-files --others --exclude-standard -- website scripts/build-site.sh scripts/deploy-pages.sh)" ]; then
+if [ -n "$(git -C "$root" ls-files --others --exclude-standard -- $release_contract_paths)" ]; then
     echo "deploy-pages: commit website and deployment changes before deploying" >&2
     exit 2
 fi
@@ -117,21 +249,7 @@ trap cleanup EXIT HUP INT TERM
 "$root/scripts/build-site.sh" "$site"
 
 if [ "$publish" = true ]; then
-    release_urls="$(sed -n 's#.*href="\(https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0\.2\.0/[^" ]*\.dmg\)".*#\1#p' "$site/index.html" | sort -u)"
-    release_url_count="$(printf '%s\n' "$release_urls" | awk 'NF { count += 1 } END { print count + 0 }')"
-    if [ "$release_url_count" -ne 1 ]; then
-        echo "deploy-pages: could not find the unique v0.2.0 DMG URL in website/index.html" >&2
-        exit 2
-    fi
-    release_url="$release_urls"
-    http_status="$(curl -L -sS -o /dev/null -w '%{http_code}' "$release_url" || true)"
-    case "$http_status" in
-        2??) ;;
-        *)
-            echo "deploy-pages: v0.2.0 DMG URL preflight failed (HTTP ${http_status:-unknown})" >&2
-            exit 2
-            ;;
-    esac
+    preflight_release_artifact "$site"
 fi
 
 git -C "$root" worktree add "$primary_worktree" gh-pages >/dev/null

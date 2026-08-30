@@ -56,6 +56,16 @@ final class AccessibilitySession: ObservableObject {
         navigation.setShowsPerformanceEnable(visible)
     }
 
+    func setDiagnosticsTextAvailability(_ availability: DiagnosticsTextAvailability) {
+        navigation.setDiagnosticsTextAvailability(availability)
+    }
+
+    func applyDiagnosticsTextAvailability(from diagnostics: DiagnosticActionController) {
+        setDiagnosticsTextAvailability(
+            .make(previewText: diagnostics.previewText, publicIssueText: diagnostics.preparedPublicIssueText)
+        )
+    }
+
     var activityBinding: Binding<AccessibilityNavigation.ActivityMetric> {
         Binding(
             get: { self.navigation.activity },

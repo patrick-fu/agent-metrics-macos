@@ -27,11 +27,35 @@ enum CodingAgentMetricsApp {
                 FileHandle.standardError.write(Data("snapshot_render=failed\n".utf8))
             }
             return
+        case let .snapshotSurface(surface, appearance, outputPath, mutateOnePixel):
+            do {
+                try SecondarySurfaceSnapshotRenderer.writePNG(
+                    surface: surface,
+                    appearance: appearance,
+                    to: URL(fileURLWithPath: outputPath),
+                    mutateOnePixel: mutateOnePixel
+                )
+                print(outputPath)
+            } catch {
+                FileHandle.standardError.write(Data("snapshot_render=failed\n".utf8))
+            }
+            return
+        case let .snapshotContactSheet(appearance, outputPath):
+            do {
+                try SecondarySurfaceSnapshotRenderer.writeContactSheetPNG(
+                    appearance: appearance,
+                    to: URL(fileURLWithPath: outputPath)
+                )
+                print(outputPath)
+            } catch {
+                FileHandle.standardError.write(Data("snapshot_render=failed\n".utf8))
+            }
+            return
         case .invalidBenchmarkArguments:
             FileHandle.standardError.write(Data("usage: CodingAgentMetricsApp --benchmark-render <positive-sample-count>\n".utf8))
             return
         case .invalidSnapshotArguments:
-            FileHandle.standardError.write(Data("usage: CodingAgentMetricsApp --snapshot-summary <png-path> [--mutate-one-pixel]\n".utf8))
+            FileHandle.standardError.write(Data("usage: CodingAgentMetricsApp --snapshot-summary <png-path> [--mutate-one-pixel] | --snapshot-surface <settings|trends|data-diagnostics|about-updates> <light|dark> <png-path> [--mutate-one-pixel] | --snapshot-contact-sheet <light|dark> <png-path>\n".utf8))
             return
         }
         let app = NSApplication.shared

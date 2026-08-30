@@ -81,6 +81,36 @@ struct PopoverSizeContractTests {
         }
     }
 
+    @Test @MainActor
+    func secondarySurfacesKeepWidthAndStayWithinVisibleHeightAcrossRoundTrips() async {
+        let harness = PopoverSizeHarness(detailContent: .populated)
+        defer { harness.close() }
+        await harness.start()
+
+        let summary = await harness.measure("summary")
+        await harness.activateDetail()
+        let trends = await harness.measure("trends")
+        await harness.returnToSummary()
+        await harness.activateSettings()
+        let settings = await harness.measure("settings")
+        await harness.activateDataDiagnostics()
+        let data = await harness.measure("data")
+        await harness.returnToSettings()
+        await harness.activateAboutUpdates()
+        let about = await harness.measure("about")
+        await harness.returnToSettings()
+        await harness.returnToSummary()
+        let returned = await harness.measure("returned")
+        await harness.dismissAndReopen()
+        let reopened = await harness.measure("reopened")
+
+        report(summary, trends, settings, data, about, returned, reopened, repeats: [])
+        for sample in [summary, trends, settings, data, about, returned, reopened] {
+            assertUserVisibleWidth(sample, expected: AppIdentity.popoverWidth)
+            assertHeightWithinVisibleFrame(sample, visibleHeight: harness.visibleHeight)
+        }
+    }
+
     private func assertUserVisibleWidth(_ sample: MeasuredSizes, expected: Double) {
         #expect(
             abs(sample.panelWidth - expected) < Self.widthTolerance,
@@ -101,6 +131,13 @@ struct PopoverSizeContractTests {
         #expect(
             sample.panelHeight + Self.widthTolerance >= PanelPlacement.minimumContentHeight,
             "\(sample.label) panelHeight=\(sample.panelHeight) collapsed below minimum content height"
+        )
+    }
+
+    private func assertHeightWithinVisibleFrame(_ sample: MeasuredSizes, visibleHeight: CGFloat) {
+        #expect(
+            sample.panelHeight <= visibleHeight + Self.widthTolerance,
+            "\(sample.label) panelHeight=\(sample.panelHeight) exceeds visible height \(visibleHeight)"
         )
     }
 
@@ -133,6 +170,7 @@ private final class PopoverSizeHarness {
     private let accessibility: AccessibilitySession
     private let snapshots: RuntimeSnapshots
     private let visibleFrame: NSRect
+    var visibleHeight: CGFloat { visibleFrame.height }
 
     init(detailContent: DetailContent) {
         _ = NSApplication.shared
@@ -214,6 +252,35 @@ private final class PopoverSizeHarness {
 
     func activateSettings() async {
         accessibility.activate(.settings)
+        await pump()
+        resizeLikeProduction()
+        await pump()
+    }
+
+    func activateDataDiagnostics() async {
+        if accessibility.surface != .settings {
+            accessibility.activate(.settings)
+            await pump()
+        }
+        accessibility.activate(.openDataDiagnostics)
+        await pump()
+        resizeLikeProduction()
+        await pump()
+    }
+
+    func activateAboutUpdates() async {
+        if accessibility.surface != .settings {
+            accessibility.activate(.settings)
+            await pump()
+        }
+        accessibility.activate(.openAboutUpdates)
+        await pump()
+        resizeLikeProduction()
+        await pump()
+    }
+
+    func returnToSettings() async {
+        accessibility.escape()
         await pump()
         resizeLikeProduction()
         await pump()

@@ -26,6 +26,10 @@ enum PanelPlacement {
             visibleFrame.maxY
         )
         resized.origin.y = top - resized.height
+        resized.origin.x = min(
+            max(frame.minX, visibleFrame.minX),
+            visibleFrame.maxX - resized.width
+        )
         return resized
     }
 }

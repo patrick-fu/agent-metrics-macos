@@ -1,9 +1,22 @@
+struct DiagnosticsTextAvailability: Equatable, Sendable {
+    var preview: Bool
+    var publicIssue: Bool
+
+    static let none = DiagnosticsTextAvailability(preview: false, publicIssue: false)
+
+    static func make(previewText: String?, publicIssueText: String?) -> Self {
+        Self(preview: previewText != nil, publicIssue: publicIssueText != nil)
+    }
+}
+
 struct AccessibilityNavigation: Equatable, Sendable {
     enum Surface: Equatable, Sendable {
         case dismissed
         case summary
         case trends
         case settings
+        case dataDiagnostics
+        case aboutUpdates
         case diagnosticsConfirmation(DiagnosticsAction)
         case resetConfirmation
     }
@@ -30,6 +43,11 @@ struct AccessibilityNavigation: Equatable, Sendable {
         case diagnosticsPrepare
         case resetReview
         case checkForUpdates
+        case openDataDiagnostics
+        case openAboutUpdates
+        case aboutCheckForUpdates
+        case diagnosticsPreviewText
+        case diagnosticsPublicIssueText
         case confirmationConfirm
         case confirmationCancel
         case outputTable
@@ -51,6 +69,7 @@ struct AccessibilityNavigation: Equatable, Sendable {
     private(set) var focusedControl: Control
     private(set) var activity: ActivityMetric
     private(set) var showsPerformanceEnable: Bool
+    private(set) var diagnosticsText = DiagnosticsTextAvailability.none
 
     var isPanelVisible: Bool { surface != .dismissed }
 
@@ -58,13 +77,22 @@ struct AccessibilityNavigation: Equatable, Sendable {
         surface: .dismissed,
         focusedControl: .statusItem,
         activity: .burn,
-        showsPerformanceEnable: true
+        showsPerformanceEnable: true,
+        diagnosticsText: .none
     )
 
     mutating func setShowsPerformanceEnable(_ visible: Bool) {
         showsPerformanceEnable = visible
         if !visible, focusedControl == .performanceEnable {
             focusedControl = controls(for: surface).first ?? focusedControl
+        }
+    }
+
+    mutating func setDiagnosticsTextAvailability(_ availability: DiagnosticsTextAvailability) {
+        diagnosticsText = availability
+        let order = controls(for: surface)
+        if !order.contains(focusedControl) {
+            focusedControl = order.first ?? focusedControl
         }
     }
 
@@ -87,11 +115,17 @@ struct AccessibilityNavigation: Equatable, Sendable {
         case .settings:
             surface = .summary
             focusedControl = .settings
-        case .diagnosticsConfirmation(let action):
+        case .dataDiagnostics:
             surface = .settings
+            focusedControl = .openDataDiagnostics
+        case .aboutUpdates:
+            surface = .settings
+            focusedControl = .openAboutUpdates
+        case .diagnosticsConfirmation(let action):
+            surface = .dataDiagnostics
             focusedControl = trigger(for: action)
         case .resetConfirmation:
-            surface = .settings
+            surface = .dataDiagnostics
             focusedControl = .resetReview
         }
     }
@@ -121,27 +155,33 @@ struct AccessibilityNavigation: Equatable, Sendable {
         case (.summary, .settings):
             surface = .settings
             focusedControl = .back
-        case (.trends, .back), (.settings, .back):
+        case (.settings, .openDataDiagnostics):
+            surface = .dataDiagnostics
+            focusedControl = .back
+        case (.settings, .openAboutUpdates):
+            surface = .aboutUpdates
+            focusedControl = .back
+        case (.trends, .back), (.settings, .back), (.dataDiagnostics, .back), (.aboutUpdates, .back):
             escape()
-        case (.settings, .diagnosticsCopy):
+        case (.dataDiagnostics, .diagnosticsCopy):
             surface = .diagnosticsConfirmation(.copy)
             focusedControl = .confirmationCancel
-        case (.settings, .diagnosticsSave):
+        case (.dataDiagnostics, .diagnosticsSave):
             surface = .diagnosticsConfirmation(.save)
             focusedControl = .confirmationCancel
-        case (.settings, .diagnosticsPrepare):
+        case (.dataDiagnostics, .diagnosticsPrepare):
             surface = .diagnosticsConfirmation(.preparePublicIssue)
             focusedControl = .confirmationCancel
-        case (.settings, .resetReview):
+        case (.dataDiagnostics, .resetReview):
             surface = .resetConfirmation
             focusedControl = .confirmationCancel
         case (.diagnosticsConfirmation, .confirmationCancel), (.resetConfirmation, .confirmationCancel):
             escape()
         case (.diagnosticsConfirmation, .confirmationConfirm):
-            surface = .settings
+            surface = .dataDiagnostics
             focusedControl = currentDiagnosticsAction.map(trigger(for:)) ?? .diagnosticsCopy
         case (.resetConfirmation, .confirmationConfirm):
-            surface = .settings
+            surface = .dataDiagnostics
             focusedControl = .resetReview
         default:
             if controls(for: surface).contains(control) {
@@ -156,8 +196,9 @@ struct AccessibilityNavigation: Equatable, Sendable {
             focusedControl = forward ? order.first ?? focusedControl : order.last ?? focusedControl
             return
         }
-        let next = forward ? current + 1 : current - 1
-        guard order.indices.contains(next) else { return }
+        let next = forward
+            ? (current + 1) % order.count
+            : (current - 1 + order.count) % order.count
         focusedControl = order[next]
     }
 
@@ -179,7 +220,7 @@ struct AccessibilityNavigation: Equatable, Sendable {
         case .dismissed:
             return [.statusItem]
         case .summary:
-            var summary: [Control] = [.agentFilter, .modelFilter, .windowSelector, .settings]
+            var summary: [Control] = [.windowSelector, .settings, .agentFilter, .modelFilter]
             if showsPerformanceEnable {
                 summary.append(.performanceEnable)
             }
@@ -193,13 +234,23 @@ struct AccessibilityNavigation: Equatable, Sendable {
                 .aggregateWindow,
                 .displayCadence,
                 .enhancedTelemetry,
-                .diagnosticsPreview,
-                .diagnosticsCopy,
-                .diagnosticsSave,
-                .diagnosticsPrepare,
-                .resetReview,
                 .checkForUpdates,
+                .openDataDiagnostics,
+                .openAboutUpdates,
             ]
+        case .dataDiagnostics:
+            var order: [Control] = [.back, .diagnosticsPreview]
+            if diagnosticsText.preview {
+                order.append(.diagnosticsPreviewText)
+            }
+            order += [.diagnosticsCopy, .diagnosticsSave, .diagnosticsPrepare]
+            if diagnosticsText.publicIssue {
+                order.append(.diagnosticsPublicIssueText)
+            }
+            order.append(.resetReview)
+            return order
+        case .aboutUpdates:
+            return [.back, .aboutCheckForUpdates]
         case .diagnosticsConfirmation, .resetConfirmation:
             return [.confirmationCancel, .confirmationConfirm]
         }

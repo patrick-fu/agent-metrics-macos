@@ -2,14 +2,53 @@ import CodingAgentMetricsCore
 import CodingAgentMetricsLifecycle
 import SwiftUI
 
+struct DetailSnapshotLoadGate: Equatable {
+    private(set) var generation: UInt64 = 0
+    private(set) var isLoading = false
+
+    mutating func beginRequest() -> UInt64 {
+        generation &+= 1
+        isLoading = true
+        return generation
+    }
+
+    mutating func finish(generation: UInt64) -> Bool {
+        guard generation == self.generation, isLoading else { return false }
+        isLoading = false
+        return true
+    }
+
+    mutating func invalidate() {
+        generation &+= 1
+        isLoading = false
+    }
+}
+
+enum DetailSurfaceAvailability: Equatable {
+    case loading
+    case empty
+    case content
+
+    static func make(inFlight: Bool, snapshot: TrendSnapshot?) -> Self {
+        if snapshot != nil { return .content }
+        return inFlight ? .loading : .empty
+    }
+}
+
 @MainActor
 final class RuntimeSnapshots: ObservableObject {
     @Published var light: LightSnapshot?
     @Published var detail: TrendSnapshot?
+    @Published var isDetailLoading: Bool
 
-    init(light: LightSnapshot? = nil, detail: TrendSnapshot? = nil) {
+    init(light: LightSnapshot? = nil, detail: TrendSnapshot? = nil, isDetailLoading: Bool = false) {
         self.light = light
         self.detail = detail
+        self.isDetailLoading = isDetailLoading
+    }
+
+    var showsTrendsLoading: Bool {
+        DetailSurfaceAvailability.make(inFlight: isDetailLoading, snapshot: detail) == .loading
     }
 }
 
@@ -33,6 +72,7 @@ struct SummaryPopoverView: View {
     var onCadenceChange: (DisplayCadence) -> Void
     private var snapshot: LightSnapshot? { snapshots.light }
     private var trends: TrendSnapshot? { snapshots.detail }
+    var showsTrendsLoading: Bool { snapshots.showsTrendsLoading }
 
     init(
         snapshot: LightSnapshot?,
@@ -73,9 +113,37 @@ struct SummaryPopoverView: View {
         Group {
             switch accessibility.surface {
             case .trends:
-                trendsDetail
-            case .settings, .diagnosticsConfirmation, .resetConfirmation:
-                settingsDetail
+                trendsSurface
+            case .settings:
+                secondarySurface(title: "Settings") {
+                    SettingsSurfaceView(
+                        lifecycleServices: lifecycleServices,
+                        telemetry: telemetry,
+                        accessibility: accessibility,
+                        selectedWindow: $preferences.window,
+                        selectedCadence: $preferences.cadence,
+                        onWindowChange: onWindowChange,
+                        onCadenceChange: onCadenceChange,
+                        openDataDiagnostics: { accessibility.activate(.openDataDiagnostics) },
+                        openAboutUpdates: { accessibility.activate(.openAboutUpdates) }
+                    )
+                }
+            case .dataDiagnostics, .diagnosticsConfirmation, .resetConfirmation:
+                secondarySurface(title: "Data & Diagnostics", scrolls: true) {
+                    DataDiagnosticsSurfaceView(
+                        diagnostics: diagnostics,
+                        resetData: resetData,
+                        accessibility: accessibility,
+                        onResetCompleted: { diagnostics.clearEphemeralState() }
+                    )
+                }
+            case .aboutUpdates:
+                secondarySurface(title: "About & Updates", scrolls: true) {
+                    AboutUpdatesSurfaceView(
+                        updates: lifecycleServices.updates,
+                        accessibility: accessibility
+                    )
+                }
             case .dismissed, .summary:
                 summary
             }
@@ -93,6 +161,19 @@ struct SummaryPopoverView: View {
             now = clock.now
         }
         .onExitCommand(perform: handleEscape)
+    }
+
+    /// Keeps the loading route testable at the same seam the body renders.
+    /// A refresh with an existing detail remains content; only an empty in-flight
+    /// request presents the loading state.
+    var trendsSurface: TrendsSurfaceView {
+        TrendsSurfaceView(
+            snapshot: snapshot,
+            trends: trends,
+            accessibility: accessibility,
+            isLoading: showsTrendsLoading,
+            onBack: handleEscape
+        )
     }
 
     @ViewBuilder private var summary: some View {
@@ -168,26 +249,28 @@ struct SummaryPopoverView: View {
         }
     }
 
-    private var settingsDetail: some View {
+    @ViewBuilder
+    private func secondarySurface<Content: View>(
+        title: String,
+        scrolls: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Button("Back") { handleEscape() }
                     .focused($focusedControl, equals: .back)
                     .accessibilityFocusChrome(focusedControl == .back)
                 Spacer()
-                Text("Settings").font(.headline)
+                Text(title).font(.headline)
             }
-            SettingsView(
-                lifecycleServices: lifecycleServices,
-                telemetry: telemetry,
-                resetData: resetData,
-                diagnostics: diagnostics,
-                accessibility: accessibility,
-                selectedWindow: $preferences.window,
-                selectedCadence: $preferences.cadence,
-                onWindowChange: onWindowChange,
-                onCadenceChange: onCadenceChange
-            )
+            if scrolls {
+                ScrollView {
+                    content()
+                }
+                .frame(maxHeight: 720)
+            } else {
+                content()
+            }
         }
         .padding(14)
         .frame(
@@ -196,6 +279,7 @@ struct SummaryPopoverView: View {
             maxWidth: AppIdentity.popoverWidth,
             alignment: .leading
         )
+        .frame(maxHeight: 720)
         .background(.regularMaterial)
     }
 
