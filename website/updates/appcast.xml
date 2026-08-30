@@ -6,6 +6,22 @@
         <description>Stable updates for Agent Metrics.</description>
         <language>en</language>
         <item>
+            <title>0.2.1</title>
+            <pubDate>Mon, 31 Aug 2026 06:54:02 +0800</pubDate>
+            <link>https://github.com/patrick-fu/agent-metrics-macos/releases/tag/v0.2.1</link>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[Agent Metrics 0.2.1 redesigns every secondary surface and the public product experience.
+
+- Rebuild Trends, Settings, Data & Diagnostics, and About & Updates with consistent native layout, scrolling, loading states, and keyboard navigation.
+- Add exact trend tables, clearer privacy and reset boundaries, safer diagnostics workflows, and improved dark-mode chart cues.
+- Publish comprehensive English and Chinese documentation and a responsive bilingual product site.
+]]></description>
+            <enclosure url="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.1/AgentMetrics-0.2.1.dmg" length="2896064" type="application/octet-stream" sparkle:edSignature="m70eRXP7KCLQf6XA/wORQJTEdwYUQlH8aJITmqtuYYo5TtC7nFagcF2tgC8cOKT4cYcETTC+PwRbH6KZBJQGBw=="/>
+        </item>
+        <item>
             <title>0.2.0</title>
             <pubDate>Fri, 28 Aug 2026 02:20:38 +0800</pubDate>
             <link>https://github.com/patrick-fu/agent-metrics-macos/releases/tag/v0.2.0</link>
