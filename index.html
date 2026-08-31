@@ -22,22 +22,22 @@
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="styles.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Agent Metrics","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14+","downloadUrl":"https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.1/AgentMetrics-0.2.1.dmg","softwareVersion":"0.2.1"}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Agent Metrics","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14+","downloadUrl":"https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.2/AgentMetrics-0.2.2.dmg","softwareVersion":"0.2.2"}</script>
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
   <header class="site-header"><nav class="nav shell" aria-label="Primary navigation">
     <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">▥</span>Agent Metrics</a>
     <div class="nav-links"><a href="#metrics">Metrics</a><a href="#surfaces">Surfaces</a><a href="#agents">Sources</a><a href="#privacy">Privacy</a><a href="#faq">FAQ</a><a lang="zh-CN" href="zh.html">中文</a></div>
-    <a class="button button-small" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.1/AgentMetrics-0.2.1.dmg">Download</a>
+    <a class="button button-small" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.2/AgentMetrics-0.2.2.dmg">Download</a>
   </nav></header>
   <main id="content">
     <section class="hero shell" id="top" aria-labelledby="hero-title"><div class="hero-copy">
       <p class="eyebrow">Native menu bar metrics · Public Beta</p>
       <h1 id="hero-title">Local signals, <span>honest definitions.</span></h1>
       <p class="hero-lede">Agent Metrics helps you inspect local Codex and Claude Code activity without flattening unlike measurements into one score.</p>
-      <div class="hero-actions"><a class="button" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.1/AgentMetrics-0.2.1.dmg">Download for macOS</a><a class="text-link" href="https://github.com/patrick-fu/agent-metrics-macos">View on GitHub</a></div>
-      <p class="release-note">Version 0.2.1 · build 6 · macOS 14+ · Apple silicon</p>
+      <div class="hero-actions"><a class="button" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.2/AgentMetrics-0.2.2.dmg">Download for macOS</a><a class="text-link" href="https://github.com/patrick-fu/agent-metrics-macos">View on GitHub</a></div>
+      <p class="release-note">Version 0.2.2 · build 7 · macOS 14+ · Apple silicon</p>
     </div><figure class="app-frame"><img src="assets/summary-popover-2x.png" width="880" height="1438" alt="Agent Metrics menu bar summary showing an output throughput chart, token burn, active sessions, and data quality"><figcaption>Actual app interface; values shown are illustrative.</figcaption></figure></section>
 
     <section class="section shell" id="metrics" aria-labelledby="metrics-title"><div class="section-heading"><p class="eyebrow">Defined before displayed</p><h2 id="metrics-title">Each metric answers one question.</h2></div>
@@ -68,13 +68,13 @@
       <ul><li>The most recent 7-day window is protected during retention cleanup.</li><li>At capacity thresholds, older data may be pruned and coverage shown as partial; ingestion can pause at the hard limit.</li><li>Privacy-safe diagnostics use an allowlist. Reset Data clears telemetry data, but cleanup and space reclamation can complete later.</li></ul>
     </div></div></section>
 
-    <section class="section shell" id="install" aria-labelledby="install-title"><div class="section-heading"><p class="eyebrow">Install</p><h2 id="install-title">Start from the current Public Beta release.</h2></div><ol class="install-steps"><li>Download version 0.2.1 from GitHub Releases.</li><li>Open the disk image and move Agent Metrics to Applications.</li><li>Launch it and choose settings appropriate for your local sources.</li></ol><p class="centered"><a class="button" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.1/AgentMetrics-0.2.1.dmg">Download Agent Metrics 0.2.1</a></p></section>
+    <section class="section shell" id="install" aria-labelledby="install-title"><div class="section-heading"><p class="eyebrow">Install</p><h2 id="install-title">Start from the current Public Beta release.</h2></div><ol class="install-steps"><li>Download version 0.2.2 from GitHub Releases.</li><li>Open the disk image and move Agent Metrics to Applications.</li><li>Launch it and choose settings appropriate for your local sources.</li></ol><p class="centered"><a class="button" href="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.2/AgentMetrics-0.2.2.dmg">Download Agent Metrics 0.2.2</a></p></section>
 
     <section class="section shell" id="faq" aria-labelledby="faq-title"><div class="section-heading"><p class="eyebrow">FAQ</p><h2 id="faq-title">Practical details.</h2></div><div class="faq-list">
       <details open><summary>Does it upload my agent activity?</summary><p>No hosted analytics service is required. Automatic and user-initiated update checks are the expected external network activity; enabling Enhanced Telemetry creates an unauthenticated local loopback receiver.</p></details>
       <details><summary>Why can a value be partial or unavailable?</summary><p>Sources differ in their durable fields and boundaries. Agent Metrics surfaces missing coverage and does not substitute a different measurement.</p></details>
       <details><summary>How do I troubleshoot or clear data?</summary><p>Use Data &amp; Diagnostics for an allowlisted diagnostic preview, copy, save, or public-issue preparation; use Reset Data after reviewing its scope.</p></details>
-      <details><summary>How are updates delivered?</summary><p>GitHub prereleases are the Public Beta release channel. The app's update feed follows the published release history.</p></details>
+      <details><summary>How are updates delivered?</summary><p>Public Beta is a product-maturity label, not an update channel. The production update feed contains only published, non-prerelease GitHub Releases.</p></details>
     </div></section>
   </main>
   <footer class="site-footer shell"><span>Agent Metrics · Public Beta</span><span><a href="https://github.com/patrick-fu/agent-metrics-macos">GitHub</a> · <a href="updates/appcast.xml">Update feed</a> · <a lang="zh-CN" href="zh.html">中文</a></span></footer>

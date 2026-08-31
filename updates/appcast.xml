@@ -6,6 +6,22 @@
         <description>Stable updates for Agent Metrics.</description>
         <language>en</language>
         <item>
+            <title>0.2.2</title>
+            <pubDate>Tue, 01 Sep 2026 02:54:59 +0800</pubDate>
+            <link>https://github.com/patrick-fu/agent-metrics-macos/releases/tag/v0.2.2</link>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[Agent Metrics 0.2.2 keeps Codex ingestion live when archived and active session roots together exceed the per-root discovery budget.
+
+- Preserve the existing local SQLite store and resume from saved source state without a reset.
+- Bound active and archived rollout discovery independently so one root cannot consume the other's budget.
+- Clarify the production release and Public Beta maturity policy across the bilingual documentation and product site.
+]]></description>
+            <enclosure url="https://github.com/patrick-fu/agent-metrics-macos/releases/download/v0.2.2/AgentMetrics-0.2.2.dmg" length="2895729" type="application/octet-stream" sparkle:edSignature="FJxFMyQqc3F7+z1gJyo8GBjTii7ollRZgXiYnv81B6d4jxZScg171Z7nUpmJw4kcSh3sP+PLPokC8ktcmbT6CA=="/>
+        </item>
+        <item>
             <title>0.2.1</title>
             <pubDate>Mon, 31 Aug 2026 06:54:02 +0800</pubDate>
             <link>https://github.com/patrick-fu/agent-metrics-macos/releases/tag/v0.2.1</link>
