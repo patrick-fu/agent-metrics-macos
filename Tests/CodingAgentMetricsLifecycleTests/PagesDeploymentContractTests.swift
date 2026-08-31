@@ -9,8 +9,8 @@ struct PagesDeploymentContractTests {
             format: nil
         ) as? [String: Any]
 
-        #expect(info?["CFBundleShortVersionString"] as? String == "0.2.1")
-        #expect(info?["CFBundleVersion"] as? String == "6")
+        #expect(info?["CFBundleShortVersionString"] as? String == "0.2.2")
+        #expect(info?["CFBundleVersion"] as? String == "7")
     }
 
     @Test func preflightUsesTheLatestAppcastItemAndValidatesTheDownloadedArtifact() throws {

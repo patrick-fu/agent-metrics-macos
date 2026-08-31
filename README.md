@@ -48,7 +48,7 @@ The interface supports keyboard focus, Escape-based return paths, and non-color 
 
 Agent Metrics requires an Apple silicon Mac running macOS 14 or later.
 
-GitHub prereleases are the current **Public Beta** delivery policy. When a release is available, download its `AgentMetrics-<version>.dmg` from GitHub Releases, open it, move `Agent Metrics.app` to Applications, and launch it. A release must complete the project's signing, notarization, stapling, and public-download checks before it is represented as such; this working tree does not itself establish that a future version has been released.
+**Public Beta** describes the product's maturity; it is not a GitHub or updater channel. When a release is available, download its `AgentMetrics-<version>.dmg` from GitHub Releases, open it, move `Agent Metrics.app` to Applications, and launch it. A release must complete the project's signing, notarization, stapling, and public-download checks before it is represented as such; this working tree does not itself establish that a future version has been released.
 
 ## Local data, privacy, and reset
 
@@ -86,7 +86,7 @@ The Pages build has no package-install step or external runtime. `website/site-m
 
 ## Releases, Pages, and identity
 
-The appcast is the production updater feed and preserves signed historical items. The Public Beta label does not create a separate updater channel and does not authorize adding an unpublished prerelease to the appcast. The legacy feed at `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml` remains for installed clients; Pages deployment stages the primary site and legacy feed separately. See [`docs/release/pages-deployment.md`](docs/release/pages-deployment.md) and [`docs/release/public-beta-runbook.md`](docs/release/public-beta-runbook.md).
+The appcast is the production updater feed and preserves signed historical items. Public Beta does not create a separate updater channel: every appcast item must correspond to a published, non-prerelease GitHub Release. The legacy feed at `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml` remains for installed clients; Pages deployment stages the primary site and legacy feed separately. See [`docs/release/pages-deployment.md`](docs/release/pages-deployment.md) and [`docs/release/public-beta-runbook.md`](docs/release/public-beta-runbook.md).
 
 The public app name is **Agent Metrics** and the bundle is `Agent Metrics.app`. `dev.codingagentmetrics.app`, legacy `CodingAgentMetrics` module/resource identifiers, and the Sparkle trust configuration are compatibility identifiers for installed-data ownership and updater continuity.
 

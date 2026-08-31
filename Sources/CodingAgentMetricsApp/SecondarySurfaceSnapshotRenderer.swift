@@ -288,8 +288,8 @@ enum SecondarySurfaceSnapshotRenderer {
 
     private static let snapshotAboutInfo: [String: Any] = [
         "CFBundleName": "Agent Metrics",
-        "CFBundleShortVersionString": "0.2.1",
-        "CFBundleVersion": "6",
+        "CFBundleShortVersionString": "0.2.2",
+        "CFBundleVersion": "7",
         "LSMinimumSystemVersion": "14.0",
         "SUFeedURL": "https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml",
     ]

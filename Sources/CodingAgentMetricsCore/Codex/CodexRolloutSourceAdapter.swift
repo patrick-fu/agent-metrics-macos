@@ -3,7 +3,7 @@ import Foundation
 public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
     static let maximumAppendBytesPerFile = 512 * 1_024
     static let maximumRolloutFiles = 256
-    private static let maximumDirectoryEntries = 4_096
+    static let maximumDirectoryEntries = 4_096
     private static let fingerprintSampleBytes = 64 * 1_024
 
     public var sessionRoot: URL
@@ -376,7 +376,6 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
 
     private func discoverRollouts() throws -> RolloutDiscovery {
         var discovered: [String: DiscoveredRollout] = [:]
-        var entryCount = 0
         for subdirectory in ["archived_sessions", "sessions"] {
             let root = sessionRoot.appendingPathComponent(subdirectory, isDirectory: true)
             guard FileManager.default.fileExists(atPath: root.path) else { continue }
@@ -385,6 +384,7 @@ public struct CodexRolloutSourceAdapter: IncrementalSourceAdapter {
                 includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles]
             ) else { continue }
+            var entryCount = 0
             for case let url as URL in enumerator {
                 entryCount += 1
                 guard entryCount <= Self.maximumDirectoryEntries else {

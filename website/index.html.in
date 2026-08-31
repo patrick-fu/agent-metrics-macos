@@ -74,7 +74,7 @@
       <details open><summary>Does it upload my agent activity?</summary><p>No hosted analytics service is required. Automatic and user-initiated update checks are the expected external network activity; enabling Enhanced Telemetry creates an unauthenticated local loopback receiver.</p></details>
       <details><summary>Why can a value be partial or unavailable?</summary><p>Sources differ in their durable fields and boundaries. Agent Metrics surfaces missing coverage and does not substitute a different measurement.</p></details>
       <details><summary>How do I troubleshoot or clear data?</summary><p>Use Data &amp; Diagnostics for an allowlisted diagnostic preview, copy, save, or public-issue preparation; use Reset Data after reviewing its scope.</p></details>
-      <details><summary>How are updates delivered?</summary><p>GitHub prereleases are the Public Beta release channel. The app's update feed follows the published release history.</p></details>
+      <details><summary>How are updates delivered?</summary><p>Public Beta is a product-maturity label, not an update channel. The production update feed contains only published, non-prerelease GitHub Releases.</p></details>
     </div></section>
   </main>
   <footer class="site-footer shell"><span>Agent Metrics · Public Beta</span><span><a href="https://github.com/patrick-fu/agent-metrics-macos">GitHub</a> · <a href="updates/appcast.xml">Update feed</a> · <a lang="zh-CN" href="zh.html">中文</a></span></footer>

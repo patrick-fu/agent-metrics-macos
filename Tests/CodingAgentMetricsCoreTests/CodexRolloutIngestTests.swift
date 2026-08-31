@@ -347,6 +347,41 @@ struct CodexRolloutIngestTests {
         #expect(!second.health.isHealthy)
     }
 
+    @Test func scanKeepsActiveRolloutReachableWhenCombinedRootsExceedThePerRootDiscoveryBudget() throws {
+        let home = try TempCodexHome()
+        defer { home.tearDown() }
+        let decoysPerRoot = CodexRolloutSourceAdapter.maximumDirectoryEntries / 2 + 1
+
+        // Each source root remains below the bounded traversal budget, while their
+        // combined entry count exceeds it. One noisy archive must not prevent the
+        // independently bounded active-session root from being scanned.
+        for index in 0..<decoysPerRoot {
+            let archivedDecoy = home.archivedDirectory.appendingPathComponent("archived-decoy-\(index).tmp")
+            let activeDecoy = home.activeDirectory.appendingPathComponent("active-decoy-\(index).tmp")
+            try Data().write(to: archivedDecoy)
+            try Data().write(to: activeDecoy)
+        }
+        try home.writeActiveRollout(lines: [
+            sessionMetaLine(),
+            turnContextLine(),
+            tokenCountLine(
+                totalOutput: 314,
+                lastOutput: 314,
+                timestamp: "2026-04-15T12:00:10.000Z",
+                ordinal: 3
+            ),
+        ], terminated: true)
+
+        let scan = try CodexRolloutSourceAdapter(sessionRoot: home.root).scan(
+            clock: FixedClock(now: isoDate("2026-04-15T12:00:20Z")),
+            state: nil
+        )
+
+        #expect(scan.observations.contains { $0.outputTokens == 314 })
+        #expect(scan.state.files.count == 1)
+        #expect(scan.health.isHealthy)
+    }
+
     @Test func versionedCodexRolloutWithoutCallIdentityReachesSQLiteAndLightSnapshot() throws {
         let clock = FixedClock(now: isoDate("2026-04-15T12:00:20Z"))
         let storeURL = uniqueStoreURL()

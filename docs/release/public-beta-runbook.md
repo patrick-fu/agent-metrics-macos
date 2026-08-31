@@ -26,15 +26,16 @@ preserve installed-data ownership and updater trust. The production feed remains
 `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml`; its enclosure must point to
 the public release in `patrick-fu/agent-metrics-macos` so old clients remain upgradeable.
 
-### Public Beta channel boundary
+### Public Beta maturity boundary
 
-The public website calls these builds **Public Beta** and may link to a GitHub prerelease, provided the
-website, GitHub release, DMG name, short version, and build all describe the same artifact. This
-release-label choice does not create a second Sparkle channel: the Pages appcast remains the production
-updater channel and must contain only production-ready, EdDSA-signed items. Never add a prerelease to
-the production feed merely because the website presents it as Public Beta.
+**Public Beta** is a product-maturity label, not a GitHub or Sparkle update channel. The public website
+and production appcast must refer only to a published, non-prerelease GitHub Release whose DMG name,
+short version, and build match the website. The Pages appcast remains the production updater channel and
+must contain only production-ready, EdDSA-signed items. Never add an unpublished or prerelease release
+to the production feed merely because the website presents the product as Public Beta. Publish `0.2.2 (7)`
+as a normal GitHub Release, not a prerelease.
 
-For `0.2.1 (6)`, do not edit the appcast until the final signed, notarized, stapled DMG has a recorded
+For `0.2.2 (7)`, do not edit the appcast until the final signed, notarized, stapled DMG has a recorded
 post-staple byte length and generated EdDSA signature. After publishing the matching GitHub release,
 run `scripts/deploy-pages.sh --legacy-repo PATH --publish`; it builds the site, reads the newest built
 appcast item, anonymously downloads its unique enclosure to the system temporary directory, and requires
@@ -80,30 +81,32 @@ first failed check. Never update the stable appcast early.
    every check to succeed. The DMG name must be `AgentMetrics-<short-version>.dmg`; record its final
    post-staple byte length.
 3. **Create a draft release.** Manually create, but do not publish, the GitHub Release whose tag is
-   `v<short-version>` and whose version/build metadata matches the app and DMG.
+   `v<short-version>` and whose version/build metadata matches the app and DMG. Configure it to publish
+   as a normal release, not a prerelease.
 4. **Upload and verify the public DMG.** Manually upload the DMG to the draft, then verify the final
    intended filename and byte length through maintainer access. A draft entry, authenticated download,
    or uploaded asset alone is not public-download evidence.
-5. **Publish the release.** Publish only after step 4 passes. Before this stage can complete, verify an
-   unauthenticated download from the final HTTPS URL and require the filename and downloaded length to
-   match the uploaded DMG. The stable appcast remains blocked until this public recheck passes.
+5. **Publish the release.** Publish it as a normal release, not a prerelease, only after step 4 passes.
+   Before this stage can complete, verify an unauthenticated download from the final HTTPS URL and require
+   the filename and downloaded length to match the uploaded DMG. The stable appcast remains blocked until
+   this public recheck passes.
 6. **Update and publish the stable appcast.** Generate the EdDSA enclosure metadata manually. Require
    a newest stable item followed by strictly descending, unique historical items; require HTTPS
    enclosure URLs, non-empty EdDSA signatures, and exact build/short-version/minimum-OS/filename/
    length/signature agreement between the newest item and verified public DMG. Publish Pages only
-   after the GitHub Release is public and verified.
+   after the GitHub Release is public, non-prerelease, and verified.
 7. **Verify the updater.** From the last-good build, manually check the stable feed, signature
    acceptance, expected version/artifact selection, visible user approval, and successful launch of
    the updated app. Silent installation is not accepted.
 
-### 0.2.1 (6) release stop line
+### 0.2.2 (7) release stop line
 
-Do not publish, link, or advertise `0.2.1 (6)` as a completed Public Beta release if any of the
-following is missing: the final post-staple DMG length, the matching EdDSA signature, a GitHub release
-whose wording agrees with the website's Public Beta label, an anonymous download that preserves the
-expected `AgentMetrics-0.2.1.dmg` filename and byte length, or an appcast item that exactly matches
-those final values. Until all are present, leave the production appcast on `0.2.0 (5)` and stop the
-release sequence.
+Do not publish, link, or advertise `0.2.2 (7)` as a completed Public Beta release if any of the
+following is missing: the final post-staple DMG length, the matching EdDSA signature, a published,
+non-prerelease GitHub Release whose wording agrees with the website's Public Beta label, an anonymous
+download that preserves the expected `AgentMetrics-0.2.2.dmg` filename and byte length, or an appcast
+item that exactly matches those final values. Until all are present, leave the production appcast on
+`0.2.1 (6)` and stop the release sequence.
 
 ### Failure stop points
 

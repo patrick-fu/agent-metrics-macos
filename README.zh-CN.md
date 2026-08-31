@@ -48,7 +48,7 @@ Agent Metrics 不会把一个通道的部分观测与另一个通道的字段拼
 
 Agent Metrics 需要 Apple silicon Mac 和 macOS 14 或更高版本。
 
-GitHub prerelease 是当前的 **Public Beta** 交付策略。发布可用时，从 GitHub Releases 下载 `AgentMetrics-<version>.dmg`，打开它，将 `Agent Metrics.app` 移到 Applications 后启动。一个发布必须通过本项目的签名、公证、stapling 和公开下载检查后，才能被如此表述；当前工作树本身并不能证明未来版本已经发布。
+**Public Beta** 描述的是产品成熟度，不是 GitHub 或更新通道。发布可用时，从 GitHub Releases 下载 `AgentMetrics-<version>.dmg`，打开它，将 `Agent Metrics.app` 移到 Applications 后启动。一个发布必须通过本项目的签名、公证、stapling 和公开下载检查后，才能被如此表述；当前工作树本身并不能证明未来版本已经发布。
 
 ## 本地数据、隐私与重置
 
@@ -86,7 +86,7 @@ Pages 构建不需要安装包或外部运行时。`website/site-manifest.txt` �
 
 ## 发布、Pages 与身份
 
-appcast 是生产更新器 feed，并保留已签名的历史 item。Public Beta 标签不会创建第二个更新通道，也不允许仅因存在未发布 prerelease 就将它加入 appcast。遗留 feed `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml` 仍服务已安装客户端；Pages 部署会分别暂存主站点和遗留 feed。见 [`docs/release/pages-deployment.md`](docs/release/pages-deployment.md) 与 [`docs/release/public-beta-runbook.md`](docs/release/public-beta-runbook.md)。
+appcast 是生产更新器 feed，并保留已签名的历史 item。Public Beta 不会创建第二个更新通道：每个 appcast item 都必须对应一个已发布且非 prerelease 的 GitHub Release。遗留 feed `https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml` 仍服务已安装客户端；Pages 部署会分别暂存主站点和遗留 feed。见 [`docs/release/pages-deployment.md`](docs/release/pages-deployment.md) 与 [`docs/release/public-beta-runbook.md`](docs/release/public-beta-runbook.md)。
 
 公开应用名为 **Agent Metrics**，bundle 为 `Agent Metrics.app`。`dev.codingagentmetrics.app`、遗留 `CodingAgentMetrics` 模块/资源标识以及 Sparkle trust 配置，都是已安装数据归属与更新连续性所需的兼容标识。
 

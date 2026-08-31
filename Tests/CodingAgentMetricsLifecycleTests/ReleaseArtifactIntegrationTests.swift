@@ -17,7 +17,7 @@ struct ReleaseArtifactIntegrationTests {
         )
         #expect(build.status == 0, "build-dmg.sh failed: \(build.output)")
 
-        let dmg = dmgDirectory.appendingPathComponent("AgentMetrics-0.2.1.dmg")
+        let dmg = dmgDirectory.appendingPathComponent("AgentMetrics-0.2.2.dmg")
         #expect(FileManager.default.fileExists(atPath: dmg.path))
 
         let mountDirectory = temporaryDirectory.appendingPathComponent("mount", isDirectory: true)
@@ -43,8 +43,8 @@ struct ReleaseArtifactIntegrationTests {
         #expect(FileManager.default.fileExists(atPath: bundle.path))
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: mountDirectory.appendingPathComponent("Applications").path) == "/Applications")
         #expect(plist?["CFBundleName"] as? String == "Agent Metrics")
-        #expect(plist?["CFBundleShortVersionString"] as? String == "0.2.1")
-        #expect(plist?["CFBundleVersion"] as? String == "6")
+        #expect(plist?["CFBundleShortVersionString"] as? String == "0.2.2")
+        #expect(plist?["CFBundleVersion"] as? String == "7")
         #expect(plist?["CFBundleIdentifier"] as? String == "dev.codingagentmetrics.app")
         #expect(plist?["SUFeedURL"] as? String == "https://patrick-fu.github.io/coding-agent-metrics/updates/appcast.xml")
         #expect(plist?["SUPublicEDKey"] as? String == "xLcFpTMbuvJVcOJlZyap0OgZ2Tp8dJ1oC/BImxW2TaM=")
